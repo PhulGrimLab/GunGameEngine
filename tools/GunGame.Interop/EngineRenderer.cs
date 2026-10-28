@@ -49,6 +49,77 @@ public sealed unsafe class EngineRenderer : IDisposable
 
     public int LoadTexture(string path) => CheckId(Native.gge_texture_load(Handle, path));
 
+    // ---- 스켈레탈 애니메이션 ----
+    /// <param name="vertices">정점당 float 8개</param>
+    /// <param name="joints">정점당 uint 4개(본 인덱스)</param>
+    /// <param name="weights">정점당 float 4개(엔진이 합 1로 정규화)</param>
+    public int CreateSkinnedMesh(ReadOnlySpan<float> vertices, ReadOnlySpan<uint> joints, ReadOnlySpan<float> weights,
+                                 ReadOnlySpan<uint> indices)
+    {
+        fixed (float* v = vertices)
+        fixed (uint* j = joints)
+        fixed (float* w = weights)
+        fixed (uint* i = indices)
+            return CheckId(Native.gge_mesh_create_skinned(Handle, v, vertices.Length / 8, j, w, i, indices.Length));
+    }
+
+    public int CreateSkeleton(SkeletonData skeleton)
+    {
+        fixed (int* parents = skeleton.Parents)
+        fixed (float* inverseBind = skeleton.InverseBind)
+        fixed (float* translation = skeleton.RestTranslation)
+        fixed (float* rotation = skeleton.RestRotation)
+        fixed (float* scale = skeleton.RestScale)
+            return CheckId(Native.gge_skeleton_create(Handle, skeleton.BoneCount, parents, inverseBind, translation, rotation, scale));
+    }
+
+    public int CreateClip(ClipData clip)
+    {
+        var channels = new NativeClipChannel[clip.Channels.Count];
+        var pins = new List<GCHandle>();
+        try
+        {
+            for (int i = 0; i < channels.Length; i++)
+            {
+                ClipChannelData c = clip.Channels[i];
+                GCHandle times = GCHandle.Alloc(c.Times, GCHandleType.Pinned);
+                pins.Add(times);
+                GCHandle values = GCHandle.Alloc(c.Values, GCHandleType.Pinned);
+                pins.Add(values);
+                channels[i] = new NativeClipChannel
+                {
+                    Bone = c.Bone,
+                    Path = (int)c.Path,
+                    KeyCount = c.Times.Length,
+                    Times = (float*)times.AddrOfPinnedObject(),
+                    Values = (float*)values.AddrOfPinnedObject(),
+                };
+            }
+            fixed (NativeClipChannel* p = channels)
+                return CheckId(Native.gge_clip_create(Handle, clip.Duration, channels.Length, p));
+        }
+        finally
+        {
+            foreach (GCHandle pin in pins)
+                pin.Free();
+        }
+    }
+
+    public void SetObjectSkeleton(int objectId, int skeletonId) => Check(Native.gge_object_set_skeleton(Handle, objectId, skeletonId));
+
+    /// <summary>시간은 호출자가 구동한다. clipA 0 = 레스트 포즈, clipB 0 = 블렌딩 없음, blend 0..1.</summary>
+    public void SetObjectPose(int objectId, int clipA, float timeA, int clipB = 0, float timeB = 0, float blend = 0) =>
+        Check(Native.gge_object_set_pose(Handle, objectId, clipA, timeA, clipB, timeB, blend));
+
+    /// <summary>본별 모델 공간 전역 행렬(본당 16 float, 행 벡터 규약, 이동은 12..14번째).</summary>
+    public float[] GetObjectPose(int objectId, int boneCount)
+    {
+        var matrices = new float[boneCount * 16];
+        fixed (float* p = matrices)
+            Check(Native.gge_object_get_pose(Handle, objectId, p, boneCount));
+        return matrices;
+    }
+
     // ---- 오브젝트(씬 그래프) ----
     public int CreateObject(int meshId, int textureId = 0, int parentId = 0) =>
         CheckId(Native.gge_object_create(Handle, meshId, textureId, parentId));
@@ -119,9 +190,37 @@ public sealed unsafe class EngineRenderer : IDisposable
         return id;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeClipChannel
+    {
+        public int Bone;
+        public int Path;
+        public int KeyCount;
+        public float* Times;
+        public float* Values;
+    }
+
     private static class Native
     {
         private const string Dll = "gge";
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_mesh_create_skinned(nint renderer, float* vertices, int vertexCount, uint* joints, float* weights, uint* indices, int indexCount);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_skeleton_create(nint renderer, int boneCount, int* parents, float* inverseBind, float* restTranslation, float* restRotation, float* restScale);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_clip_create(nint renderer, float duration, int channelCount, NativeClipChannel* channels);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_object_set_skeleton(nint renderer, int objectId, int skeletonId);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_object_set_pose(nint renderer, int objectId, int clipA, float timeA, int clipB, float timeB, float blend);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_object_get_pose(nint renderer, int objectId, float* outMatrices, int boneCapacity);
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern nint gge_renderer_create(int width, int height, int useWarp);

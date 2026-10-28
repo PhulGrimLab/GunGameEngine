@@ -844,6 +844,451 @@ void Test_GoldenSceneHierarchy()
     gge_renderer_destroy(r);
 }
 
+// ======== 5: 스켈레탈 애니메이션 ========
+constexpr float kPi = 3.14159265358979f;
+
+// 본 N개 체인: 본 i의 부모는 i-1, 레스트 로컬 이동 (0, i>0 ? 1 : 0, 0), 역바인드 = 이동(0,-i,0).
+struct ChainData {
+    std::vector<int> parents;
+    std::vector<float> inverseBind, translation, rotation, scale;
+};
+
+ChainData MakeChain(int bones)
+{
+    ChainData c;
+    for (int i = 0; i < bones; ++i) {
+        c.parents.push_back(i - 1);
+        float m[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, static_cast<float>(-i), 0, 1};
+        c.inverseBind.insert(c.inverseBind.end(), m, m + 16);
+        c.translation.insert(c.translation.end(), {0.0f, i > 0 ? 1.0f : 0.0f, 0.0f});
+        c.rotation.insert(c.rotation.end(), {0, 0, 0, 1});
+        c.scale.insert(c.scale.end(), {1, 1, 1});
+    }
+    return c;
+}
+
+int CreateSkeleton(GgeRenderer* r, const ChainData& c)
+{
+    return gge_skeleton_create(r, static_cast<int>(c.parents.size()), c.parents.data(), c.inverseBind.data(),
+                               c.translation.data(), c.rotation.data(), c.scale.data());
+}
+
+int ChainSkeleton(GgeRenderer* r, int bones = 3)
+{
+    int id = CreateSkeleton(r, MakeChain(bones));
+    CHECK(id > 0);
+    return id;
+}
+
+struct KeyChannel {
+    int bone;
+    int path;
+    std::vector<float> times, values;
+};
+
+int CreateClip(GgeRenderer* r, float duration, const std::vector<KeyChannel>& channels)
+{
+    std::vector<GgeClipChannel> raw;
+    for (const KeyChannel& c : channels)
+        raw.push_back({c.bone, c.path, static_cast<int>(c.times.size()), c.times.data(), c.values.data()});
+    return gge_clip_create(r, duration, static_cast<int>(raw.size()), raw.data());
+}
+
+// 본 하나를 Z축으로 a0→a1(라디안) 회전시키는 1초짜리 클립.
+KeyChannel ZRotation(int bone, float a0, float a1)
+{
+    return {bone, 1, {0, 1}, {0, 0, std::sin(a0 / 2), std::cos(a0 / 2), 0, 0, std::sin(a1 / 2), std::cos(a1 / 2)}};
+}
+
+int RotationClip(GgeRenderer* r, float a0, float a1)
+{
+    int id = CreateClip(r, 1.0f, {ZRotation(1, a0, a1)});
+    CHECK(id > 0);
+    return id;
+}
+
+struct V3 { float x, y, z; };
+
+std::vector<V3> BonePositions(GgeRenderer* r, int object, int bones)
+{
+    std::vector<float> m(bones * 16);
+    int written = gge_object_get_pose(r, object, m.data(), bones);
+    CHECK(written == bones);
+    std::vector<V3> out;
+    for (int i = 0; i < bones; ++i)
+        out.push_back({m[i * 16 + 12], m[i * 16 + 13], m[i * 16 + 14]});
+    return out;
+}
+
+bool Near(V3 a, V3 b, float eps = 1e-4f)
+{
+    return std::fabs(a.x - b.x) < eps && std::fabs(a.y - b.y) < eps && std::fabs(a.z - b.z) < eps;
+}
+
+// 높이 y=0,1,2의 3행 x 2열 띠. 행0은 본0, 행1·행2는 본1에 100% 묶인다. 앞면은 +Z.
+int SkinnedStrip(GgeRenderer* r)
+{
+    const float v[] = {
+        -0.3f, 0, 0, 0, 0, 1, 0, 1,   0.3f, 0, 0, 0, 0, 1, 1, 1,
+        -0.3f, 1, 0, 0, 0, 1, 0, 0.5f, 0.3f, 1, 0, 0, 0, 1, 1, 0.5f,
+        -0.3f, 2, 0, 0, 0, 1, 0, 0,   0.3f, 2, 0, 0, 0, 1, 1, 0,
+    };
+    const uint32_t joints[] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
+    const float weights[] = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
+    const uint32_t idx[] = {0, 1, 3, 0, 3, 2, 2, 3, 5, 2, 5, 4};
+    int id = gge_mesh_create_skinned(r, v, 6, joints, weights, idx, 12);
+    CHECK(id > 0);
+    return id;
+}
+
+void Test_SkeletonRejectsBadInput()
+{
+    GgeRenderer* r = NewRenderer();
+    ChainData ok = MakeChain(3);
+    CHECK(CreateSkeleton(r, ok) > 0);
+
+    CHECK(gge_skeleton_create(r, 0, ok.parents.data(), ok.inverseBind.data(), ok.translation.data(),
+                              ok.rotation.data(), ok.scale.data()) == 0);
+    CHECK(gge_skeleton_create(r, 65, ok.parents.data(), ok.inverseBind.data(), ok.translation.data(),
+                              ok.rotation.data(), ok.scale.data()) == 0);
+    CHECK(gge_skeleton_create(r, 3, nullptr, ok.inverseBind.data(), ok.translation.data(), ok.rotation.data(),
+                              ok.scale.data()) == 0);
+
+    ChainData selfParent = ok;
+    selfParent.parents[1] = 1;
+    CHECK(CreateSkeleton(r, selfParent) == 0);
+    ChainData laterParent = ok;
+    laterParent.parents[0] = 2;  // 부모가 자식보다 뒤에 옴
+    CHECK(CreateSkeleton(r, laterParent) == 0);
+    ChainData badParent = ok;
+    badParent.parents[2] = -2;
+    CHECK(CreateSkeleton(r, badParent) == 0);
+    CHECK(std::strlen(gge_last_error()) > 0);
+
+    ChainData nan = ok;
+    nan.translation[4] = std::nanf("");
+    CHECK(CreateSkeleton(r, nan) == 0);
+    ChainData nanMatrix = ok;
+    nanMatrix.inverseBind[5] = INFINITY;
+    CHECK(CreateSkeleton(r, nanMatrix) == 0);
+    ChainData zeroQuat = ok;
+    zeroQuat.rotation[4] = zeroQuat.rotation[5] = zeroQuat.rotation[6] = zeroQuat.rotation[7] = 0;
+    CHECK(CreateSkeleton(r, zeroQuat) == 0);
+
+    CHECK(CreateSkeleton(r, MakeChain(64)) > 0);  // 상한은 허용
+    gge_renderer_destroy(r);
+}
+
+void Test_ClipRejectsBadInput()
+{
+    GgeRenderer* r = NewRenderer();
+    CHECK(RotationClip(r, 0, 1) > 0);
+    CHECK(gge_clip_create(r, 1.0f, 0, nullptr) == 0);
+
+    const KeyChannel good = ZRotation(1, 0, 1);
+    auto expectRejected = [&](KeyChannel c, float duration = 1.0f) {
+        CHECK(CreateClip(r, duration, {c}) == 0);
+        CHECK(std::strlen(gge_last_error()) > 0);
+    };
+    KeyChannel c = good;
+    c.times = {0.5f, 0.5f};  expectRejected(c);               // 증가하지 않음
+    c = good; c.times = {1.0f, 0.0f};  expectRejected(c);     // 감소
+    c = good; c.times = {0.0f, 2.0f};  expectRejected(c);     // duration 초과
+    c = good; c.times = {-0.5f, 1.0f}; expectRejected(c);     // 음수 시간
+    c = good; c.bone = -1;             expectRejected(c);
+    c = good; c.path = 7;              expectRejected(c);
+    c = good; c.values[2] = std::nanf(""); expectRejected(c);
+    c = good; c.values[0] = c.values[1] = c.values[2] = c.values[3] = 0; expectRejected(c);  // 0 쿼터니언
+    c = good; c.times.clear(); c.values.clear(); expectRejected(c);
+    expectRejected(good, -1.0f);
+    gge_renderer_destroy(r);
+}
+
+void Test_RestPoseMatchesBindChain()
+{
+    GgeRenderer* r = NewRenderer();
+    int obj = gge_object_create(r, SkinnedStrip(r), 0, 0);
+    CHECK(gge_object_set_skeleton(r, obj, ChainSkeleton(r)) == 1);
+    std::vector<V3> pos = BonePositions(r, obj, 3);
+    CHECK(Near(pos[0], {0, 0, 0}) && Near(pos[1], {0, 1, 0}) && Near(pos[2], {0, 2, 0}));
+
+    float tooSmall[16];
+    CHECK(gge_object_get_pose(r, obj, tooSmall, 1) == 0);
+    CHECK(std::string(gge_last_error()).find("too small") != std::string::npos);
+    CHECK(gge_object_get_pose(r, obj, nullptr, 3) == 0);
+
+    int plain = gge_object_create(r, 0, 0, 0);
+    CHECK(gge_object_get_pose(r, plain, tooSmall, 1) == 0);  // 스켈레톤 없음
+    gge_renderer_destroy(r);
+}
+
+void Test_ClipSamplingInterpolatesAndClamps()
+{
+    GgeRenderer* r = NewRenderer();
+    int obj = gge_object_create(r, SkinnedStrip(r), 0, 0);
+    gge_object_set_skeleton(r, obj, ChainSkeleton(r));
+    int clip = RotationClip(r, 0, kPi / 2);
+
+    // 본1을 Z축으로 θ 회전하면 본2는 본1 위치 + Rz(θ)(0,1,0) = (-sinθ, 1+cosθ, 0)
+    auto expectAt = [&](float time, float theta) {
+        CHECK(gge_object_set_pose(r, obj, clip, time, 0, 0, 0) == 1);
+        std::vector<V3> pos = BonePositions(r, obj, 3);
+        CHECK(Near(pos[1], {0, 1, 0}));  // 본1 자신의 위치는 회전으로 변하지 않는다
+        V3 expected{-std::sin(theta), 1 + std::cos(theta), 0};
+        if (!Near(pos[2], expected))
+            std::printf("  t=%g got (%g,%g,%g) expected (%g,%g,%g)\n", time, pos[2].x, pos[2].y, pos[2].z,
+                        expected.x, expected.y, expected.z);
+        CHECK(Near(pos[2], expected));
+    };
+    expectAt(0.0f, 0.0f);
+    expectAt(0.5f, kPi / 4);
+    expectAt(0.25f, kPi / 8);
+    expectAt(1.0f, kPi / 2);
+    expectAt(5.0f, kPi / 2);   // duration 초과는 마지막 키로 클램프
+    expectAt(-3.0f, 0.0f);     // 음수는 첫 키로 클램프
+    gge_renderer_destroy(r);
+}
+
+void Test_MultiKeyTranslationAndUnanimatedBonesKeepRest()
+{
+    GgeRenderer* r = NewRenderer();
+    int obj = gge_object_create(r, SkinnedStrip(r), 0, 0);
+    gge_object_set_skeleton(r, obj, ChainSkeleton(r));
+    // 본0의 이동: t=0 → y=0, t=1 → y=2, t=3 → y=2
+    int clip = CreateClip(r, 3.0f, {{0, 0, {0, 1, 3}, {0, 0, 0, 0, 2, 0, 0, 2, 0}}});
+    CHECK(clip > 0);
+
+    gge_object_set_pose(r, obj, clip, 0.5f, 0, 0, 0);
+    std::vector<V3> pos = BonePositions(r, obj, 3);
+    CHECK(Near(pos[0], {0, 1, 0}));   // 구간 [0,1]의 중간
+    CHECK(Near(pos[1], {0, 2, 0}));   // 자식은 부모를 따라간다
+    CHECK(Near(pos[2], {0, 3, 0}));
+
+    gge_object_set_pose(r, obj, clip, 2.0f, 0, 0, 0);
+    pos = BonePositions(r, obj, 3);
+    CHECK(Near(pos[0], {0, 2, 0}));   // 구간 [1,3]은 같은 값
+    CHECK(Near(pos[2], {0, 4, 0}));
+
+    // 스케일 채널: 본1을 Y로 2배 → 본2는 본1 + (0,2,0)
+    int scaleClip = CreateClip(r, 1.0f, {{1, 2, {0}, {1, 2, 1}}});
+    gge_object_set_pose(r, obj, scaleClip, 0.0f, 0, 0, 0);
+    pos = BonePositions(r, obj, 3);
+    CHECK(Near(pos[0], {0, 0, 0}) && Near(pos[1], {0, 1, 0}) && Near(pos[2], {0, 3, 0}));
+    gge_renderer_destroy(r);
+}
+
+void Test_BlendInterpolatesBetweenClips()
+{
+    GgeRenderer* r = NewRenderer();
+    int obj = gge_object_create(r, SkinnedStrip(r), 0, 0);
+    gge_object_set_skeleton(r, obj, ChainSkeleton(r));
+    int straight = RotationClip(r, 0, 0);
+    int bent = RotationClip(r, kPi / 2, kPi / 2);
+
+    auto bone2 = [&](int a, int b, float blend) {
+        CHECK(gge_object_set_pose(r, obj, a, 0.5f, b, 0.5f, blend) == 1);
+        return BonePositions(r, obj, 3)[2];
+    };
+    CHECK(Near(bone2(straight, bent, 0.0f), {0, 2, 0}));
+    CHECK(Near(bone2(straight, bent, 1.0f), {-1, 1, 0}));
+    CHECK(Near(bone2(straight, bent, 0.5f), {-std::sin(kPi / 4), 1 + std::cos(kPi / 4), 0}));
+    CHECK(Near(bone2(bent, straight, 0.5f), {-std::sin(kPi / 4), 1 + std::cos(kPi / 4), 0}));
+    CHECK(Near(bone2(0, bent, 1.0f), {-1, 1, 0}));  // 레스트 포즈에서 B로 블렌드
+
+    CHECK(gge_object_set_pose(r, obj, straight, 0, bent, 0, 1.5f) == 0);
+    CHECK(gge_object_set_pose(r, obj, straight, 0, bent, 0, -0.1f) == 0);
+    CHECK(gge_object_set_pose(r, obj, straight, 0, bent, 0, std::nanf("")) == 0);
+    CHECK(gge_object_set_pose(r, obj, straight, std::nanf(""), 0, 0, 0) == 0);
+    CHECK(gge_object_set_pose(r, obj, 999, 0, 0, 0, 0) == 0);
+    CHECK(gge_object_set_pose(r, 999, straight, 0, 0, 0, 0) == 0);
+    gge_renderer_destroy(r);
+}
+
+void Test_SkeletonCompatibilityIsEnforced()
+{
+    GgeRenderer* r = NewRenderer();
+    int skinned = SkinnedStrip(r);
+    int stat = CubeMesh(r);
+    int skeleton3 = ChainSkeleton(r, 3);
+    int skeleton1 = ChainSkeleton(r, 1);
+
+    int staticObj = gge_object_create(r, stat, 0, 0);
+    CHECK(gge_object_set_skeleton(r, staticObj, skeleton3) == 0);  // 정적 메시
+    CHECK(std::string(gge_last_error()).find("not skinned") != std::string::npos);
+
+    int obj = gge_object_create(r, skinned, 0, 0);
+    CHECK(gge_object_set_skeleton(r, obj, skeleton1) == 0);  // 메시가 본1을 쓰는데 본이 1개
+    CHECK(std::string(gge_last_error()).find("bone") != std::string::npos);
+    CHECK(gge_object_set_skeleton(r, obj, 999) == 0);
+    CHECK(gge_object_set_skeleton(r, obj, skeleton3) == 1);
+    CHECK(gge_object_set_mesh(r, obj, stat) == 0);  // 스켈레톤이 붙은 채 정적 메시로 교체 불가
+    CHECK(gge_object_set_skeleton(r, obj, 0) == 1);   // 해제 후에는 가능
+    CHECK(gge_object_set_mesh(r, obj, stat) == 1);
+
+    // 클립이 존재하지 않는 본을 가리키면 거부
+    int skinnedObj = gge_object_create(r, skinned, 0, 0);
+    gge_object_set_skeleton(r, skinnedObj, skeleton3);
+    int farClip = CreateClip(r, 1.0f, {{5, 0, {0}, {0, 0, 0}}});
+    CHECK(farClip > 0);
+    CHECK(gge_object_set_pose(r, skinnedObj, farClip, 0, 0, 0, 0) == 0);
+    CHECK(std::string(gge_last_error()).find("bone 5") != std::string::npos);
+    gge_renderer_destroy(r);
+}
+
+void Test_SkinWeightsAreValidatedAndNormalized()
+{
+    GgeRenderer* r = NewRenderer();
+    const float v[] = {-0.3f, 0, 0, 0, 0, 1, 0, 0,  0.3f, 0, 0, 0, 0, 1, 1, 0,  0, 2, 0, 0, 0, 1, 0.5f, 1};
+    const uint32_t idx[] = {0, 1, 2};
+    const uint32_t joints[] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0};
+    const float ok[] = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
+    CHECK(gge_mesh_create_skinned(r, v, 3, joints, ok, idx, 3) > 0);
+
+    float negative[12]; std::memcpy(negative, ok, sizeof ok); negative[0] = -1;
+    CHECK(gge_mesh_create_skinned(r, v, 3, joints, negative, idx, 3) == 0);
+    float nanWeight[12]; std::memcpy(nanWeight, ok, sizeof ok); nanWeight[1] = std::nanf("");
+    CHECK(gge_mesh_create_skinned(r, v, 3, joints, nanWeight, idx, 3) == 0);
+    uint32_t farJoint[12]; std::memcpy(farJoint, joints, sizeof joints); farJoint[0] = 64;
+    CHECK(gge_mesh_create_skinned(r, v, 3, farJoint, ok, idx, 3) == 0);
+    float zeroWeightFar[12]; std::memcpy(zeroWeightFar, ok, sizeof ok);
+    uint32_t farButUnused[12]; std::memcpy(farButUnused, joints, sizeof joints); farButUnused[1] = 200;  // 가중치 0이라 무시
+    CHECK(gge_mesh_create_skinned(r, v, 3, farButUnused, zeroWeightFar, idx, 3) > 0);
+    CHECK(gge_mesh_create_skinned(r, v, 3, nullptr, ok, idx, 3) == 0);
+    const float zeroSum[12] = {};
+    CHECK(gge_mesh_create_skinned(r, v, 3, joints, zeroSum, idx, 3) > 0);  // 영향 없음 → 본 0
+
+    // 가중치 {2,2,0,0}은 {0.5,0.5,0,0}과 같은 결과를 낸다(정규화).
+    const uint32_t jointsMix[] = {0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0};
+    const float big[] = {2, 2, 0, 0, 2, 2, 0, 0, 2, 2, 0, 0};
+    const float norm[] = {0.5f, 0.5f, 0, 0, 0.5f, 0.5f, 0, 0, 0.5f, 0.5f, 0, 0};
+    auto render = [&](const float* weights) {
+        int mesh = gge_mesh_create_skinned(r, v, 3, jointsMix, weights, idx, 3);
+        int obj = gge_object_create(r, mesh, 0, 0);
+        gge_object_set_skeleton(r, obj, ChainSkeleton(r, 2));
+        gge_object_set_pose(r, obj, RotationClip(r, kPi / 2, kPi / 2), 0, 0, 0, 0);
+        gge_renderer_set_camera(r, 0, 1, 5, 0, 1, 0, 0.8f);
+        Image img = Render(r);
+        gge_object_destroy(r, obj);
+        return img;
+    };
+    CHECK(render(big).bgra == render(norm).bgra);
+    gge_renderer_destroy(r);
+}
+
+int DifferingPixels(const Image& a, const Image& b, int tolerance = 2)
+{
+    int count = 0;
+    for (size_t i = 0; i < a.bgra.size(); i += 4)
+        for (int ch = 0; ch < 3; ++ch)
+            if (std::abs(int(a.bgra[i + ch]) - int(b.bgra[i + ch])) > tolerance) { ++count; break; }
+    return count;
+}
+
+void Test_SkinnedRenderMatchesDeformedStaticMesh()
+{
+    // 스키닝 결과를 CPU에서 같은 정점 변환으로 만든 정적 메시와 비교한다.
+    const float theta = kPi / 3;
+    GgeRenderer* r = NewRenderer();
+    int obj = gge_object_create(r, SkinnedStrip(r), 0, 0);
+    gge_object_set_skeleton(r, obj, ChainSkeleton(r));
+    gge_object_set_color(r, obj, 0.9f, 0.6f, 0.3f);
+    gge_renderer_set_camera(r, 0, 1, 5, 0, 1, 0, 0.8f);
+
+    Image rest = Render(r);
+    gge_object_set_pose(r, obj, RotationClip(r, theta, theta), 0, 0, 0, 0);
+    Image skinned = Render(r);
+    CHECK(DifferingPixels(rest, skinned) > 100);  // 포즈가 실제로 형상을 바꿨다
+
+    // 행1·행2(본1 소속): p' = (0,1) + Rz(θ)·(x, y-1). 법선도 같은 회전.
+    const float c = std::cos(theta), s = std::sin(theta);
+    auto deform = [&](float x, float y) { return V3{c * x - s * (y - 1), 1 + s * x + c * (y - 1), 0}; };
+    const float xs[2] = {-0.3f, 0.3f};
+    std::vector<float> v;
+    for (int row = 0; row < 3; ++row)
+        for (int col = 0; col < 2; ++col) {
+            float x = xs[col], y = static_cast<float>(row);
+            V3 p = row == 0 ? V3{x, y, 0} : deform(x, y);
+            v.insert(v.end(), {p.x, p.y, p.z, 0, 0, 1, static_cast<float>(col), 0});  // Z축 회전이라 법선은 +Z 그대로
+        }
+    const uint32_t idx[] = {0, 1, 3, 0, 3, 2, 2, 3, 5, 2, 5, 4};
+    int staticMesh = gge_mesh_create(r, v.data(), 6, idx, 12);
+    CHECK(staticMesh > 0);
+    gge_object_set_skeleton(r, obj, 0);
+    gge_object_set_mesh(r, obj, staticMesh);
+    Image expected = Render(r);
+
+    int diff = DifferingPixels(skinned, expected);
+    if (diff > 40)
+        std::printf("  differing pixels: %d\n", diff);
+    CHECK(diff <= 40);
+    gge_renderer_destroy(r);
+}
+
+void Test_ObjectTransformIsIndependentOfPose()
+{
+    GgeRenderer* r = NewRenderer();
+    int obj = gge_object_create(r, SkinnedStrip(r), 0, 0);
+    gge_object_set_skeleton(r, obj, ChainSkeleton(r));
+    gge_object_set_pose(r, obj, RotationClip(r, kPi / 2, kPi / 2), 0.5f, 0, 0, 0);
+    std::vector<V3> before = BonePositions(r, obj, 3);
+    Place(r, obj, 5, 0, 0, 2.0f);
+    std::vector<V3> after = BonePositions(r, obj, 3);  // 본 행렬은 모델 공간이라 오브젝트 변환의 영향이 없다
+    for (int i = 0; i < 3; ++i) CHECK(Near(before[i], after[i]));
+    gge_renderer_destroy(r);
+}
+
+// 높이 3, 반지름 0.3의 8각 튜브. 본(y=0,1,2) 사이를 선형으로 섞는 부드러운 스키닝.
+int SkinnedTube(GgeRenderer* r)
+{
+    const int rings = 13, sides = 8;
+    std::vector<float> v, weights;
+    std::vector<uint32_t> joints, idx;
+    for (int k = 0; k < rings; ++k) {
+        float y = k * 0.25f;
+        float lower = std::min(std::floor(y), 1.0f);  // 0 또는 1 (y>=2는 마지막 본에 고정)
+        float t = y >= 2.0f ? 1.0f : y - lower;
+        uint32_t jointA = y >= 2.0f ? 2u : static_cast<uint32_t>(lower), jointB = y >= 2.0f ? 2u : jointA + 1;
+        for (int j = 0; j < sides; ++j) {
+            float a = 2 * kPi * j / sides;
+            float nx = std::cos(a), nz = std::sin(a);
+            v.insert(v.end(), {0.3f * nx, y, 0.3f * nz, nx, 0, nz, static_cast<float>(j) / sides, y / 3.0f});
+            joints.insert(joints.end(), {jointA, jointB, 0, 0});
+            weights.insert(weights.end(), {1 - t, t, 0, 0});
+        }
+    }
+    for (int k = 0; k + 1 < rings; ++k)
+        for (int j = 0; j < sides; ++j) {
+            uint32_t a = k * sides + j, b = k * sides + (j + 1) % sides;
+            uint32_t d = (k + 1) * sides + j, c = (k + 1) * sides + (j + 1) % sides;
+            idx.insert(idx.end(), {a, d, c, a, c, b});
+        }
+    int id = gge_mesh_create_skinned(r, v.data(), rings * sides, joints.data(), weights.data(), idx.data(),
+                                     static_cast<int>(idx.size()));
+    CHECK(id > 0);
+    return id;
+}
+
+void Test_GoldenSkinnedBend()
+{
+    GgeRenderer* r = NewRenderer(320, 240);
+    int mesh = SkinnedTube(r);
+    int skeleton = ChainSkeleton(r);
+    int bend = CreateClip(r, 1.0f, {ZRotation(1, 0, kPi / 3), ZRotation(2, 0, kPi / 3)});
+    CHECK(bend > 0);
+    const float times[3] = {0.0f, 0.5f, 1.0f};
+    for (int i = 0; i < 3; ++i) {
+        int obj = gge_object_create(r, mesh, 0, 0);
+        gge_object_set_skeleton(r, obj, skeleton);
+        gge_object_set_pose(r, obj, bend, times[i], 0, 0, 0);
+        gge_object_set_color(r, obj, 0.9f, 0.6f, 0.3f);
+        Place(r, obj, -2.2f + 2.2f * i, 0, 0);
+    }
+    gge_renderer_set_camera(r, 0, 1.6f, 8, 0, 1.4f, 0, 0.8f);
+    gge_renderer_set_retro(r, 1, 5, 1, 0);
+    CHECK(MatchesGolden("skinned_bend_320x240", Render(r)));
+    gge_renderer_destroy(r);
+}
+
 }  // namespace
 
 int main()
@@ -880,6 +1325,17 @@ int main()
         {"SetParentRejectsCyclesAndUnknownIds", Test_SetParentRejectsCyclesAndUnknownIds},
         {"ObjectColorAndMeshSwap", Test_ObjectColorAndMeshSwap},
         {"GoldenSceneHierarchy", Test_GoldenSceneHierarchy},
+        {"SkeletonRejectsBadInput", Test_SkeletonRejectsBadInput},
+        {"ClipRejectsBadInput", Test_ClipRejectsBadInput},
+        {"RestPoseMatchesBindChain", Test_RestPoseMatchesBindChain},
+        {"ClipSamplingInterpolatesAndClamps", Test_ClipSamplingInterpolatesAndClamps},
+        {"MultiKeyTranslationAndUnanimatedBonesKeepRest", Test_MultiKeyTranslationAndUnanimatedBonesKeepRest},
+        {"BlendInterpolatesBetweenClips", Test_BlendInterpolatesBetweenClips},
+        {"SkeletonCompatibilityIsEnforced", Test_SkeletonCompatibilityIsEnforced},
+        {"SkinWeightsAreValidatedAndNormalized", Test_SkinWeightsAreValidatedAndNormalized},
+        {"SkinnedRenderMatchesDeformedStaticMesh", Test_SkinnedRenderMatchesDeformedStaticMesh},
+        {"ObjectTransformIsIndependentOfPose", Test_ObjectTransformIsIndependentOfPose},
+        {"GoldenSkinnedBend", Test_GoldenSkinnedBend},
     };
     for (const Case& c : cases) {
         int before = g_failures;

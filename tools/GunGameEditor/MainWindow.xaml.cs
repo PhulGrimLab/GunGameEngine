@@ -1,9 +1,11 @@
-﻿using System.IO;
+﻿using System.Diagnostics;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using GunGame.Interop;
 using GunGame.Scene;
 using Microsoft.Win32;
@@ -25,6 +27,8 @@ public partial class MainWindow : Window
     private Point? _lastMouse;
     private Point _dragStart;
     private SceneNode? _dragNode;
+    private readonly DispatcherTimer _animationTimer = new(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
+    private long _lastTick;
 
     public MainWindow()
     {
@@ -41,6 +45,7 @@ public partial class MainWindow : Window
             ApplyRetro();
             _sync = new SceneSync(_renderer);
             _sync.Changed += OnSceneChanged;
+            Inspector.ClipNamesProvider = _sync.GetClipNames;
             _sync.Attach(_document);
         }
         catch (Exception ex)
@@ -51,11 +56,28 @@ public partial class MainWindow : Window
         }
 
         if (SelfTest.IsRequested)
+        {
             Dispatcher.InvokeAsync(() => SelfTest.Run(this), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            return;  // 자동 검증은 시간을 직접 진행시켜 결과를 결정적으로 유지한다
+        }
+
+        _lastTick = Stopwatch.GetTimestamp();
+        _animationTimer.Tick += (_, _) =>
+        {
+            long now = Stopwatch.GetTimestamp();
+            float dt = (float)Stopwatch.GetElapsedTime(_lastTick, now).TotalSeconds;
+            _lastTick = now;
+            _sync?.Tick(Math.Min(dt, 0.1f));  // 창이 멈췄다 돌아올 때 애니메이션이 튀지 않게 상한을 둔다
+        };
+        _animationTimer.Start();
     }
+
+    /// <summary>애니메이션을 dt초만큼 진행시킨다(타이머와 selftest 공용).</summary>
+    internal void AdvanceAnimation(float dt) => _sync?.Tick(dt);
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        _animationTimer.Stop();
         _sync?.Dispose();
         _renderer?.Dispose();
     }
@@ -134,7 +156,7 @@ public partial class MainWindow : Window
 
     private void OnAddMesh(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFileDialog { Filter = "OBJ/GGM mesh|*.obj;*.ggm" };
+        var dialog = new OpenFileDialog { Filter = "Mesh (*.obj;*.ggm;*.glb;*.gltf)|*.obj;*.ggm;*.glb;*.gltf" };
         if (dialog.ShowDialog(this) == true)
             AddMesh(dialog.FileName);
     }
@@ -282,6 +304,9 @@ public partial class MainWindow : Window
     {
         if (_sync is { Errors.Count: > 0 } sync)
             StatusText.Text = "Load problem: " + sync.Errors[0];
+        else if (_sync is { Warnings.Count: > 0 } withWarnings)
+            StatusText.Text = "Warning: " + withWarnings.Warnings[0];
+        Inspector.UpdateClips();  // 메시가 바뀌면 클립 목록도 바뀐다
         Redraw();
     }
 
@@ -315,10 +340,12 @@ public partial class MainWindow : Window
         return target;
     }
 
+    /// <summary>애니메이션 클립이 있는 첫 노드를(없으면 첫 노드를) 선택한다.</summary>
     internal void SelectFirstNode()
     {
-        if (_document.Roots.Count > 0)
-            SelectNode(_document.Roots[0]);
+        SceneNode? node = _document.Nodes().FirstOrDefault(n => _sync?.GetClipNames(n).Count > 0) ?? _document.Roots.FirstOrDefault();
+        if (node is not null)
+            SelectNode(node);
     }
 
     internal OrbitCamera Camera => _camera;

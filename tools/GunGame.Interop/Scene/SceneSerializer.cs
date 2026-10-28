@@ -37,6 +37,9 @@ public static class SceneSerializer
         public float[]? Rotation { get; set; }
         public float[]? Scale { get; set; }
         public float[]? Color { get; set; }
+        public string? Clip { get; set; }
+        public bool? Playing { get; set; }
+        public float? Speed { get; set; }
         public List<NodeDto>? Children { get; set; }
     }
 
@@ -80,6 +83,9 @@ public static class SceneSerializer
         Rotation = ToArray(node.Rotation),
         Scale = ToArray(node.Scale),
         Color = ToArray(node.Color),
+        Clip = node.AnimationClip,
+        Playing = node.AnimationClip is null ? null : node.AnimationPlaying,
+        Speed = node.AnimationClip is null || node.AnimationSpeed == 1f ? null : node.AnimationSpeed,
         Children = node.Children.Count == 0 ? null : node.Children.Select(c => ToDto(c, baseDir)).ToList(),
     };
 
@@ -98,6 +104,10 @@ public static class SceneSerializer
         if (dto.Rotation is not null) node.Rotation = ToVec3(dto.Rotation, "rotation");
         if (dto.Scale is not null) node.Scale = ToVec3(dto.Scale, "scale");
         if (dto.Color is not null) node.Color = ToVec3(dto.Color, "color");
+        node.AnimationClip = dto.Clip;
+        if (dto.Playing is { } playing) node.AnimationPlaying = playing;
+        if (dto.Speed is { } speed)
+            node.AnimationSpeed = float.IsFinite(speed) ? speed : throw new SceneFormatException("'speed' must be a finite number");
 
         foreach (NodeDto childDto in dto.Children ?? [])
         {

@@ -1,4 +1,5 @@
 add_library(gge SHARED
+    src/animation.cpp
     src/renderer.cpp
     src/obj_loader.cpp
     src/mesh_io.cpp

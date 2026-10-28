@@ -1,5 +1,8 @@
 #include <gge/gge.h>
 
+#include <cstring>
+#include <string>
+
 #include "error.h"
 #include "mesh_io.h"
 #include "obj_loader.h"
@@ -88,6 +91,86 @@ GGE_API int gge_texture_load(GgeRenderer* r, const char* path_utf8)
     return Guard([&] {
         gge::ImageData image = gge::LoadImageFile(path_utf8 ? path_utf8 : "");
         return r->impl.CreateTexture(image.rgba.data(), image.width, image.height);
+    });
+}
+
+GGE_API int gge_mesh_create_skinned(GgeRenderer* r, const float* vertices, int vertex_count,
+                                    const uint32_t* joints, const float* weights, const uint32_t* indices,
+                                    int index_count)
+{
+    return Guard([&] {
+        if (!joints || !weights)
+            throw std::runtime_error("skinned mesh requires joints and weights");
+        return r->impl.CreateMesh(vertices, vertex_count, indices, index_count, joints, weights);
+    });
+}
+
+GGE_API int gge_skeleton_create(GgeRenderer* r, int bone_count, const int* parents, const float* inverse_bind,
+                                const float* rest_translation, const float* rest_rotation, const float* rest_scale)
+{
+    return Guard([&] {
+        if (bone_count < 1 || bone_count > gge::kMaxBones)
+            throw std::runtime_error("bone count must be in 1.." + std::to_string(gge::kMaxBones));
+        if (!parents || !inverse_bind || !rest_translation || !rest_rotation || !rest_scale)
+            throw std::runtime_error("null skeleton array");
+        gge::Skeleton skeleton;
+        skeleton.parent.assign(parents, parents + bone_count);
+        skeleton.inverseBind.resize(bone_count);
+        skeleton.rest.resize(bone_count);
+        for (int i = 0; i < bone_count; ++i) {
+            std::memcpy(&skeleton.inverseBind[i], inverse_bind + i * 16, 16 * sizeof(float));
+            skeleton.rest[i].translation = {rest_translation[i * 3], rest_translation[i * 3 + 1], rest_translation[i * 3 + 2]};
+            skeleton.rest[i].rotation = {rest_rotation[i * 4], rest_rotation[i * 4 + 1], rest_rotation[i * 4 + 2], rest_rotation[i * 4 + 3]};
+            skeleton.rest[i].scale = {rest_scale[i * 3], rest_scale[i * 3 + 1], rest_scale[i * 3 + 2]};
+        }
+        return r->impl.CreateSkeleton(std::move(skeleton));
+    });
+}
+
+GGE_API int gge_clip_create(GgeRenderer* r, float duration, int channel_count, const GgeClipChannel* channels)
+{
+    return Guard([&] {
+        if (channel_count < 1 || !channels)
+            throw std::runtime_error("clip needs at least one channel");
+        gge::Clip clip;
+        clip.duration = duration;
+        for (int i = 0; i < channel_count; ++i) {
+            const GgeClipChannel& in = channels[i];
+            if (in.path < 0 || in.path > 2)
+                throw std::runtime_error("clip channel path must be 0, 1 or 2");
+            if (in.key_count < 1 || !in.times || !in.values)
+                throw std::runtime_error("clip channel needs keys");
+            gge::ClipChannel c;
+            c.bone = in.bone;
+            c.path = static_cast<gge::ChannelPath>(in.path);
+            c.times.assign(in.times, in.times + in.key_count);
+            size_t width = in.path == 1 ? 4 : 3;
+            c.values.assign(in.values, in.values + in.key_count * width);
+            clip.channels.push_back(std::move(c));
+        }
+        return r->impl.CreateClip(std::move(clip));
+    });
+}
+
+GGE_API int gge_object_set_skeleton(GgeRenderer* r, int object_id, int skeleton_id)
+{
+    return Guard([&] { r->impl.SetObjectSkeleton(object_id, skeleton_id); return 1; });
+}
+
+GGE_API int gge_object_set_pose(GgeRenderer* r, int object_id, int clip_a, float time_a, int clip_b,
+                                float time_b, float blend)
+{
+    return Guard([&] { r->impl.SetObjectPose(object_id, clip_a, time_a, clip_b, time_b, blend); return 1; });
+}
+
+GGE_API int gge_object_get_pose(GgeRenderer* r, int object_id, float* out_matrices, int bone_capacity)
+{
+    return Guard([&] {
+        std::vector<DirectX::XMFLOAT4X4> pose = r->impl.GetObjectPose(object_id);
+        if (!out_matrices || bone_capacity < static_cast<int>(pose.size()))
+            throw std::runtime_error("output buffer too small for " + std::to_string(pose.size()) + " bones");
+        std::memcpy(out_matrices, pose.data(), pose.size() * sizeof(DirectX::XMFLOAT4X4));
+        return static_cast<int>(pose.size());
     });
 }
 

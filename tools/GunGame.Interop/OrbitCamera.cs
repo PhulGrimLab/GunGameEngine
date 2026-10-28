@@ -9,10 +9,10 @@ public sealed class OrbitCamera
     public const float MinDistance = 0.5f;
     public const float MaxDistance = 100f;
 
-    public Vec3 Target { get; set; }
+    public Vec3 Target { get; set; } = new(0, 1, 0);
     public float Yaw { get; private set; } = 0.6f;
     public float Pitch { get; private set; } = 0.4f;
-    public float Distance { get; private set; } = 6f;
+    public float Distance { get; private set; } = 10f;
 
     public Vec3 Eye
     {

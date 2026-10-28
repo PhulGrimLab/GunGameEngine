@@ -7,6 +7,8 @@
 #include <map>
 #include <vector>
 
+#include "animation.h"
+
 namespace gge {
 
 constexpr int kVertexFloats = 8;  // position(3) + normal(3) + uv(2)
@@ -26,6 +28,14 @@ struct Object {
     DirectX::XMFLOAT3 rotation{0, 0, 0};  // (pitch X, yaw Y, roll Z) 라디안
     DirectX::XMFLOAT3 scale{1, 1, 1};
     DirectX::XMFLOAT3 color{0.8f, 0.8f, 0.8f};
+
+    // 스켈레탈 애니메이션 (skeleton이 0이면 정점을 바인드 포즈 그대로 그린다)
+    int skeleton = 0;
+    int clipA = 0;  // 0이면 레스트 포즈
+    float timeA = 0;
+    int clipB = 0;  // 0이면 블렌딩 없음
+    float timeB = 0;
+    float blend = 0;  // 0이면 A, 1이면 B
 };
 
 class Renderer {
@@ -37,8 +47,12 @@ public:
     void SetCamera(DirectX::XMFLOAT3 eye, DirectX::XMFLOAT3 target, float fovY);
 
     // 리소스와 오브젝트 ID는 1부터 시작하며 종류별로 독립이다.
-    int CreateMesh(const float* vertices, int vertexCount, const uint32_t* indices, int indexCount);
+    // joints/weights가 둘 다 null이면 정적 메시. 아니면 정점당 4개씩(joints는 본 인덱스, weights는 합이 1로 정규화됨).
+    int CreateMesh(const float* vertices, int vertexCount, const uint32_t* indices, int indexCount,
+                   const uint32_t* joints = nullptr, const float* weights = nullptr);
     int CreateTexture(const uint8_t* rgba, int width, int height);
+    int CreateSkeleton(Skeleton skeleton);
+    int CreateClip(Clip clip);
 
     int CreateObject(int mesh, int texture, int parent);
     void DestroyObject(int id);  // 자손까지 함께 제거
@@ -47,6 +61,13 @@ public:
     void SetObjectTexture(int id, int texture);
     void SetObjectTransform(int id, DirectX::XMFLOAT3 position, DirectX::XMFLOAT3 rotation, DirectX::XMFLOAT3 scale);
     void SetObjectColor(int id, DirectX::XMFLOAT3 color);
+
+    // 스키닝된 메시의 최대 조인트 인덱스가 스켈레톤 본 수보다 작아야 한다. skeleton 0이면 해제.
+    void SetObjectSkeleton(int id, int skeleton);
+    // 시간은 호출자가 구동한다(엔진은 상태가 없다). clipA 0 = 레스트 포즈, clipB 0 = 블렌딩 없음.
+    void SetObjectPose(int id, int clipA, float timeA, int clipB, float timeB, float blend);
+    // 본별 모델 공간 전역 행렬(행 벡터 규약, 행 우선 16 float).
+    std::vector<DirectX::XMFLOAT4X4> GetObjectPose(int id);
 
     void Render();
 
@@ -63,11 +84,16 @@ private:
         ComPtr<ID3D11Buffer> vertices;
         ComPtr<ID3D11Buffer> indices;
         UINT indexCount = 0;
+        bool skinned = false;
+        uint32_t maxJoint = 0;  // 스키닝 메시에서 실제로 영향을 주는 최대 본 인덱스
     };
 
     Object& Get(int id);
     void RequireMesh(int id) const;
     void RequireTexture(int id) const;
+    void RequireSkeletonFits(int meshId, int skeletonId) const;
+    void RequireClipFits(int clipId, int skeletonId) const;
+    std::vector<DirectX::XMFLOAT4X4> Pose(const Object& o) const;
     DirectX::XMMATRIX LocalMatrix(const Object& o) const;
     DirectX::XMMATRIX WorldMatrix(const Object& o) const;
     ComPtr<ID3D11ShaderResourceView> MakeTexture(const uint8_t* rgba, int width, int height);
@@ -83,7 +109,9 @@ private:
     std::map<int, GpuMesh> meshes_;
     std::map<int, ComPtr<ID3D11ShaderResourceView>> textures_;
     std::map<int, Object> objects_;
-    int nextMesh_ = 1, nextTexture_ = 1, nextObject_ = 1;
+    std::map<int, Skeleton> skeletons_;
+    std::map<int, Clip> clips_;
+    int nextMesh_ = 1, nextTexture_ = 1, nextObject_ = 1, nextSkeleton_ = 1, nextClip_ = 1;
 
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> context_;
@@ -95,6 +123,7 @@ private:
     ComPtr<ID3D11PixelShader> ps_;
     ComPtr<ID3D11InputLayout> layout_;
     ComPtr<ID3D11Buffer> constants_;
+    ComPtr<ID3D11Buffer> bones_;
     ComPtr<ID3D11RasterizerState> rasterizer_;
     ComPtr<ID3D11DepthStencilState> depthState_;
     ComPtr<ID3D11SamplerState> sampler_;

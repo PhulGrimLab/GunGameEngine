@@ -20,8 +20,18 @@ public sealed class InspectorPanel : StackPanel
     private readonly TextBox[] _rotation = NewVecBoxes();
     private readonly TextBox[] _scale = NewVecBoxes();
     private readonly TextBox[] _color = NewVecBoxes();
+    private const string RestPoseLabel = "(rest pose)";
+
+    private readonly ComboBox _clip = new();
+    private readonly CheckBox _playing = new() { Content = "Playing", Margin = new Thickness(0, 4, 8, 0) };
+    private readonly TextBox _speed = new() { Width = 50 };
+    private readonly StackPanel _animationSection = new();
     private SceneNode? _node;
     private bool _refreshing;
+    private List<string> _clipNames = [];
+
+    /// <summary>노드의 메시가 가진 애니메이션 클립 이름을 돌려주는 함수(씬 동기화가 제공).</summary>
+    public Func<SceneNode, IReadOnlyList<string>> ClipNamesProvider { get; set; } = _ => [];
 
     public InspectorPanel()
     {
@@ -36,7 +46,55 @@ public sealed class InspectorPanel : StackPanel
         AddVecRow("Rotation (deg)", _rotation);
         AddVecRow("Scale", _scale);
         AddVecRow("Color (0-1)", _color);
+        BuildAnimationSection();
         Show(null);
+    }
+
+    private void BuildAnimationSection()
+    {
+        _clip.SelectionChanged += (_, _) =>
+        {
+            if (_refreshing || _node is null || _clip.SelectedIndex < 0)
+                return;
+            _node.AnimationClip = _clip.SelectedIndex == 0 ? null : _clipNames[_clip.SelectedIndex - 1];
+        };
+        _playing.Click += (_, _) => { if (!_refreshing && _node is not null) _node.AnimationPlaying = _playing.IsChecked == true; };
+        _speed.LostFocus += (_, _) => Commit();
+        _speed.KeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Enter) Commit(); };
+
+        var row = new DockPanel { Margin = new Thickness(0, 4, 0, 0) };
+        DockPanel.SetDock(_speed, Dock.Right);
+        row.Children.Add(_speed);
+        row.Children.Add(new TextBlock { Text = "Speed", Margin = new Thickness(0, 4, 4, 0) });
+        DockPanel.SetDock(row.Children[1], Dock.Right);
+        row.Children.Add(_playing);
+
+        _animationSection.Children.Add(new TextBlock { Text = "Animation", Margin = new Thickness(0, 8, 0, 2), FontWeight = FontWeights.SemiBold });
+        _animationSection.Children.Add(_clip);
+        _animationSection.Children.Add(row);
+        Children.Add(_animationSection);
+    }
+
+    /// <summary>선택 노드의 클립 목록이 바뀌었으면 콤보박스를 다시 채운다(편집 중인 입력은 건드리지 않는다).</summary>
+    public void UpdateClips()
+    {
+        List<string> names = _node is null ? [] : ClipNamesProvider(_node).ToList();
+        _animationSection.Visibility = names.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        if (!names.SequenceEqual(_clipNames) || _clip.Items.Count != names.Count + 1)
+        {
+            _refreshing = true;
+            _clipNames = names;
+            _clip.Items.Clear();
+            _clip.Items.Add(RestPoseLabel);
+            foreach (string name in names)
+                _clip.Items.Add(name);
+            _refreshing = false;
+        }
+        _refreshing = true;
+        int index = _node?.AnimationClip is { } clip ? names.IndexOf(clip) + 1 : 0;
+        _clip.SelectedIndex = Math.Max(index, 0);
+        _playing.IsChecked = _node?.AnimationPlaying ?? true;
+        _refreshing = false;
     }
 
     public void Show(SceneNode? node)
@@ -65,7 +123,9 @@ public sealed class InspectorPanel : StackPanel
         Fill(_rotation, n?.Rotation ?? default, DegreesPerRadian);
         Fill(_scale, n?.Scale ?? new Vec3(1, 1, 1), 1f);
         Fill(_color, n?.Color ?? default, 1f);
+        _speed.Text = Format(n?.AnimationSpeed ?? 1f);
         _refreshing = false;
+        UpdateClips();
     }
 
     private void Commit()
@@ -77,6 +137,7 @@ public sealed class InspectorPanel : StackPanel
         _node.Rotation = Read(_rotation, _node.Rotation, DegreesPerRadian);
         _node.Scale = Read(_scale, _node.Scale, 1f);
         _node.Color = Read(_color, _node.Color, 1f);
+        _node.AnimationSpeed = Parse(_speed.Text, _node.AnimationSpeed);
         Refresh();  // 잘못 입력한 값은 이전 값으로 되돌린다
     }
 

@@ -32,6 +32,7 @@ internal static class SelfTest
             if (window.SceneErrors.Count > 0) { Fail(window, window.SceneErrors[0]); return; }
 
             window.Camera.Rotate(0.3f, 0.1f);  // 마우스 오빗과 같은 경로를 한 번 통과시킨다
+            window.AdvanceAnimation(0.5f);      // 재생 중인 애니메이션 진행(타이머 대신 결정적으로)
             window.Redraw();
 
             SavePng(window.CaptureViewport(), output);

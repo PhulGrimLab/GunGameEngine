@@ -37,6 +37,40 @@ GGE_API int gge_texture_create(GgeRenderer* r, const uint8_t* rgba, int width, i
 // PNG/BMP/JPEG 등(WIC가 읽을 수 있는 형식).
 GGE_API int gge_texture_load(GgeRenderer* r, const char* path_utf8);
 
+// ---- 스켈레탈 애니메이션 ----
+// 스키닝 메시: 일반 정점(float[8]) 배열 + 정점당 조인트 4개(uint32)와 가중치 4개(float).
+// 가중치는 합이 1이 되도록 정규화되고, 영향이 없는 정점(합 0)은 본 0에 고정된다. 본은 최대 64개.
+GGE_API int gge_mesh_create_skinned(GgeRenderer* r, const float* vertices, int vertex_count,
+                                    const uint32_t* joints, const float* weights,
+                                    const uint32_t* indices, int index_count);
+
+// 본은 부모가 자식보다 앞에 오도록 정렬해야 한다(parents[i] == -1 또는 < i).
+// inverse_bind: 본당 float[16], 행 벡터 규약(이동이 마지막 행; glTF의 열 우선 배열과 메모리 배치가 같다).
+// rest_*: 레스트 포즈 로컬 변환. 회전은 쿼터니언 xyzw(정규화됨).
+GGE_API int gge_skeleton_create(GgeRenderer* r, int bone_count, const int* parents, const float* inverse_bind,
+                                const float* rest_translation, const float* rest_rotation,
+                                const float* rest_scale);
+
+// path: 0 = translation(3 float/key), 1 = rotation(xyzw 4 float/key), 2 = scale(3 float/key).
+// times는 엄격히 증가하고 [0, duration] 안에 있어야 하며, 키 사이는 선형(회전은 slerp) 보간한다.
+typedef struct GgeClipChannel {
+    int bone;
+    int path;
+    int key_count;
+    const float* times;
+    const float* values;
+} GgeClipChannel;
+GGE_API int gge_clip_create(GgeRenderer* r, float duration, int channel_count, const GgeClipChannel* channels);
+
+// 스켈레톤은 스키닝 메시와 함께 써야 하며, 메시가 쓰는 최대 본 번호가 본 수보다 작아야 한다. 0이면 해제.
+GGE_API int gge_object_set_skeleton(GgeRenderer* r, int object_id, int skeleton_id);
+// 시간은 호출자가 구동한다(엔진은 [0, duration]으로 클램프). clip_a 0 = 레스트 포즈, clip_b 0 = 블렌딩 없음.
+// blend 0..1: 0이면 A, 1이면 B.
+GGE_API int gge_object_set_pose(GgeRenderer* r, int object_id, int clip_a, float time_a, int clip_b,
+                                float time_b, float blend);
+// 본별 모델 공간 전역 행렬(float[16], 행 벡터 규약)을 out에 쓰고 본 수를 반환한다. 용량이 부족하거나 실패하면 0.
+GGE_API int gge_object_get_pose(GgeRenderer* r, int object_id, float* out_matrices, int bone_capacity);
+
 // ---- 오브젝트(씬 그래프) ----
 // mesh_id 0이면 그리지 않는 그룹 노드, texture_id 0이면 흰색, parent_id 0이면 루트.
 GGE_API int gge_object_create(GgeRenderer* r, int mesh_id, int texture_id, int parent_id);

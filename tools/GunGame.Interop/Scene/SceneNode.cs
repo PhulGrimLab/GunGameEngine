@@ -18,6 +18,9 @@ public sealed class SceneNode : INotifyPropertyChanged
     private Vec3 _rotation;
     private Vec3 _scale = new(1, 1, 1);
     private Vec3 _color = new(0.8f, 0.8f, 0.8f);
+    private string? _animationClip;
+    private bool _animationPlaying = true;
+    private float _animationSpeed = 1f;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -30,6 +33,13 @@ public sealed class SceneNode : INotifyPropertyChanged
     public Vec3 Rotation { get => _rotation; set => Set(ref _rotation, value); }
     public Vec3 Scale { get => _scale; set => Set(ref _scale, value); }
     public Vec3 Color { get => _color; set => Set(ref _color, value); }
+
+    /// <summary>재생할 클립 이름(glTF 애니메이션 이름). null이면 레스트 포즈.</summary>
+    public string? AnimationClip { get => _animationClip; set => Set(ref _animationClip, value); }
+
+    public bool AnimationPlaying { get => _animationPlaying; set => Set(ref _animationPlaying, value); }
+
+    public float AnimationSpeed { get => _animationSpeed; set => Set(ref _animationSpeed, value); }
 
     public SceneNode? Parent { get; internal set; }
     public ObservableCollection<SceneNode> Children { get; } = [];

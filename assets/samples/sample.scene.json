@@ -18,6 +18,9 @@
           ]
         }
       ]
-    }
+    },
+    { "name": "Tentacle Wave", "mesh": "tentacle.glb", "position": [-3.2, -1, 2.5], "color": [0.9, 0.55, 0.3], "clip": "wave", "playing": true },
+    { "name": "Tentacle Curl", "mesh": "tentacle.glb", "position": [3.8, -1, 0], "color": [0.5, 0.8, 0.6], "clip": "curl", "playing": true, "speed": 1.5 }
   ]
 }
+
