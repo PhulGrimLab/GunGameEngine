@@ -273,6 +273,111 @@ void Test_LoadObj()
     gge_renderer_destroy(r);
 }
 
+// ---- 레트로(PS1풍) 효과 ----
+std::set<int> ChannelValues(const Image& img, int channel, int x0 = 0, int y0 = 0, int x1 = -1, int y1 = -1)
+{
+    if (x1 < 0) x1 = img.width;
+    if (y1 < 0) y1 = img.height;
+    std::set<int> values;
+    for (int y = y0; y < y1; ++y)
+        for (int x = x0; x < x1; ++x) values.insert(img.bgra[(static_cast<size_t>(y) * img.width + x) * 4 + channel]);
+    return values;
+}
+
+void Test_RetroRejectsBadColorBits()
+{
+    GgeRenderer* r = NewRenderer();
+    CHECK(gge_renderer_set_retro(r, 0, 0, 0) == 0);
+    CHECK(gge_renderer_set_retro(r, 0, 9, 0) == 0);
+    CHECK(std::strlen(gge_last_error()) > 0);
+    CHECK(gge_renderer_set_retro(r, 0, 8, 0) == 1);
+    gge_renderer_destroy(r);
+}
+
+void Test_RetroDefaultsLeaveImageUnchanged()
+{
+    GgeRenderer* r = NewRenderer();
+    SetupCubeScene(r);
+    gge_renderer_render(r);
+    Image before = Capture(r);
+    CHECK(gge_renderer_set_retro(r, 0, 8, 0) == 1);
+    gge_renderer_render(r);
+    CHECK(before.bgra == Capture(r).bgra);
+    gge_renderer_destroy(r);
+}
+
+void Test_ColorBitsQuantizeChannels()
+{
+    GgeRenderer* r = NewRenderer();
+    SetupCubeScene(r);
+
+    CHECK(gge_renderer_set_retro(r, 0, 1, 0) == 1);
+    gge_renderer_render(r);
+    Image one = Capture(r);
+    for (int ch = 0; ch < 3; ++ch)
+        for (int v : ChannelValues(one, ch)) CHECK(v == 0 || v == 255);
+
+    CHECK(gge_renderer_set_retro(r, 0, 5, 0) == 1);  // 15비트 컬러
+    gge_renderer_render(r);
+    Image five = Capture(r);
+    std::set<int> allowed;
+    for (int k = 0; k < 32; ++k) allowed.insert(static_cast<int>(std::lround(k * 255.0 / 31.0)));
+    for (int ch = 0; ch < 3; ++ch)
+        for (int v : ChannelValues(five, ch)) CHECK(allowed.count(v) == 1);
+    gge_renderer_destroy(r);
+}
+
+void Test_DitherMixesAdjacentLevels()
+{
+    // 정면 큐브의 +Z 면은 단색(R≈0.5414). 2비트(레벨 0,85,170,255)에서 디더 없이는 한 색, 디더가 있으면 인접한 두 레벨이 섞인다.
+    GgeRenderer* r = NewRenderer();
+    SetupCubeScene(r);
+    gge_renderer_set_camera(r, 0, 0, 6, 0, 0, 0, 0.8f);
+    const int cx = 70, cy = 50, size = 20;
+
+    CHECK(gge_renderer_set_retro(r, 0, 2, 0) == 1);
+    gge_renderer_render(r);
+    CHECK(ChannelValues(Capture(r), 2, cx, cy, cx + size, cy + size).size() == 1);
+
+    CHECK(gge_renderer_set_retro(r, 0, 2, 1) == 1);
+    gge_renderer_render(r);
+    std::set<int> red = ChannelValues(Capture(r), 2, cx, cy, cx + size, cy + size);
+    CHECK(red == std::set<int>({85, 170}));
+    gge_renderer_destroy(r);
+}
+
+void Test_VertexSnapRemovesSubpixelJitter()
+{
+    // 카메라를 서브픽셀만큼 움직였을 때, 스냅이 꺼져 있으면 가장자리가 변하고 켜져 있으면 정점이 같은 픽셀 격자점에 머문다.
+    GgeRenderer* r = NewRenderer(80, 60);
+    SetupCubeScene(r);
+    auto render = [&](float eyeX) {
+        gge_renderer_set_camera(r, eyeX, 3.0f, 5.0f, 0, 0, 0, 0.8f);
+        gge_renderer_render(r);
+        return Capture(r);
+    };
+
+    CHECK(gge_renderer_set_retro(r, 0, 8, 0) == 1);
+    CHECK(render(4.0f).bgra != render(4.01f).bgra);
+
+    CHECK(gge_renderer_set_retro(r, 1, 8, 0) == 1);
+    CHECK(render(4.0f).bgra == render(4.01f).bgra);
+
+    // 충분히 움직이면 스냅이 켜져 있어도 화면은 변해야 한다(고정된 것이 아님).
+    CHECK(render(4.0f).bgra != render(4.8f).bgra);
+    gge_renderer_destroy(r);
+}
+
+void Test_GoldenCubeRetro()
+{
+    GgeRenderer* r = NewRenderer(320, 240);
+    SetupCubeScene(r);
+    CHECK(gge_renderer_set_retro(r, 1, 5, 1) == 1);
+    gge_renderer_render(r);
+    CHECK(MatchesGolden("cube_retro_320x240", Capture(r)));
+    gge_renderer_destroy(r);
+}
+
 void Test_GoldenCube()
 {
     GgeRenderer* r = NewRenderer(320, 240);
@@ -297,6 +402,12 @@ int main()
         {"SetMeshRejectsBadInput", Test_SetMeshRejectsBadInput},
         {"LoadObj", Test_LoadObj},
         {"GoldenCube", Test_GoldenCube},
+        {"RetroRejectsBadColorBits", Test_RetroRejectsBadColorBits},
+        {"RetroDefaultsLeaveImageUnchanged", Test_RetroDefaultsLeaveImageUnchanged},
+        {"ColorBitsQuantizeChannels", Test_ColorBitsQuantizeChannels},
+        {"DitherMixesAdjacentLevels", Test_DitherMixesAdjacentLevels},
+        {"VertexSnapRemovesSubpixelJitter", Test_VertexSnapRemovesSubpixelJitter},
+        {"GoldenCubeRetro", Test_GoldenCubeRetro},
     };
     for (const Case& c : cases) {
         int before = g_failures;

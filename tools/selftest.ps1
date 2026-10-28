@@ -15,5 +15,15 @@ try {
     $corner = $bmp.GetPixel(0, 0).ToArgb()
     $center = $bmp.GetPixel([int]($bmp.Width / 2), [int]($bmp.Height / 2)).ToArgb()
     if ($corner -eq $center) { Write-Error "viewer rendered no object (center == background)"; exit 1 }
+    # 뷰어는 기본적으로 15비트 컬러(채널당 32레벨)이므로 채널 값이 허용 집합 안에 있어야 한다.
+    $allowed = @{}; 0..31 | ForEach-Object { $allowed[[int][Math]::Round($_ * 255 / 31, [MidpointRounding]::AwayFromZero)] = $true }
+    for ($y = 0; $y -lt $bmp.Height; $y += 3) {
+        for ($x = 0; $x -lt $bmp.Width; $x += 3) {
+            $c = $bmp.GetPixel($x, $y)
+            foreach ($v in $c.R, $c.G, $c.B) {
+                if (-not $allowed.ContainsKey([int]$v)) { Write-Error "channel value $v at ($x,$y) is not 5-bit quantized"; exit 1 }
+            }
+        }
+    }
     Write-Host "viewer selftest OK ($($bmp.Width)x$($bmp.Height)) -> $out"
 } finally { $bmp.Dispose() }

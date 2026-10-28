@@ -6,6 +6,10 @@
     <DockPanel>
         <ToolBar DockPanel.Dock="Top">
             <Button Content="Open OBJ..." Click="OnOpenObj" />
+            <Separator />
+            <CheckBox x:Name="SnapCheck" Content="Vertex snap" IsChecked="True" Click="OnRetroChanged" />
+            <CheckBox x:Name="BitsCheck" Content="15-bit color" IsChecked="True" Click="OnRetroChanged" />
+            <CheckBox x:Name="DitherCheck" Content="Dither" IsChecked="True" Click="OnRetroChanged" />
         </ToolBar>
         <StatusBar DockPanel.Dock="Bottom">
             <TextBlock x:Name="StatusText" Text="Drag: orbit, Wheel: zoom" />

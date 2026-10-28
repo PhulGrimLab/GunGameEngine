@@ -30,6 +30,10 @@ GGE_API void gge_renderer_set_camera(GgeRenderer* r, float eye_x, float eye_y, f
                                      float fov_y_radians);
 GGE_API void gge_renderer_set_color(GgeRenderer* r, float red, float green, float blue);
 
+// PS1풍 효과. 기본값은 모두 꺼짐(vertex_snap=0, color_bits=8, dither=0).
+// color_bits는 채널당 비트 수(1..8, 8이면 양자화 없음). 범위를 벗어나면 0을 반환한다.
+GGE_API int gge_renderer_set_retro(GgeRenderer* r, int vertex_snap, int color_bits, int dither);
+
 GGE_API int gge_renderer_render(GgeRenderer* r);
 
 // BGRA8 프레임버퍼. 다음 render 호출 전까지 유효하며 소유권은 엔진에 있다.

@@ -2,6 +2,7 @@
 
 #include <d3dcompiler.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -19,18 +20,32 @@ cbuffer Frame : register(b0) {
     float4x4 viewProj;
     float4 lightDir;
     float4 color;
+    float4 retro;   // x: vertex snap, y: color levels (0 = off), z: dither
+    float4 screen;  // xy: render target size in pixels
 };
 struct VSIn  { float3 pos : POSITION; float3 nrm : NORMAL; };
 struct VSOut { float4 pos : SV_POSITION; float3 nrm : NORMAL; };
 VSOut vs(VSIn i) {
     VSOut o;
-    o.pos = mul(viewProj, float4(i.pos, 1));
+    float4 p = mul(viewProj, float4(i.pos, 1));
+    if (retro.x > 0.5 && p.w > 0) {
+        float2 grid = screen.xy * 0.5;
+        p.xy = round(p.xy / p.w * grid) / grid * p.w;
+    }
+    o.pos = p;
     o.nrm = i.nrm;
     return o;
 }
 float4 ps(VSOut i) : SV_Target {
     float d = saturate(dot(normalize(i.nrm), -lightDir.xyz));
-    return float4(color.rgb * (0.25 + 0.75 * d), 1);
+    float3 c = color.rgb * (0.25 + 0.75 * d);
+    if (retro.y > 0) {
+        static const float bayer[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
+        uint2 px = (uint2)i.pos.xy & 3;
+        float t = (bayer[px.y * 4 + px.x] + 0.5) / 16.0 - 0.5;
+        c = saturate(floor(c * retro.y + t * retro.z + 0.5) / retro.y);
+    }
+    return float4(c, 1);
 }
 )";
 
@@ -38,6 +53,8 @@ struct Constants {
     XMFLOAT4X4 viewProj;
     XMFLOAT4 lightDir;
     XMFLOAT4 color;
+    XMFLOAT4 retro;
+    XMFLOAT4 screen;
 };
 
 void Check(HRESULT hr, const char* what)
@@ -160,6 +177,13 @@ void Renderer::SetMesh(const float* vertices, int vertexCount, const uint32_t* i
     indexCount_ = static_cast<UINT>(indexCount);
 }
 
+void Renderer::SetRetro(const RetroSettings& settings)
+{
+    if (settings.colorBits < 1 || settings.colorBits > 8)
+        throw std::runtime_error("color_bits must be in 1..8");
+    retro_ = settings;
+}
+
 void Renderer::SetCamera(XMFLOAT3 eye, XMFLOAT3 target, float fovY)
 {
     eye_ = eye;
@@ -169,7 +193,12 @@ void Renderer::SetCamera(XMFLOAT3 eye, XMFLOAT3 target, float fovY)
 
 void Renderer::Render()
 {
-    const float clear[4] = {0.05f, 0.05f, 0.08f, 1.0f};
+    float clear[4] = {0.05f, 0.05f, 0.08f, 1.0f};
+    if (retro_.colorBits < 8) {  // 배경도 셰이더 출력과 같은 색 깊이로 맞춘다
+        const float levels = static_cast<float>((1 << retro_.colorBits) - 1);
+        for (int i = 0; i < 3; ++i)
+            clear[i] = std::floor(clear[i] * levels + 0.5f) / levels;
+    }
     context_->ClearRenderTargetView(rtv_.Get(), clear);
     context_->ClearDepthStencilView(dsv_.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
 
@@ -182,6 +211,10 @@ void Renderer::Render()
         XMStoreFloat4x4(&c.viewProj, view * proj);
         XMStoreFloat4(&c.lightDir, XMVector3Normalize(XMVectorSet(-0.4f, -1.0f, -0.6f, 0)));
         c.color = {color_.x, color_.y, color_.z, 1};
+        c.retro = {retro_.vertexSnap ? 1.0f : 0.0f,
+                   retro_.colorBits >= 8 ? 0.0f : static_cast<float>((1 << retro_.colorBits) - 1),
+                   retro_.dither ? 1.0f : 0.0f, 0};
+        c.screen = {static_cast<float>(width_), static_cast<float>(height_), 0, 0};
         context_->UpdateSubresource(constants_.Get(), 0, nullptr, &c, 0, 0);
 
         D3D11_VIEWPORT vp{0, 0, static_cast<float>(width_), static_cast<float>(height_), 0, 1};

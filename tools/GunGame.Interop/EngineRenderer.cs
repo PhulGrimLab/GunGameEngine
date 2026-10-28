@@ -35,6 +35,10 @@ public sealed unsafe class EngineRenderer : IDisposable
 
     public void SetColor(float r, float g, float b) => Native.gge_renderer_set_color(Handle, r, g, b);
 
+    /// <summary>PS1풍 효과. colorBits는 채널당 1..8비트(8이면 양자화 없음).</summary>
+    public void SetRetro(bool vertexSnap, int colorBits, bool dither) =>
+        Check(Native.gge_renderer_set_retro(Handle, vertexSnap ? 1 : 0, colorBits, dither ? 1 : 0));
+
     public void Render() => Check(Native.gge_renderer_render(Handle));
 
     /// <summary>BGRA8 프레임버퍼. 다음 Render 호출 전까지만 유효하다.</summary>
@@ -87,6 +91,9 @@ public sealed unsafe class EngineRenderer : IDisposable
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern void gge_renderer_set_color(nint renderer, float r, float g, float b);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_renderer_set_retro(nint renderer, int vertexSnap, int colorBits, int dither);
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern int gge_renderer_render(nint renderer);

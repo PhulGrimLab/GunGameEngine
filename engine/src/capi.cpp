@@ -63,6 +63,11 @@ GGE_API void gge_renderer_set_color(GgeRenderer* r, float red, float green, floa
     r->impl.SetColor(red, green, blue);
 }
 
+GGE_API int gge_renderer_set_retro(GgeRenderer* r, int vertex_snap, int color_bits, int dither)
+{
+    return Guard([&] { r->impl.SetRetro({vertex_snap != 0, color_bits, dither != 0}); });
+}
+
 GGE_API int gge_renderer_render(GgeRenderer* r)
 {
     return Guard([&] { r->impl.Render(); });

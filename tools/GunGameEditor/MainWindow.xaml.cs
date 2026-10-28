@@ -30,6 +30,7 @@ public partial class MainWindow : Window
         try
         {
             _renderer = new EngineRenderer(RenderWidth, RenderHeight, useWarp: SelfTest.IsRequested);
+            ApplyRetro();
             Redraw();
         }
         catch (Exception ex)
@@ -51,6 +52,15 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog(this) == true)
             LoadObj(dialog.FileName);
     }
+
+    private void OnRetroChanged(object sender, RoutedEventArgs e)
+    {
+        ApplyRetro();
+        Redraw();
+    }
+
+    private void ApplyRetro() =>
+        _renderer?.SetRetro(SnapCheck.IsChecked == true, BitsCheck.IsChecked == true ? 5 : 8, DitherCheck.IsChecked == true);
 
     internal bool LoadObj(string path)
     {

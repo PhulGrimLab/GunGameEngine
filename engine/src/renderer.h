@@ -8,10 +8,18 @@
 
 namespace gge {
 
+struct RetroSettings {
+    bool vertexSnap = false;  // 클립 공간 정점을 렌더 타깃 픽셀 격자에 스냅
+    int colorBits = 8;        // 채널당 비트 수. 8이면 양자화 없음
+    bool dither = false;      // 4x4 오더드 디더 (colorBits < 8일 때만 의미 있음)
+};
+
 class Renderer {
 public:
     Renderer(int width, int height, bool useWarp);
 
+    // colorBits가 1..8 범위가 아니면 예외.
+    void SetRetro(const RetroSettings& settings);
     void SetMesh(const float* vertices, int vertexCount, const uint32_t* indices, int indexCount);
     void SetCamera(DirectX::XMFLOAT3 eye, DirectX::XMFLOAT3 target, float fovY);
     void SetColor(float r, float g, float b) { color_ = {r, g, b}; }
@@ -32,6 +40,7 @@ private:
     DirectX::XMFLOAT3 target_{0, 0, 0};
     float fovY_ = 1.0f;
     DirectX::XMFLOAT3 color_{0.8f, 0.8f, 0.8f};
+    RetroSettings retro_;
     UINT indexCount_ = 0;
     std::vector<uint8_t> pixels_;
 

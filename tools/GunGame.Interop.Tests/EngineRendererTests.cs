@@ -108,6 +108,34 @@ public class EngineRendererTests
     }
 
     [Fact]
+    public void SetRetro_InvalidBits_Throws()
+    {
+        using var r = new EngineRenderer(16, 16, useWarp: true);
+        Assert.Throws<EngineException>(() => r.SetRetro(false, 0, false));
+        Assert.Throws<EngineException>(() => r.SetRetro(false, 9, false));
+        r.SetRetro(true, 5, true);
+    }
+
+    [Fact]
+    public void SetRetro_OneBit_ProducesOnlyBlackOrFullChannels()
+    {
+        string path = WriteTemp(CubeObj);
+        try
+        {
+            using var r = new EngineRenderer(96, 72, useWarp: true);
+            r.LoadObj(path);
+            r.SetCamera(new Vec3(4, 3, 5), new Vec3(0, 0, 0), 0.8f);
+            r.SetRetro(vertexSnap: false, colorBits: 1, dither: false);
+            r.Render();
+            ReadOnlySpan<byte> px = r.Pixels;
+            for (int i = 0; i < px.Length; i += 4)
+                for (int c = 0; c < 3; c++)
+                    Assert.True(px[i + c] is 0 or 255, $"channel value {px[i + c]} at byte {i + c}");
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
     public void Dispose_IsIdempotent_AndUseAfterDisposeThrows()
     {
         var r = new EngineRenderer(16, 16, useWarp: true);
