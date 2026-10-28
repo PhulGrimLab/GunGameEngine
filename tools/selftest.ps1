@@ -4,7 +4,7 @@ $exe = Join-Path $root "tools\GunGameEditor\bin\Debug\net10.0-windows\GunGameEdi
 $out = Join-Path ([IO.Path]::GetTempPath()) "gge_viewer_selftest.png"
 Remove-Item $out -ErrorAction SilentlyContinue
 
-$p = Start-Process -FilePath $exe -ArgumentList "--selftest", (Join-Path $root "assets\samples\cube.obj"), $out -PassThru
+$p = Start-Process -FilePath $exe -ArgumentList "--selftest", (Join-Path $root "assets\samples\sample.scene.json"), $out -PassThru
 if (-not $p.WaitForExit(30000)) { $p.Kill(); Write-Error "selftest timed out"; exit 1 }
 if ($p.ExitCode -ne 0) { Write-Error "selftest exit code $($p.ExitCode)"; exit 1 }
 if (-not (Test-Path $out)) { Write-Error "no output png"; exit 1 }
