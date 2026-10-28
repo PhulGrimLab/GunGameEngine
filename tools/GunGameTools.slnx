@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="GunGame.Interop.Tests/GunGame.Interop.Tests.csproj" />
+  <Project Path="GunGame.Interop/GunGame.Interop.csproj" />
+  <Project Path="GunGameEditor/GunGameEditor.csproj" />
+</Solution>

@@ -1,0 +1,20 @@
+﻿<Window x:Class="GunGameEditor.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="GunGame Editor" Height="600" Width="860"
+        Loaded="OnLoaded" Closed="OnClosed">
+    <DockPanel>
+        <ToolBar DockPanel.Dock="Top">
+            <Button Content="Open OBJ..." Click="OnOpenObj" />
+        </ToolBar>
+        <StatusBar DockPanel.Dock="Bottom">
+            <TextBlock x:Name="StatusText" Text="Drag: orbit, Wheel: zoom" />
+        </StatusBar>
+        <Border Background="Black">
+            <Image x:Name="Viewport" Stretch="Uniform"
+                   RenderOptions.BitmapScalingMode="NearestNeighbor"
+                   MouseLeftButtonDown="OnMouseDown" MouseLeftButtonUp="OnMouseUp"
+                   MouseMove="OnMouseMove" MouseWheel="OnMouseWheel" />
+        </Border>
+    </DockPanel>
+</Window>

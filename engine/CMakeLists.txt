@@ -1,0 +1,14 @@
+add_library(gge SHARED
+    src/renderer.cpp
+    src/obj_loader.cpp
+    src/capi.cpp)
+target_include_directories(gge PUBLIC include PRIVATE src)
+target_compile_definitions(gge PRIVATE GGE_EXPORTS NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(gge PRIVATE /W4 /utf-8)
+target_link_libraries(gge PRIVATE d3d11 d3dcompiler dxgi)
+
+add_executable(engine_tests tests/engine_tests.cpp)
+target_link_libraries(engine_tests PRIVATE gge)
+target_compile_options(engine_tests PRIVATE /W4 /utf-8)
+add_test(NAME engine_tests COMMAND engine_tests)
+target_compile_definitions(engine_tests PRIVATE GGE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests")

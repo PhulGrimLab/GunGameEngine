@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PlatformTarget>x64</PlatformTarget>
+    <GgeBinDir>$(MSBuildThisFileDirectory)..\..\build\bin\</GgeBinDir>
+  </PropertyGroup>
+
+  <!-- 엔진 DLL은 build.cmd가 먼저 빌드한다. 참조하는 프로젝트의 출력 폴더로 함께 복사된다. -->
+  <ItemGroup>
+    <None Include="$(GgeBinDir)gge.dll" Link="gge.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('$(GgeBinDir)gge.dll')" />
+  </ItemGroup>
+
+</Project>
