@@ -301,4 +301,17 @@ GGE_API int gge_world_move_circle(const GgeWorld* w, float x, float z, float dx,
     });
 }
 
+GGE_API int gge_world_move_input(GgeWorld* w, float input_x, float input_y, float speed, float dt, float* out_dxdz)
+{
+    return Guard([&] {
+        if (!out_dxdz) {
+            throw std::runtime_error("null output argument");
+        }
+        gge::Vec2 move = w->impl.MoveInput(input_x, input_y, speed, dt);
+        out_dxdz[0] = move.x;
+        out_dxdz[1] = move.z;
+        return 1;
+    });
+}
+
 GGE_API const char* gge_last_error(void) { return gge::LastError().c_str(); }

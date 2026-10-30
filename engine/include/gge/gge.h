@@ -135,5 +135,13 @@ GGE_API int gge_world_add_box_collider(GgeWorld* w, float min_x, float min_z, fl
 GGE_API int gge_world_move_circle(const GgeWorld* w, float x, float z, float dx, float dz, float radius,
                                   float* out_xz);
 
+// 카메라 상대 이동. input_x(오른쪽+), input_y(화면 위쪽/앞+)는 -1..1 정규화 축(키보드/게임패드 읽기는 호출자 몫).
+// 활성 방 카메라 시선의 수평 성분이 "앞", 앞 x 위가 "오른쪽"이다. 입력 크기는 1로 제한(대각선 속도 동일)하고 0.2 미만은
+// 입력 없음이다. out_dxdz(float[2])에 한 프레임 이동량 = 방향 x speed(월드 단위/초) x dt(초)를 쓴다.
+// 카메라 컷: 입력을 누르고 있는 동안 활성 방이 바뀌어도 방향 기준은 입력을 시작한 방 카메라로 유지하고, 입력을
+// 놓으면(0.2 미만) 현재 활성 방 기준으로 갱신한다. 활성 방이 없거나 비유한/음수 speed,dt이면 실패한다.
+// 결과를 gge_world_move_circle에 넘기면 충돌까지 반영된다. gge_world_add_room은 거의 수직으로 내려보는 카메라를 거부한다.
+GGE_API int gge_world_move_input(GgeWorld* w, float input_x, float input_y, float speed, float dt, float* out_dxdz);
+
 // 마지막 오류 메시지(UTF-8). 스레드별로 유지된다.
 GGE_API const char* gge_last_error(void);

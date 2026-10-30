@@ -1574,6 +1574,142 @@ void Test_RandomWalkNeverPenetratesAndStaysInArena()
     gge_world_destroy(w);
 }
 
+// ---- 6단계: 입력 (카메라 상대 이동) ----
+// 북쪽 카메라: -Z를 바라본다(앞 = -Z, 오른쪽 = +X). 동쪽 카메라: +X를 바라본다(앞 = +X, 오른쪽 = +Z).
+const float kEyeNorth[3] = {0, 5, 10}, kEyeEast[3] = {-10, 5, 0};
+
+int AddCamRoom(GgeWorld* w, float x0, float z0, float x1, float z1, const float* eye)
+{
+    auto rect = Rect(x0, z0, x1, z1);
+    int id = gge_world_add_room(w, rect.data(), 4, eye, kLookAt, 0.8f);
+    CHECK(id > 0);
+    return id;
+}
+
+P2 Input(GgeWorld* w, float ix, float iy, float speed = 2.0f, float dt = 0.5f)
+{
+    float out[2] = {-999.0f, -999.0f};
+    CHECK(gge_world_move_input(w, ix, iy, speed, dt, out) == 1);
+    return {out[0], out[1]};
+}
+
+bool Near(P2 p, float x, float z) { return std::fabs(p.x - x) < 1e-4f && std::fabs(p.z - z) < 1e-4f; }
+
+void Test_MoveInputRejectsBadInput()
+{
+    GgeWorld* w = gge_world_create();
+    float out[2];
+    CHECK(gge_world_move_input(w, 0, 1, 1, 1, out) == 0);  // 방이 없다
+    AddCamRoom(w, -5, -5, 5, 5, kEyeNorth);
+    CHECK(gge_world_move_input(w, 0, 1, 1, 1, out) == 0);  // 방은 있으나 활성 방이 아직 없다
+    CHECK(std::strstr(gge_last_error(), "no active room") != nullptr);
+    gge_world_update_active_room(w, 0, 0);
+    CHECK(gge_world_move_input(w, 0, 1, 1, 1, out) == 1);
+    CHECK(gge_world_move_input(w, std::nanf(""), 1, 1, 1, out) == 0);
+    CHECK(gge_world_move_input(w, 0, INFINITY, 1, 1, out) == 0);
+    CHECK(gge_world_move_input(w, 0, 1, -1, 1, out) == 0);
+    CHECK(gge_world_move_input(w, 0, 1, 1, -0.1f, out) == 0);
+    CHECK(gge_world_move_input(w, 0, 1, 1, 1, nullptr) == 0);
+
+    // 수직으로 내려보는 카메라는 "앞" 방향이 없어 방 등록 단계에서 거부한다(카메라가 약간만 기울어도 허용).
+    auto sq = Rect(0, 0, 2, 2);
+    const float top[3] = {0, 10, 0};
+    CHECK(gge_world_add_room(w, sq.data(), 4, top, kLookAt, 0.8f) == 0);
+    CHECK(std::strstr(gge_last_error(), "straight up or down") != nullptr);
+    const float steep[3] = {0, 10, 0.5f};
+    CHECK(gge_world_add_room(w, sq.data(), 4, steep, kLookAt, 0.8f) > 0);
+    gge_world_destroy(w);
+}
+
+void Test_InputIsRelativeToCameraDirection()
+{
+    // 속도 2 x dt 0.5 = 1. 같은 입력이 카메라에 따라 다른 월드 방향이 된다.
+    GgeWorld* north = gge_world_create();
+    AddCamRoom(north, -5, -5, 5, 5, kEyeNorth);
+    gge_world_update_active_room(north, 0, 0);
+    CHECK(Near(Input(north, 0, 1), 0, -1));   // 위 = 앞 = -Z
+    CHECK(Near(Input(north, 0, -1), 0, 1));
+    CHECK(Near(Input(north, 1, 0), 1, 0));    // 오른쪽 = +X
+    CHECK(Near(Input(north, -1, 0), -1, 0));
+    gge_world_destroy(north);
+
+    GgeWorld* east = gge_world_create();
+    AddCamRoom(east, -5, -5, 5, 5, kEyeEast);
+    gge_world_update_active_room(east, 0, 0);
+    CHECK(Near(Input(east, 0, 1), 1, 0));     // 앞 = +X
+    CHECK(Near(Input(east, 1, 0), 0, 1));     // 오른쪽 = +Z (앞 x 위)
+    gge_world_destroy(east);
+
+    // 카메라가 기울어도(높이 차) 이동은 바닥 평면에서만 일어나고 크기는 같다.
+    GgeWorld* tilted = gge_world_create();
+    const float eye[3] = {3, 9, 4};  // 시선 수평 성분 (-3,-4)/5
+    AddCamRoom(tilted, -5, -5, 5, 5, eye);
+    gge_world_update_active_room(tilted, 0, 0);
+    CHECK(Near(Input(tilted, 0, 1), -0.6f, -0.8f));
+    CHECK(Near(Input(tilted, 1, 0), 0.8f, -0.6f));
+    gge_world_destroy(tilted);
+}
+
+void Test_InputMagnitudeIsClampedAndDeadzoned()
+{
+    GgeWorld* w = gge_world_create();
+    AddCamRoom(w, -5, -5, 5, 5, kEyeNorth);
+    gge_world_update_active_room(w, 0, 0);
+    P2 diagonal = Input(w, 1, 1);  // 대각선도 길이 1(= speed x dt)
+    CHECK(std::fabs(std::hypot(diagonal.x, diagonal.z) - 1.0f) < 1e-4f);
+    CHECK(Near(Input(w, 0, 5), 0, -1));       // 범위를 넘는 입력도 1로 제한
+    CHECK(Near(Input(w, 0, 0.5f), 0, -0.5f));  // 아날로그는 비례
+    CHECK(Near(Input(w, 0.1f, 0.1f), 0, 0));   // 데드존 안(크기 0.14)
+    CHECK(Near(Input(w, 0.19f, 0), 0, 0));
+    CHECK(!Near(Input(w, 0.2f, 0), 0, 0));     // 데드존 경계는 입력으로 본다
+    CHECK(Near(Input(w, 0, 1, 0, 0.5f), 0, 0));  // speed 0, dt 0이면 이동 없음
+    CHECK(Near(Input(w, 0, 1, 2, 0), 0, 0));
+    gge_world_destroy(w);
+}
+
+void Test_CameraCutKeepsInputDirectionUntilRelease()
+{
+    GgeWorld* w = gge_world_create();
+    AddCamRoom(w, 0, -5, 10, 5, kEyeNorth);   // 방 1: 앞 = -Z
+    AddCamRoom(w, 10, -5, 20, 5, kEyeEast);   // 방 2: 앞 = +X
+    CHECK(gge_world_update_active_room(w, 5, 0) == 1);
+    CHECK(Near(Input(w, 0, 1), 0, -1));
+
+    CHECK(gge_world_update_active_room(w, 15, 0) == 2);  // 앞을 누른 채 방 2로 진입(카메라 컷)
+    CHECK(Near(Input(w, 0, 1), 0, -1));                  // 방향은 방 1 기준 유지: 되돌아가지 않는다
+    CHECK(Near(Input(w, 1, 0), 1, 0));                   // 누른 채 방향만 바꿔도 아직 방 1 기준(오른쪽 = +X)
+    CHECK(Near(Input(w, 0, 0), 0, 0));                   // 놓으면 방 2 기준으로 갱신
+    CHECK(Near(Input(w, 0, 1), 1, 0));                   // 다시 누르면 방 2 기준(앞 = +X)
+
+    CHECK(gge_world_update_active_room(w, 5, 0) == 1);   // 반대로 방 1로 컷
+    CHECK(Near(Input(w, 0, 1), 1, 0));                   // 여전히 방 2 기준
+    CHECK(Near(Input(w, 0.1f, 0.1f), 0, 0));             // 데드존 안도 "놓음"으로 갱신
+    CHECK(Near(Input(w, 0, 1), 0, -1));                  // 방 1 기준
+    gge_world_destroy(w);
+}
+
+void Test_InputMoveThroughCollisionPerCamera()
+{
+    // 같은 입력(앞)이라도 카메라가 다르면 가는 방향이 다르고, 벽(x in [3,4])에는 동쪽 카메라일 때만 막힌다.
+    auto run = [](const float* eye) {
+        GgeWorld* w = gge_world_create();
+        AddCamRoom(w, -10, -10, 10, 10, eye);
+        gge_world_add_box_collider(w, 3, -10, 4, 10);
+        P2 pos = {0, 0};
+        for (int i = 0; i < 120; ++i) {  // 2초, 속도 2 => 거리 4
+            gge_world_update_active_room(w, pos.x, pos.z);
+            P2 d = Input(w, 0, 1, 2.0f, 1.0f / 60.0f);
+            pos = Move(w, pos.x, pos.z, d.x, d.z, 0.5f);
+        }
+        gge_world_destroy(w);
+        return pos;
+    };
+    P2 east = run(kEyeEast);    // +X로 가다 벽 앞(x = 3 - 0.5)에서 멈춘다
+    CHECK(std::fabs(east.x - 2.5f) < kTol && std::fabs(east.z) < kTol);
+    P2 north = run(kEyeNorth);  // -Z로 자유 이동
+    CHECK(std::fabs(north.x) < kTol && std::fabs(north.z + 4.0f) < 1e-2f);
+}
+
 }  // namespace
 
 int main()
@@ -1633,6 +1769,11 @@ int main()
         {"OverlappingStartIsPushedOut", Test_OverlappingStartIsPushedOut},
         {"NarrowGapBlocksOnlyWhenSmallerThanDiameter", Test_NarrowGapBlocksOnlyWhenSmallerThanDiameter},
         {"RandomWalkNeverPenetratesAndStaysInArena", Test_RandomWalkNeverPenetratesAndStaysInArena},
+        {"MoveInputRejectsBadInput", Test_MoveInputRejectsBadInput},
+        {"InputIsRelativeToCameraDirection", Test_InputIsRelativeToCameraDirection},
+        {"InputMagnitudeIsClampedAndDeadzoned", Test_InputMagnitudeIsClampedAndDeadzoned},
+        {"CameraCutKeepsInputDirectionUntilRelease", Test_CameraCutKeepsInputDirectionUntilRelease},
+        {"InputMoveThroughCollisionPerCamera", Test_InputMoveThroughCollisionPerCamera},
     };
     for (const Case& c : cases) {
         int before = g_failures;

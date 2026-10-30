@@ -14,6 +14,10 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr double kEpsilon = 1e-6;
 // 한 번의 MoveCircle이 허용하는 최대 걸음 수 환산 이동량(radius/2 걸음 기준). 초과하면 거부한다.
 constexpr float kMaxMoveSteps = 1024.0f;
+// 입력 크기가 이 값 미만이면 입력 없음으로 본다(아날로그 스틱의 잔떨림 제거).
+constexpr float kInputDeadzone = 0.2f;
+// 시선의 수평 성분 길이가 이 값 이하(거의 수직으로 내려보는 카메라)이면 "앞" 방향이 정해지지 않는다.
+constexpr float kMinHorizontalLook = 1e-4f;
 
 struct Pt {
     double x, z;
@@ -131,6 +135,11 @@ int World::AddRoom(const float* xz, int vertexCount, const RoomCamera& camera)
         throw std::runtime_error("room camera fov must be in (0, pi) radians");
     }
 
+    float lookX = camera.target[0] - camera.eye[0], lookZ = camera.target[2] - camera.eye[2];
+    if (std::hypot(lookX, lookZ) <= kMinHorizontalLook) {
+        throw std::runtime_error("room camera must not look straight up or down");
+    }
+
     Room room;
     room.polygon.assign(xz, xz + 2 * vertexCount);
     room.camera = camera;
@@ -190,6 +199,41 @@ int World::UpdateActiveRoom(float x, float z)
     }
     // found == 0: 어떤 방에도 속하지 않으므로 마지막 활성 방(없으면 0)을 유지한다.
     return _activeRoom;
+}
+
+Vec2 World::MoveInput(float inputX, float inputY, float speed, float dt)
+{
+    for (float v : {inputX, inputY, speed, dt}) {
+        if (!std::isfinite(v)) {
+            throw std::runtime_error("move input has a non-finite argument");
+        }
+    }
+    if (speed < 0.0f || dt < 0.0f) {
+        throw std::runtime_error("move speed and dt must not be negative");
+    }
+    if (_activeRoom == 0) {
+        throw std::runtime_error("no active room (call UpdateActiveRoom first)");
+    }
+
+    float magnitude = std::hypot(inputX, inputY);
+    if (magnitude < kInputDeadzone) {
+        _inputRoom = _activeRoom;  // 입력 없음: 다음 입력은 지금의 활성 방 카메라 기준으로 시작한다.
+        return {0.0f, 0.0f};
+    }
+    if (_inputRoom == 0) {
+        _inputRoom = _activeRoom;  // 첫 입력(놓은 적 없이 시작): 현재 방 기준.
+    }
+    // magnitude >= 데드존: 입력 중이므로 방이 바뀌었어도 _inputRoom(시작 시 방)을 그대로 쓴다.
+
+    const RoomCamera& camera = RoomById(_inputRoom).camera;
+    float forwardX = camera.target[0] - camera.eye[0], forwardZ = camera.target[2] - camera.eye[2];
+    float forwardLen = std::hypot(forwardX, forwardZ);  // AddRoom이 0이 아님을 보장한다
+    forwardX /= forwardLen;
+    forwardZ /= forwardLen;
+    float rightX = -forwardZ, rightZ = forwardX;  // forward x up(0,1,0)
+
+    float scale = (magnitude > 1.0f ? 1.0f / magnitude : 1.0f) * speed * dt;
+    return {(rightX * inputX + forwardX * inputY) * scale, (rightZ * inputX + forwardZ * inputY) * scale};
 }
 
 const RoomCamera& World::GetRoomCamera(int roomId) const { return RoomById(roomId).camera; }

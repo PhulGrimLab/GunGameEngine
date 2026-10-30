@@ -44,6 +44,14 @@ public:
     // radius <= 0, 유한하지 않은 값, 한 번의 이동량이 radius 대비 너무 크면(kMaxMoveSteps 초과) 예외를 던진다.
     Vec2 MoveCircle(float x, float z, float dx, float dz, float radius) const;
 
+    // 카메라 상대 이동: 입력 축(inputX 오른쪽+, inputY 앞(화면 위쪽)+, 각각 -1..1)을 한 프레임의 월드 이동량(dx,dz)으로
+    // 바꾼다. 앞 = 카메라 시선의 수평 성분, 오른쪽 = 앞 x 위(오른손 Y-up). 속도 speed(월드 단위/초) x dt(초).
+    // 입력 크기는 1로 제한해(대각선이 빠르지 않게) 데드존 미만이면 0이다.
+    // 카메라 컷: 입력이 계속 눌린 동안 활성 방이 바뀌어도 방향 기준은 입력을 시작할 때의 방 카메라로 고정하고,
+    // 입력이 데드존 아래로 돌아오면(놓으면) 현재 활성 방 기준으로 갱신한다. 컷 직후 화면이 뒤집혀 캐릭터가 되돌아가는
+    // 것을 막기 위함이다. 활성 방이 없으면(UpdateActiveRoom 전) 예외를 던진다. 비유한 값, speed/dt < 0도 예외.
+    Vec2 MoveInput(float inputX, float inputY, float speed, float dt);
+
     // 방 카메라. 알 수 없는 ID면 예외를 던진다.
     const RoomCamera& GetRoomCamera(int roomId) const;
 
@@ -58,6 +66,7 @@ private:
     std::vector<Box> _boxes;  // 인덱스 + 1 == 콜라이더 ID
     std::vector<Room> _rooms;  // 인덱스 + 1 == 방 ID
     int _activeRoom = 0;
+    int _inputRoom = 0;  // 입력 방향 기준으로 고정된 방(0 = 아직 없음). MoveInput 참고
 };
 
 }  // namespace gge
