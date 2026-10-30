@@ -3395,9 +3395,10 @@ ChainData DistinctRestChain(int bones)
         c.translation[i * 3 + 0] = 0.1f * (i + 1);
         c.translation[i * 3 + 1] = i > 0 ? 1.0f + 0.05f * i : 0.0f;
         c.translation[i * 3 + 2] = -0.2f * i;
-        const float a = 0.3f + 0.2f * i;  // z축 회전각
-        c.rotation[i * 4 + 0] = 0.0f; c.rotation[i * 4 + 1] = 0.0f;
-        c.rotation[i * 4 + 2] = std::sin(a / 2); c.rotation[i * 4 + 3] = std::cos(a / 2);
+        // 네 성분이 모두 0이 아니고 본마다 다른 단위 쿼터니언(x, y 성분 인덱싱 오류도 드러나게)
+        const float q[4] = {0.1f + 0.05f * i, 0.2f - 0.03f * i, 0.3f + 0.04f * i, 0.9f};
+        const float len = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+        for (int k = 0; k < 4; ++k) c.rotation[i * 4 + k] = q[k] / len;
         c.scale[i * 3 + 0] = 1.0f + 0.1f * i; c.scale[i * 3 + 1] = 1.2f + 0.05f * i; c.scale[i * 3 + 2] = 0.9f + 0.07f * i;
     }
     return c;
