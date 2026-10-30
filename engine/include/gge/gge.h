@@ -136,12 +136,17 @@ GGE_API int gge_world_move_circle(const GgeWorld* w, float x, float z, float dx,
                                   float* out_xz);
 
 // 카메라 상대 이동. input_x(오른쪽+), input_y(화면 위쪽/앞+)는 -1..1 정규화 축(키보드/게임패드 읽기는 호출자 몫).
-// 활성 방 카메라 시선의 수평 성분이 "앞", 앞 x 위가 "오른쪽"이다. 입력 크기는 1로 제한(대각선 속도 동일)하고 0.2 미만은
-// 입력 없음이다. out_dxdz(float[2])에 한 프레임 이동량 = 방향 x speed(월드 단위/초) x dt(초)를 쓴다.
-// 카메라 컷: 입력을 누르고 있는 동안 활성 방이 바뀌어도 방향 기준은 입력을 시작한 방 카메라로 유지하고, 입력을
-// 놓으면(0.2 미만) 현재 활성 방 기준으로 갱신한다. 활성 방이 없거나 비유한/음수 speed,dt이면 실패한다.
-// 결과를 gge_world_move_circle에 넘기면 충돌까지 반영된다. gge_world_add_room은 거의 수직으로 내려보는 카메라를 거부한다.
+// 활성 방 카메라 시선의 수평 성분이 "앞", 앞 x 위가 "오른쪽"이다. 입력 크기는 1로 제한(대각선 속도 동일)하고 0.2 이하는
+// 입력 없음, 그 위는 (크기-0.2)/0.8로 0부터 늘어난다. out_dxdz(float[2])에 한 프레임 이동량 = 방향 x speed(월드 단위/초)
+// x dt(초)를 쓴다.
+// 카메라 컷: 입력이 눌린 채 활성 방이 바뀌면, 컷 직후 입력 방향에서 60도 넘게 꺾기 전까지 방향 기준을 입력을 시작한 방
+// 카메라로 유지하고, 놓거나(0.2 미만) 크게 꺾으면 현재 활성 방 기준으로 갱신한다. 입력이 끊기지 않는 채 장면이 바뀌는
+// 텔레포트/컷신에는 gge_world_reset_input_frame을 부른다.
+// 활성 방이 없거나 비유한/음수 speed,dt, 결과 오버플로이면 실패한다. 결과를 gge_world_move_circle에 넘기면 충돌까지
+// 반영된다. gge_world_add_room은 거의 수직으로 내려보는 카메라를 거부한다.
 GGE_API int gge_world_move_input(GgeWorld* w, float input_x, float input_y, float speed, float dt, float* out_dxdz);
+// 입력 방향 기준을 비운다. 다음 gge_world_move_input은 그 시점의 활성 방 카메라 기준으로 시작한다.
+GGE_API void gge_world_reset_input_frame(GgeWorld* w);
 
 // 마지막 오류 메시지(UTF-8). 스레드별로 유지된다.
 GGE_API const char* gge_last_error(void);

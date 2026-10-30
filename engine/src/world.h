@@ -46,11 +46,16 @@ public:
 
     // 카메라 상대 이동: 입력 축(inputX 오른쪽+, inputY 앞(화면 위쪽)+, 각각 -1..1)을 한 프레임의 월드 이동량(dx,dz)으로
     // 바꾼다. 앞 = 카메라 시선의 수평 성분, 오른쪽 = 앞 x 위(오른손 Y-up). 속도 speed(월드 단위/초) x dt(초).
-    // 입력 크기는 1로 제한해(대각선이 빠르지 않게) 데드존 미만이면 0이다.
-    // 카메라 컷: 입력이 계속 눌린 동안 활성 방이 바뀌어도 방향 기준은 입력을 시작할 때의 방 카메라로 고정하고,
-    // 입력이 데드존 아래로 돌아오면(놓으면) 현재 활성 방 기준으로 갱신한다. 컷 직후 화면이 뒤집혀 캐릭터가 되돌아가는
-    // 것을 막기 위함이다. 활성 방이 없으면(UpdateActiveRoom 전) 예외를 던진다. 비유한 값, speed/dt < 0도 예외.
+    // 입력 크기는 1로 제한하고(대각선이 빠르지 않게), 데드존(0.2) 이하는 0, 그 위는 (크기-0.2)/0.8로 0부터 부드럽게 늘어난다.
+    //
+    // 카메라 컷: 입력이 눌린 채 활성 방이 바뀌면, 컷 직후의 입력 방향에서 60도 넘게 꺾기 전까지는 방향 기준을
+    // 입력을 시작한 방 카메라로 유지한다(컷 직후 화면이 뒤집혀 캐릭터가 되돌아가는 것 방지). 입력을 놓거나(데드존 미만)
+    // 크게 꺾으면 현재 활성 방 기준으로 갱신한다. 텔레포트/컷신처럼 입력이 끊기지 않는 채 장면이 바뀌면
+    // ResetInputFrame으로 기준을 즉시 비운다. 활성 방이 없으면(UpdateActiveRoom 전) 예외를 던진다. 비유한 값, speed/dt < 0도 예외.
     Vec2 MoveInput(float inputX, float inputY, float speed, float dt);
+
+    // 입력 방향 기준을 비운다. 다음 MoveInput은 그 시점의 활성 방 카메라를 기준으로 시작한다.
+    void ResetInputFrame();
 
     // 방 카메라. 알 수 없는 ID면 예외를 던진다.
     const RoomCamera& GetRoomCamera(int roomId) const;
@@ -68,6 +73,8 @@ private:
     std::vector<Room> _rooms;  // 인덱스 + 1 == 방 ID
     int _activeRoom = 0;
     int _inputRoom = 0;  // 입력 방향 기준으로 고정된 방(0 = 아직 없음). MoveInput 참고
+    bool _hasCutDirection = false;  // 컷 이후 첫 입력 방향을 기록했는가(_inputRoom != _activeRoom인 동안만 의미 있음)
+    float _cutDirection[2] = {0.0f, 0.0f};  // 컷 직후 첫 입력의 단위 방향(입력 공간)
 };
 
 }  // namespace gge

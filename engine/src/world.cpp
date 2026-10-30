@@ -1,5 +1,6 @@
 #include "world.h"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -16,6 +17,8 @@ constexpr double kEpsilon = 1e-6;
 constexpr float kMaxMoveSteps = 1024.0f;
 // 입력 크기가 이 값 미만이면 입력 없음으로 본다(아날로그 스틱의 잔떨림 제거).
 constexpr float kInputDeadzone = 0.2f;
+// 카메라 컷 이후 입력 방향이 컷 직후 방향에서 이 각도(60도)보다 더 꺾이면 방향 기준을 새 방으로 옮긴다. cos(60도).
+constexpr float kLatchReleaseCos = 0.5f;
 // 시선의 (수평 성분 길이 / 전체 길이)가 이 값 이하(거의 수직으로 내려보는 카메라, 약 0.06도)이면 "앞" 방향이
 // 정해지지 않거나 불안정하다. 좌표 크기와 무관하도록 절대값이 아니라 비율로 판정한다.
 constexpr float kMinHorizontalLookRatio = 1e-3f;
@@ -222,23 +225,43 @@ Vec2 World::MoveInput(float inputX, float inputY, float speed, float dt)
     float magnitude = std::hypot(inputX, inputY);
     if (magnitude < kInputDeadzone) {
         _inputRoom = _activeRoom;  // 입력 없음: 다음 입력은 지금의 활성 방 카메라 기준으로 시작한다.
+        _hasCutDirection = false;
         return {0.0f, 0.0f};
     }
+    float dirX = inputX / magnitude, dirY = inputY / magnitude;
     if (_inputRoom == 0) {
-        _inputRoom = _activeRoom;  // 첫 입력(놓은 적 없이 시작): 현재 방 기준.
+        _inputRoom = _activeRoom;  // 첫 입력(놓은 적 없이 시작하거나 리셋 직후): 현재 방 기준.
     }
-    // magnitude >= 데드존: 입력 중이므로 방이 바뀌었어도 _inputRoom(시작 시 방)을 그대로 쓴다.
+    if (_inputRoom == _activeRoom) {
+        _hasCutDirection = false;  // 컷 상태가 아님
+    } else if (!_hasCutDirection) {
+        _cutDirection[0] = dirX;  // 컷 직후 첫 입력: 이 방향을 기준으로 이후 꺾임을 잰다.
+        _cutDirection[1] = dirY;
+        _hasCutDirection = true;
+    } else if (dirX * _cutDirection[0] + dirY * _cutDirection[1] < kLatchReleaseCos) {
+        _inputRoom = _activeRoom;  // 크게 꺾었다: 새 방 화면 기준으로 조작한다.
+        _hasCutDirection = false;
+    }
+    // 그 외: 입력 중이고 크게 꺾지 않았으므로 _inputRoom(시작 시 방)을 그대로 쓴다.
 
     const Room& room = RoomById(_inputRoom);
     float forwardX = room.forward[0], forwardZ = room.forward[1];
     float rightX = -forwardZ, rightZ = forwardX;  // forward x up(0,1,0)
 
-    float scale = (magnitude > 1.0f ? 1.0f / magnitude : 1.0f) * speed * dt;
-    Vec2 move = {(rightX * inputX + forwardX * inputY) * scale, (rightZ * inputX + forwardZ * inputY) * scale};
+    // 데드존을 빼고 다시 펴서 경계에서 0부터 시작하게 한다(천천히 걷기 가능). 크기는 1로 제한.
+    float strength = (std::min(magnitude, 1.0f) - kInputDeadzone) / (1.0f - kInputDeadzone);
+    float scale = strength * speed * dt;
+    Vec2 move = {(rightX * dirX + forwardX * dirY) * scale, (rightZ * dirX + forwardZ * dirY) * scale};
     if (!std::isfinite(move.x) || !std::isfinite(move.z)) {
         throw std::runtime_error("move input result overflows (speed * dt too large)");  // 유한한 인자의 곱이 float 범위를 넘은 경우
     }
     return move;
+}
+
+void World::ResetInputFrame()
+{
+    _inputRoom = 0;
+    _hasCutDirection = false;
 }
 
 const RoomCamera& World::GetRoomCamera(int roomId) const { return RoomById(roomId).camera; }

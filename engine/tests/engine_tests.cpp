@@ -1662,33 +1662,61 @@ void Test_InputMagnitudeIsClampedAndDeadzoned()
     P2 diagonal = Input(w, 1, 1);  // 대각선도 길이 1(= speed x dt)
     CHECK(std::fabs(std::hypot(diagonal.x, diagonal.z) - 1.0f) < 1e-4f);
     CHECK(Near(Input(w, 0, 5), 0, -1));       // 범위를 넘는 입력도 1로 제한
-    CHECK(Near(Input(w, 0, 0.5f), 0, -0.5f));  // 아날로그는 비례
+    CHECK(Near(Input(w, 0, 0.5f), 0, -0.375f));  // 데드존을 빼고 다시 편다: (0.5-0.2)/0.8
+    CHECK(Near(Input(w, 0.6f, 0), 0.5f, 0));
     CHECK(Near(Input(w, 0.1f, 0.1f), 0, 0));   // 데드존 안(크기 0.14)
     CHECK(Near(Input(w, 0.19f, 0), 0, 0));
-    CHECK(!Near(Input(w, 0.2f, 0), 0, 0));     // 데드존 경계는 입력으로 본다
+    CHECK(Near(Input(w, 0.2f, 0), 0, 0));      // 경계에서 0부터 시작한다(속도가 튀지 않는다)
+    CHECK(Near(Input(w, 0.21f, 0), 0.0125f, 0));  // 경계 바로 위는 아주 느리다: 0.01/0.8
+    P2 halfDiagonal = Input(w, 0.5f, 0.5f);       // 크기 0.707: 길이 (0.707-0.2)/0.8 = 0.634
+    CHECK(std::fabs(std::hypot(halfDiagonal.x, halfDiagonal.z) - 0.6338835f) < 1e-4f);
     CHECK(Near(Input(w, 0, 1, 0, 0.5f), 0, 0));  // speed 0, dt 0이면 이동 없음
     CHECK(Near(Input(w, 0, 1, 2, 0), 0, 0));
     gge_world_destroy(w);
 }
 
-void Test_CameraCutKeepsInputDirectionUntilRelease()
+void Test_CameraCutKeepsInputDirectionUntilReleaseOrSharpTurn()
 {
     GgeWorld* w = gge_world_create();
-    AddCamRoom(w, 0, -5, 10, 5, kEyeNorth);   // 방 1: 앞 = -Z
-    AddCamRoom(w, 10, -5, 20, 5, kEyeEast);   // 방 2: 앞 = +X
+    AddCamRoom(w, 0, -5, 10, 5, kEyeNorth);   // 방 1: 앞 = -Z, 오른쪽 = +X
+    AddCamRoom(w, 10, -5, 20, 5, kEyeEast);   // 방 2: 앞 = +X, 오른쪽 = +Z
     CHECK(gge_world_update_active_room(w, 5, 0) == 1);
     CHECK(Near(Input(w, 0, 1), 0, -1));
 
     CHECK(gge_world_update_active_room(w, 15, 0) == 2);  // 앞을 누른 채 방 2로 진입(카메라 컷)
-    CHECK(Near(Input(w, 0, 1), 0, -1));                  // 방향은 방 1 기준 유지: 되돌아가지 않는다
-    CHECK(Near(Input(w, 1, 0), 1, 0));                   // 누른 채 방향만 바꿔도 아직 방 1 기준(오른쪽 = +X)
-    CHECK(Near(Input(w, 0, 0), 0, 0));                   // 놓으면 방 2 기준으로 갱신
-    CHECK(Near(Input(w, 0, 1), 1, 0));                   // 다시 누르면 방 2 기준(앞 = +X)
+    CHECK(Near(Input(w, 0, 1), 0, -1));                  // 컷 직후 첫 입력: 방 1 기준 유지(되돌아가지 않는다)
+    CHECK(Near(Input(w, 0.3f, 1), 0.28735f, -0.95783f));  // 약 17도 흔들림은 여전히 방 1 기준
+    CHECK(Near(Input(w, 1, 0), 0, 1));                   // 컷 직후 방향에서 90도 꺾으면 방 2 기준으로 옮긴다
+    CHECK(Near(Input(w, 0, 1), 1, 0));                   // 이후는 방 2 기준(앞 = +X)
+    CHECK(Near(Input(w, 0, 0), 0, 0));
+    CHECK(Near(Input(w, 0, 1), 1, 0));
 
     CHECK(gge_world_update_active_room(w, 5, 0) == 1);   // 반대로 방 1로 컷
     CHECK(Near(Input(w, 0, 1), 1, 0));                   // 여전히 방 2 기준
-    CHECK(Near(Input(w, 0.1f, 0.1f), 0, 0));             // 데드존 안도 "놓음"으로 갱신
+    CHECK(Near(Input(w, 0.1f, 0.1f), 0, 0));             // 데드존 안은 "놓음"으로 갱신
     CHECK(Near(Input(w, 0, 1), 0, -1));                  // 방 1 기준
+
+    // 컷 직후 방향에서 60도 안쪽(약 45도)으로 꺾는 것은 고정 유지, 바로 바깥(약 75도)은 해제.
+    CHECK(gge_world_update_active_room(w, 15, 0) == 2);
+    CHECK(Near(Input(w, 0, 1), 0, -1));                  // 방 1 기준 + 컷 방향 기록
+    P2 diag = Input(w, 0.7071068f, 0.7071068f);          // 45도: 방 1 기준 (+X, -Z)
+    CHECK(diag.x > 0 && diag.z < 0 && std::fabs(diag.x + diag.z) < 1e-3f);
+    P2 wide = Input(w, 0.9659258f, 0.2588190f);          // 75도: 방 2 기준으로 이동 (앞 +X*0.259, 오른쪽 +Z*0.966)
+    CHECK(Near(wide, 0.2588190f, 0.9659258f));
+    gge_world_destroy(w);
+}
+
+void Test_ResetInputFrameDropsStaleLatch()
+{
+    GgeWorld* w = gge_world_create();
+    AddCamRoom(w, 0, -5, 10, 5, kEyeNorth);
+    AddCamRoom(w, 10, -5, 20, 5, kEyeEast);
+    gge_world_update_active_room(w, 5, 0);
+    CHECK(Near(Input(w, 0, 1), 0, -1));
+    gge_world_update_active_room(w, 15, 0);              // 텔레포트: 입력은 계속 눌림
+    CHECK(Near(Input(w, 0, 1), 0, -1));                  // 같은 방향이라 이전 카메라 기준이 남아 있다
+    gge_world_reset_input_frame(w);
+    CHECK(Near(Input(w, 0, 1), 1, 0));                   // 리셋하면 곧바로 새 방 카메라 기준
     gge_world_destroy(w);
 }
 
@@ -1823,7 +1851,8 @@ int main()
         {"MoveInputRejectsBadInput", Test_MoveInputRejectsBadInput},
         {"InputIsRelativeToCameraDirection", Test_InputIsRelativeToCameraDirection},
         {"InputMagnitudeIsClampedAndDeadzoned", Test_InputMagnitudeIsClampedAndDeadzoned},
-        {"CameraCutKeepsInputDirectionUntilRelease", Test_CameraCutKeepsInputDirectionUntilRelease},
+        {"CameraCutKeepsInputDirectionUntilReleaseOrSharpTurn", Test_CameraCutKeepsInputDirectionUntilReleaseOrSharpTurn},
+        {"ResetInputFrameDropsStaleLatch", Test_ResetInputFrameDropsStaleLatch},
         {"InputMoveThroughCollisionPerCamera", Test_InputMoveThroughCollisionPerCamera},
         {"WorldMatrixCacheTracksChangesBetweenFrames", Test_WorldMatrixCacheTracksChangesBetweenFrames},
     };

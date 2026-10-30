@@ -314,4 +314,6 @@ GGE_API int gge_world_move_input(GgeWorld* w, float input_x, float input_y, floa
     });
 }
 
+GGE_API void gge_world_reset_input_frame(GgeWorld* w) { w->impl.ResetInputFrame(); }
+
 GGE_API const char* gge_last_error(void) { return gge::LastError().c_str(); }
