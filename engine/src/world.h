@@ -59,6 +59,7 @@ private:
     struct Room {
         std::vector<float> polygon;  // x0,z0,x1,z1,...
         RoomCamera camera;
+        float forward[2];  // 시선의 수평 성분(정규화). AddRoom이 한 번 계산한다.
     };
 
     const Room& RoomById(int roomId) const;

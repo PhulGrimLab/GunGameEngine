@@ -17,3 +17,8 @@ target_link_libraries(engine_tests PRIVATE gge)
 target_compile_options(engine_tests PRIVATE /W4 /utf-8)
 target_compile_definitions(engine_tests PRIVATE _CRT_SECURE_NO_WARNINGS GGE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests")
 add_test(NAME engine_tests COMMAND engine_tests)
+
+# 수동 실행용 벤치마크(ctest에 등록하지 않는다): buildin\engine_bench.exe
+add_executable(engine_bench tests/engine_bench.cpp)
+target_link_libraries(engine_bench PRIVATE gge)
+target_compile_options(engine_bench PRIVATE /W4 /utf-8)

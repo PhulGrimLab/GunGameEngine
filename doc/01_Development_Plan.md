@@ -58,5 +58,10 @@ SIGNALIS 스타일(PS1풍 저해상도 3D, 고정 카메라, 3인칭 탐험/전�
 - **WPF 화면**: `GunGameEditor.exe --selftest <scene.json|obj> <png>`. OS 화면 캡처 없이 앱이 그린 비트맵과 창 전체(`.window.png`)를 직접 저장.
 - 테스트는 GPU 대신 WARP(소프트웨어 어댑터)를 사용해 결과를 안정화한다.
 
+## 성능 측정
+- `buildin\engine_bench.exe`(ctest 미등록, 수동 실행): 64x48 WARP에서 시나리오별 프레임당 ms. 해상도를 작게 해 래스터화보다 CPU 쪽 비용이 드러나게 한다.
+- 2026-10-30 기준선(WARP): 평면 큐브 1000개 4.2ms, 깊이 20 계층 2000개 9.4ms -> 8.4ms(월드 행렬 프레임 캐시 후), 스키닝 50개x본 32 0.37ms.
+- 엔진 자체의 CPU 로직(행렬/상수 준비)은 평면 1000개에서 0.07ms로 프레임의 약 2%다. 나머지는 객체마다 D3D 호출(상수 버퍼 갱신 + DrawIndexed) 비용이라, 더 줄이려면 배칭/인스턴싱 같은 구조 변경이 필요하다(하드웨어 GPU에서는 미측정).
+
 ## 빌드
 `build.cmd` (빌드), `build.cmd test` (빌드 + 전체 테스트). 요구: VS 2026(MSVC 14.51), CMake, Ninja, .NET SDK 10.

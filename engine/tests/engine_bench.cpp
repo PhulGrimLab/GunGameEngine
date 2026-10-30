@@ -1,0 +1,151 @@
+// 엔진 CPU 쪽 프레임 비용 벤치마크. 테스트가 아니므로 ctest에 등록하지 않고 수동으로 실행한다:
+//   build\bin\engine_bench.exe
+// 해상도를 작게 해서 래스터화(WARP)보다 오브젝트 순회/행렬/스키닝 준비 비용이 드러나게 한다.
+// 각 시나리오는 워밍업 후 프레임당 평균 ms를 출력한다.
+#include <gge/gge.h>
+
+#include <chrono>
+#include <cstdio>
+#include <vector>
+
+namespace {
+
+constexpr int kWidth = 64, kHeight = 48;
+constexpr int kWarmupFrames = 5, kMeasuredFrames = 60;
+
+// 단위 큐브(면당 정점 4개) 정점/인덱스.
+void MakeCube(std::vector<float>& v, std::vector<uint32_t>& idx)
+{
+    struct Face { float n[3]; float p[4][3]; };
+    const Face faces[] = {
+        {{0, 0, 1},  {{-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}}},
+        {{0, 0, -1}, {{1, -1, -1}, {-1, -1, -1}, {-1, 1, -1}, {1, 1, -1}}},
+        {{1, 0, 0},  {{1, -1, 1}, {1, -1, -1}, {1, 1, -1}, {1, 1, 1}}},
+        {{-1, 0, 0}, {{-1, -1, -1}, {-1, -1, 1}, {-1, 1, 1}, {-1, 1, -1}}},
+        {{0, 1, 0},  {{-1, 1, 1}, {1, 1, 1}, {1, 1, -1}, {-1, 1, -1}}},
+        {{0, -1, 0}, {{-1, -1, -1}, {1, -1, -1}, {1, -1, 1}, {-1, -1, 1}}},
+    };
+    for (const Face& f : faces) {
+        uint32_t base = static_cast<uint32_t>(v.size() / 8);
+        for (int i = 0; i < 4; ++i)
+            v.insert(v.end(), {f.p[i][0], f.p[i][1], f.p[i][2], f.n[0], f.n[1], f.n[2], 0, 0});
+        idx.insert(idx.end(), {base, base + 1, base + 2, base, base + 2, base + 3});
+    }
+}
+
+// 프레임당 평균 렌더 시간(ms). 객체 변환은 매 프레임 바꾸지 않는다(렌더 자체 비용만 잰다).
+double TimeRender(GgeRenderer* r)
+{
+    for (int i = 0; i < kWarmupFrames; ++i)
+        gge_renderer_render(r);
+    auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < kMeasuredFrames; ++i)
+        gge_renderer_render(r);
+    std::chrono::duration<double, std::milli> total = std::chrono::steady_clock::now() - start;
+    return total.count() / kMeasuredFrames;
+}
+
+// 평면(루트) 큐브 count개를 격자로 배치.
+double BenchFlat(int count)
+{
+    GgeRenderer* r = gge_renderer_create(kWidth, kHeight, 1);
+    std::vector<float> v;
+    std::vector<uint32_t> idx;
+    MakeCube(v, idx);
+    int mesh = gge_mesh_create(r, v.data(), static_cast<int>(v.size() / 8), idx.data(), static_cast<int>(idx.size()));
+    const float rot[3] = {0, 0, 0}, scale[3] = {0.2f, 0.2f, 0.2f};
+    for (int i = 0; i < count; ++i) {
+        int obj = gge_object_create(r, mesh, 0, 0);
+        const float pos[3] = {static_cast<float>(i % 40) - 20, static_cast<float>(i / 40) - 5, 0};
+        gge_object_set_transform(r, obj, pos, rot, scale);
+    }
+    gge_renderer_set_camera(r, 0, 0, 40, 0, 0, 0, 0.8f);
+    double ms = TimeRender(r);
+    gge_renderer_destroy(r);
+    return ms;
+}
+
+// 깊이 depth의 부모-자식 체인 chains개(마지막 단계 노드만 메시).
+double BenchDeepHierarchy(int chains, int depth)
+{
+    GgeRenderer* r = gge_renderer_create(kWidth, kHeight, 1);
+    std::vector<float> v;
+    std::vector<uint32_t> idx;
+    MakeCube(v, idx);
+    int mesh = gge_mesh_create(r, v.data(), static_cast<int>(v.size() / 8), idx.data(), static_cast<int>(idx.size()));
+    const float rot[3] = {0, 0.01f, 0}, scale[3] = {1, 1, 1};
+    for (int c = 0; c < chains; ++c) {
+        int parent = 0;
+        for (int d = 0; d < depth; ++d) {
+            int obj = gge_object_create(r, mesh, 0, parent);
+            const float pos[3] = {d == 0 ? static_cast<float>(c % 20) * 3 - 30 : 0.0f, 0.02f, 0};
+            gge_object_set_transform(r, obj, pos, rot, scale);
+            parent = obj;
+        }
+    }
+    gge_renderer_set_camera(r, 0, 0, 80, 0, 0, 0, 0.8f);
+    double ms = TimeRender(r);
+    gge_renderer_destroy(r);
+    return ms;
+}
+
+// 본 bones개 체인 스켈레톤을 쓰는 스키닝 오브젝트 count개(클립 재생 중).
+double BenchSkinned(int count, int bones)
+{
+    GgeRenderer* r = gge_renderer_create(kWidth, kHeight, 1);
+    std::vector<float> v;
+    std::vector<uint32_t> idx;
+    MakeCube(v, idx);
+    int vertexCount = static_cast<int>(v.size() / 8);
+    std::vector<uint32_t> joints(static_cast<size_t>(vertexCount) * 4, 0);
+    std::vector<float> weights(static_cast<size_t>(vertexCount) * 4, 0.0f);
+    for (int i = 0; i < vertexCount; ++i)
+        weights[static_cast<size_t>(i) * 4] = 1.0f;
+    int mesh = gge_mesh_create_skinned(r, v.data(), vertexCount, joints.data(), weights.data(), idx.data(),
+                                       static_cast<int>(idx.size()));
+
+    std::vector<int> parents(bones);
+    std::vector<float> inverseBind(static_cast<size_t>(bones) * 16, 0.0f), restT(static_cast<size_t>(bones) * 3, 0.0f),
+        restR(static_cast<size_t>(bones) * 4, 0.0f), restS(static_cast<size_t>(bones) * 3, 1.0f);
+    for (int b = 0; b < bones; ++b) {
+        parents[b] = b - 1;
+        for (int k = 0; k < 4; ++k)
+            inverseBind[static_cast<size_t>(b) * 16 + k * 5] = 1.0f;  // 단위 행렬
+        restR[static_cast<size_t>(b) * 4 + 3] = 1.0f;
+        restT[static_cast<size_t>(b) * 3 + 1] = 0.1f;
+    }
+    int skeleton = gge_skeleton_create(r, bones, parents.data(), inverseBind.data(), restT.data(), restR.data(),
+                                       restS.data());
+
+    // 모든 본에 회전 채널(키 3개).
+    const float times[3] = {0.0f, 0.5f, 1.0f};
+    const float rotations[12] = {0, 0, 0, 1, 0, 0, 0.1f, 0.995f, 0, 0, 0, 1};
+    std::vector<GgeClipChannel> channels(bones);
+    for (int b = 0; b < bones; ++b)
+        channels[b] = {b, 1, 3, times, rotations};
+    int clip = gge_clip_create(r, 1.0f, bones, channels.data());
+
+    const float rot[3] = {0, 0, 0}, scale[3] = {1, 1, 1};
+    for (int i = 0; i < count; ++i) {
+        int obj = gge_object_create(r, mesh, 0, 0);
+        gge_object_set_skeleton(r, obj, skeleton);
+        gge_object_set_pose(r, obj, clip, 0.25f, 0, 0, 0);
+        const float pos[3] = {static_cast<float>(i % 10) * 3 - 15, static_cast<float>(i / 10) * 3 - 6, 0};
+        gge_object_set_transform(r, obj, pos, rot, scale);
+    }
+    gge_renderer_set_camera(r, 0, 0, 40, 0, 0, 0, 0.8f);
+    double ms = TimeRender(r);
+    gge_renderer_destroy(r);
+    return ms;
+}
+
+}  // namespace
+
+int main()
+{
+    std::printf("engine_bench (%dx%d, WARP, %d frames avg)\n", kWidth, kHeight, kMeasuredFrames);
+    std::printf("  flat    1000 cubes          : %8.3f ms/frame\n", BenchFlat(1000));
+    std::printf("  hierarchy 100 chains x d20  : %8.3f ms/frame\n", BenchDeepHierarchy(100, 20));
+    std::printf("  skinned  50 objs x 32 bones : %8.3f ms/frame\n", BenchSkinned(50, 32));
+    return 0;
+}

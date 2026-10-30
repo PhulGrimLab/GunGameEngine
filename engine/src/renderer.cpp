@@ -498,8 +498,23 @@ XMMATRIX Renderer::WorldMatrix(const Object& o) const
     return world;
 }
 
+XMMATRIX Renderer::CachedWorldMatrix(const Object& o) const
+{
+    if (o.worldStamp == renderStamp_) {
+        return XMLoadFloat4x4(&o.world);
+    }
+    XMMATRIX world = LocalMatrix(o);
+    if (o.parent != 0) {
+        world = world * CachedWorldMatrix(objects_.at(o.parent));  // 부모는 이번 렌더에서 한 번만 계산된다
+    }
+    XMStoreFloat4x4(&o.world, world);
+    o.worldStamp = renderStamp_;
+    return world;
+}
+
 void Renderer::Render()
 {
+    ++renderStamp_;  // 이전 렌더의 월드 행렬 캐시를 모두 무효화한다
     float clear[4] = {0.05f, 0.05f, 0.08f, 1.0f};
     if (retro_.colorBits < 8) {  // 배경도 셰이더 출력과 같은 색 깊이로 맞춘다
         const float levels = static_cast<float>((1 << retro_.colorBits) - 1);
@@ -531,7 +546,7 @@ void Renderer::Render()
         if (object.mesh == 0)
             continue;
         const GpuMesh& mesh = meshes_.at(object.mesh);
-        XMMATRIX world = WorldMatrix(object);
+        XMMATRIX world = CachedWorldMatrix(object);
 
         Constants c;
         // HLSL은 cbuffer 행렬을 열 우선으로 읽으므로, 행 벡터용 XM 행렬을 그대로 올리면 mul(M, v)가 올바른 전치가 된다.

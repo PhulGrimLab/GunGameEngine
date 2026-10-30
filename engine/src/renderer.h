@@ -36,6 +36,11 @@ struct Object {
     int clipB = 0;  // 0이면 블렌딩 없음
     float timeB = 0;
     float blend = 0;  // 0이면 A, 1이면 B
+
+    // Render 한 번 안에서만 유효한 월드 행렬 캐시(Renderer::CachedWorldMatrix 전용). worldStamp가 현재 렌더 번호와
+    // 같을 때만 world를 믿는다. 오브젝트 변경 API는 이 값을 건드리지 않으며, 렌더 번호가 매번 올라가므로 낡은 값이 쓰이지 않는다.
+    mutable DirectX::XMFLOAT4X4 world{};
+    mutable uint64_t worldStamp = 0;
 };
 
 class Renderer {
@@ -96,6 +101,8 @@ private:
     std::vector<DirectX::XMFLOAT4X4> Pose(const Object& o) const;
     DirectX::XMMATRIX LocalMatrix(const Object& o) const;
     DirectX::XMMATRIX WorldMatrix(const Object& o) const;
+    // WorldMatrix와 같은 결과를 Render 중 한 번만 계산하도록 부모 체인을 캐시한다(깊은 계층에서 O(깊이^2) -> O(깊이)).
+    DirectX::XMMATRIX CachedWorldMatrix(const Object& o) const;
     ComPtr<ID3D11ShaderResourceView> MakeTexture(const uint8_t* rgba, int width, int height);
 
     int width_;
@@ -111,6 +118,7 @@ private:
     std::map<int, Object> objects_;
     std::map<int, Skeleton> skeletons_;
     std::map<int, Clip> clips_;
+    uint64_t renderStamp_ = 0;  // Render 호출마다 증가. Object::worldStamp와 비교한다.
     int nextMesh_ = 1, nextTexture_ = 1, nextObject_ = 1, nextSkeleton_ = 1, nextClip_ = 1;
 
     ComPtr<ID3D11Device> device_;

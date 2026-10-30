@@ -16,8 +16,9 @@ constexpr double kEpsilon = 1e-6;
 constexpr float kMaxMoveSteps = 1024.0f;
 // 입력 크기가 이 값 미만이면 입력 없음으로 본다(아날로그 스틱의 잔떨림 제거).
 constexpr float kInputDeadzone = 0.2f;
-// 시선의 수평 성분 길이가 이 값 이하(거의 수직으로 내려보는 카메라)이면 "앞" 방향이 정해지지 않는다.
-constexpr float kMinHorizontalLook = 1e-4f;
+// 시선의 (수평 성분 길이 / 전체 길이)가 이 값 이하(거의 수직으로 내려보는 카메라, 약 0.06도)이면 "앞" 방향이
+// 정해지지 않거나 불안정하다. 좌표 크기와 무관하도록 절대값이 아니라 비율로 판정한다.
+constexpr float kMinHorizontalLookRatio = 1e-3f;
 
 struct Pt {
     double x, z;
@@ -136,11 +137,14 @@ int World::AddRoom(const float* xz, int vertexCount, const RoomCamera& camera)
     }
 
     float lookX = camera.target[0] - camera.eye[0], lookZ = camera.target[2] - camera.eye[2];
-    if (std::hypot(lookX, lookZ) <= kMinHorizontalLook) {
+    float horizontalLen = std::hypot(lookX, lookZ);
+    if (horizontalLen <= kMinHorizontalLookRatio * std::hypot(horizontalLen, camera.target[1] - camera.eye[1])) {
         throw std::runtime_error("room camera must not look straight up or down");
     }
 
     Room room;
+    room.forward[0] = lookX / horizontalLen;
+    room.forward[1] = lookZ / horizontalLen;
     room.polygon.assign(xz, xz + 2 * vertexCount);
     room.camera = camera;
     _rooms.push_back(std::move(room));
@@ -225,15 +229,16 @@ Vec2 World::MoveInput(float inputX, float inputY, float speed, float dt)
     }
     // magnitude >= 데드존: 입력 중이므로 방이 바뀌었어도 _inputRoom(시작 시 방)을 그대로 쓴다.
 
-    const RoomCamera& camera = RoomById(_inputRoom).camera;
-    float forwardX = camera.target[0] - camera.eye[0], forwardZ = camera.target[2] - camera.eye[2];
-    float forwardLen = std::hypot(forwardX, forwardZ);  // AddRoom이 0이 아님을 보장한다
-    forwardX /= forwardLen;
-    forwardZ /= forwardLen;
+    const Room& room = RoomById(_inputRoom);
+    float forwardX = room.forward[0], forwardZ = room.forward[1];
     float rightX = -forwardZ, rightZ = forwardX;  // forward x up(0,1,0)
 
     float scale = (magnitude > 1.0f ? 1.0f / magnitude : 1.0f) * speed * dt;
-    return {(rightX * inputX + forwardX * inputY) * scale, (rightZ * inputX + forwardZ * inputY) * scale};
+    Vec2 move = {(rightX * inputX + forwardX * inputY) * scale, (rightZ * inputX + forwardZ * inputY) * scale};
+    if (!std::isfinite(move.x) || !std::isfinite(move.z)) {
+        throw std::runtime_error("move input result overflows (speed * dt too large)");  // 유한한 인자의 곱이 float 범위를 넘은 경우
+    }
+    return move;
 }
 
 const RoomCamera& World::GetRoomCamera(int roomId) const { return RoomById(roomId).camera; }

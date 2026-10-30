@@ -1618,6 +1618,10 @@ void Test_MoveInputRejectsBadInput()
     CHECK(std::strstr(gge_last_error(), "straight up or down") != nullptr);
     const float steep[3] = {0, 10, 0.5f};
     CHECK(gge_world_add_room(w, sq.data(), 4, steep, kLookAt, 0.8f) > 0);
+    const float nearVertical[3] = {0, 1000, 0.001f};  // 높이 대비 수평 성분이 너무 작아 앞 방향이 불안정
+    CHECK(gge_world_add_room(w, sq.data(), 4, nearVertical, kLookAt, 0.8f) == 0);
+    CHECK(gge_world_move_input(w, 1, 1, 1e30f, 1e30f, out) == 0);  // 유한한 인자의 곱이 넘쳐도 NaN/inf를 성공으로 돌려주지 않는다
+    CHECK(std::strstr(gge_last_error(), "overflows") != nullptr);
     gge_world_destroy(w);
 }
 
@@ -1710,6 +1714,53 @@ void Test_InputMoveThroughCollisionPerCamera()
     CHECK(std::fabs(north.x) < kTol && std::fabs(north.z + 4.0f) < 1e-2f);
 }
 
+// ---- 렌더러: 프레임 사이 월드 행렬 캐시 ----
+// 렌더가 부모 체인 월드 행렬을 프레임 단위로 캐시하므로, 프레임 사이에 부모 변환/재부모화를 바꿔도
+// 낡은 행렬이 쓰이지 않고 새로 만든 렌더러와 같은 화면이 나와야 한다.
+void Test_WorldMatrixCacheTracksChangesBetweenFrames()
+{
+    // 그룹 노드(부모) 아래 큐브(자식). 자식 로컬 위치 (1,0,0).
+    struct Scene {
+        GgeRenderer* r;
+        int mesh, parent, child, other;
+    };
+    auto build = [](float parentX) {
+        Scene s{NewRenderer(), 0, 0, 0, 0};
+        s.mesh = CubeMesh(s.r);
+        s.parent = gge_object_create(s.r, 0, 0, 0);
+        s.other = gge_object_create(s.r, 0, 0, 0);
+        s.child = gge_object_create(s.r, s.mesh, 0, s.parent);
+        gge_object_set_color(s.r, s.child, 0.9f, 0.6f, 0.3f);
+        Place(s.r, s.parent, parentX, 0, 0);
+        Place(s.r, s.other, 0, 2, 0);
+        Place(s.r, s.child, 1, 0, 0, 0.5f);
+        gge_renderer_set_camera(s.r, 0, 3, 9, 0, 0, 0, 0.8f);
+        return s;
+    };
+
+    Scene live = build(-2.0f);
+    Image before = Render(live.r);          // 캐시가 채워진 프레임
+    Place(live.r, live.parent, 2.0f, 0, 0);  // 부모 이동 후 다시 렌더
+    Image moved = Render(live.r);
+    Scene fresh = build(2.0f);
+    CHECK(before.bgra != moved.bgra);
+    CHECK(moved.bgra == Render(fresh.r).bgra);
+
+    // 재부모화: 자식을 다른 그룹(0,2,0) 아래로 옮기면 그 그룹 기준으로 그려진다.
+    CHECK(gge_object_set_parent(live.r, live.child, live.other) == 1);
+    Image reparented = Render(live.r);
+    Scene freshOther = build(2.0f);
+    CHECK(gge_object_set_parent(freshOther.r, freshOther.child, freshOther.other) == 1);
+    CHECK(reparented.bgra == Render(freshOther.r).bgra);
+    CHECK(reparented.bgra != moved.bgra);
+
+    // 변경 없이 연속 렌더해도 결과가 같다(캐시가 상태를 오염시키지 않는다).
+    CHECK(Render(live.r).bgra == reparented.bgra);
+    for (Scene* s : {&live, &fresh, &freshOther}) {
+        gge_renderer_destroy(s->r);
+    }
+}
+
 }  // namespace
 
 int main()
@@ -1774,6 +1825,7 @@ int main()
         {"InputMagnitudeIsClampedAndDeadzoned", Test_InputMagnitudeIsClampedAndDeadzoned},
         {"CameraCutKeepsInputDirectionUntilRelease", Test_CameraCutKeepsInputDirectionUntilRelease},
         {"InputMoveThroughCollisionPerCamera", Test_InputMoveThroughCollisionPerCamera},
+        {"WorldMatrixCacheTracksChangesBetweenFrames", Test_WorldMatrixCacheTracksChangesBetweenFrames},
     };
     for (const Case& c : cases) {
         int before = g_failures;
