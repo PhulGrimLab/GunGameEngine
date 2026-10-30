@@ -3382,7 +3382,25 @@ struct Spec {
     bool hasSpawn = false;
     float spawn[2] = {0, 0};
     bool badQuadIndex = false;  // 정점 수(4)를 넘는 인덱스를 넣는다
+    int bones = 3;              // 스킨 띠 스켈레톤의 본 수(체인)
+    bool distinctRest = false;  // 본마다/성분마다 다른 휴식 변환(로더가 본별 인덱스를 제대로 읽는지 보려는 용도)
 };
+
+// 본마다 모든 성분이 다른 휴식 이동/회전(단위 쿼터니언)/크기를 가진 체인.
+ChainData DistinctRestChain(int bones)
+{
+    ChainData c = MakeChain(bones);
+    for (int i = 0; i < bones; ++i) {
+        c.translation[i * 3 + 0] = 0.1f * (i + 1);
+        c.translation[i * 3 + 1] = i > 0 ? 1.0f + 0.05f * i : 0.0f;
+        c.translation[i * 3 + 2] = -0.2f * i;
+        const float a = 0.3f + 0.2f * i;  // z축 회전각
+        c.rotation[i * 4 + 0] = 0.0f; c.rotation[i * 4 + 1] = 0.0f;
+        c.rotation[i * 4 + 2] = std::sin(a / 2); c.rotation[i * 4 + 3] = std::cos(a / 2);
+        c.scale[i * 3 + 0] = 1.0f + 0.1f * i; c.scale[i * 3 + 1] = 1.2f + 0.05f * i; c.scale[i * 3 + 2] = 0.9f + 0.07f * i;
+    }
+    return c;
+}
 
 std::vector<uint8_t> ReadFileBytes(const fs::path& path)
 {
@@ -3419,8 +3437,8 @@ std::vector<uint8_t> Serialize(const Spec& spec)
         for (uint32_t i : {0u, 1u, 3u, 0u, 3u, 2u, 2u, 3u, 5u, 2u, 5u, 4u}) w.U32(i);
         for (uint32_t j : {0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 1u, 0u, 0u, 0u, 1u, 0u, 0u, 0u, 1u, 0u, 0u, 0u, 1u, 0u, 0u, 0u}) w.U32(j);
         w.Floats({1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0});
-        ChainData chain = MakeChain(3);
-        w.U32(3);
+        ChainData chain = spec.distinctRest ? DistinctRestChain(spec.bones) : MakeChain(spec.bones);
+        w.U32(static_cast<uint32_t>(spec.bones));
         for (int p : chain.parents) w.I32(p);
         w.Floats(chain.inverseBind); w.Floats(chain.translation); w.Floats(chain.rotation); w.Floats(chain.scale);
         w.U32(1);
@@ -3780,6 +3798,221 @@ void Test_GoldenPlaySceneFromTheBakedSample()
     gge_renderer_destroy(r);
 }
 
+// ---- .ggs 로더의 한도/경계 (외부 파일을 읽는 코드라 "경계 바로 안/밖"을 개수와 길이마다 확인한다) ----
+// 파일 앞부분(텍스처 0, 메시 0, 노드 0, 기본 조명)까지 쓴 작성기. 이어서 방/충돌체/트리거 개수 등을 직접 쓴다.
+GgsWriter PrefixUpToLighting()
+{
+    GgsWriter w;
+    w.Raw("GGS1", 4);
+    w.U32(1);
+    w.U32(0);  // textures
+    w.U32(0);  // meshes
+    w.U32(0);  // nodes
+    w.Vec3(0.2f, 0.2f, 0.25f); w.Vec3(-0.5f, -1.0f, -0.3f); w.Vec3(0.5f, 0.5f, 0.45f);
+    return w;
+}
+
+// 한 줄로 에러 메시지를 돌려주고(로드가 성공하면 "OK"), 성공했으면 곧바로 해제한다.
+std::string TryLoad(GgeRenderer* r, const std::string& name, const std::vector<uint8_t>& bytes)
+{
+    GgeScene* scene = gge_scene_load(r, WriteScene(name, bytes).string().c_str());
+    if (scene) {
+        gge_scene_destroy(scene);
+        return "OK";
+    }
+    return gge_last_error();
+}
+
+bool Has(const std::string& text, const char* part) { return text.find(part) != std::string::npos; }
+
+void Test_SceneCountLimitsAreCheckedAtTheirBoundaries()
+{
+    GgeRenderer* r = NewRenderer(64, 48);
+    auto expect = [&](const char* label, const std::string& got, const char* part) {
+        bool ok = Has(got, part);
+        if (!ok) std::printf("  %s: got '%s', expected '%s'\n", label, got.c_str(), part);
+        CHECK(ok);
+    };
+    // 한도 개수는 "구조상 허용"이라 데이터가 모자라 truncated가 나와야 하고, 한도 + 1은 "too many"여야 한다.
+    {
+        for (uint32_t n : {65536u, 65537u}) {
+            GgsWriter w; w.Raw("GGS1", 4); w.U32(1); w.U32(n);
+            expect("textures", TryLoad(r, "limit.ggs", w.Sealed()), n == 65536u ? "truncated while reading textures" : "too many textures");
+        }
+        for (uint32_t n : {65536u, 65537u}) {
+            GgsWriter w; w.Raw("GGS1", 4); w.U32(1); w.U32(0); w.U32(n);
+            expect("meshes", TryLoad(r, "limit.ggs", w.Sealed()), n == 65536u ? "truncated while reading meshes" : "too many meshes");
+        }
+        for (uint32_t n : {1u << 20, (1u << 20) + 1}) {
+            GgsWriter w; w.Raw("GGS1", 4); w.U32(1); w.U32(0); w.U32(0); w.U32(n);
+            expect("nodes", TryLoad(r, "limit.ggs", w.Sealed()), n == (1u << 20) ? "truncated while reading nodes" : "too many nodes");
+        }
+        for (uint32_t n : {8u, 9u}) {
+            GgsWriter w = PrefixUpToLighting(); w.U32(n);
+            expect("point lights", TryLoad(r, "limit.ggs", w.Sealed()), n == 8u ? "truncated while reading point lights" : "too many point lights");
+        }
+        // 방/충돌체/트리거: 앞 절을 정상으로 채우고 해당 개수만 쓴다.
+        auto afterLighting = [&] { GgsWriter w = PrefixUpToLighting(); w.U32(0); w.U8(0); w.F(0); w.F(0.5f); return w; };  // 점광원 0, 그림자 꺼짐
+        for (uint32_t n : {65536u, 65537u}) {
+            GgsWriter w = afterLighting(); w.U32(n);
+            expect("rooms", TryLoad(r, "limit.ggs", w.Sealed()), n == 65536u ? "truncated while reading rooms" : "too many rooms");
+            GgsWriter c = afterLighting(); c.U32(0); c.U32(n);
+            expect("colliders", TryLoad(r, "limit.ggs", c.Sealed()), n == 65536u ? "truncated while reading colliders" : "too many colliders");
+            GgsWriter t = afterLighting(); t.U32(0); t.U32(0); t.U32(n);
+            expect("triggers", TryLoad(r, "limit.ggs", t.Sealed()), n == 65536u ? "truncated while reading triggers" : "too many triggers");
+        }
+        // 개수에 비해 남은 바이트가 모자라면(개수 x 항목 최소 크기 > 남은 바이트) 큰 배열을 만들기 전에 거부한다.
+        GgsWriter w; w.Raw("GGS1", 4); w.U32(1); w.U32(0); w.U32(0); w.U32(1000);   // 노드 1000개, 데이터 없음
+        expect("nodes without data", TryLoad(r, "limit.ggs", w.Sealed()), "truncated while reading nodes");
+    }
+    gge_renderer_destroy(r);
+}
+
+// 정점 1개짜리 메시 앞부분을 쓴다(스킨이면 정점당 조인트/가중치까지). 이어서 인덱스 수 등을 호출자가 정한다.
+void WriteMeshHeader(GgsWriter& w, bool skinned, uint32_t vertexCount, uint32_t indexCount)
+{
+    w.U32(0);                        // textures
+    w.U32(1);                        // meshes
+    w.U8(skinned ? 1 : 0); w.U32(vertexCount); w.U32(indexCount);
+}
+
+void Test_SceneMeshAndSkeletonLimitsAreCheckedAtTheirBoundaries()
+{
+    GgeRenderer* r = NewRenderer(64, 48);
+    auto expect = [&](const char* label, const std::string& got, const char* part) {
+        bool ok = Has(got, part);
+        if (!ok) std::printf("  %s: got '%s', expected '%s'\n", label, got.c_str(), part);
+        CHECK(ok);
+    };
+    auto start = [] { GgsWriter w; w.Raw("GGS1", 4); w.U32(1); return w; };
+
+    { GgsWriter w = start(); WriteMeshHeader(w, false, 0, 3);          expect("zero vertices", TryLoad(r, "m.ggs", w.Sealed()), "invalid mesh header"); }
+    { GgsWriter w = start(); WriteMeshHeader(w, false, 1, 0);          expect("zero indices", TryLoad(r, "m.ggs", w.Sealed()), "invalid mesh header"); }
+    { GgsWriter w = start(); WriteMeshHeader(w, false, 8388608u + 1, 3); expect("vertex count over the limit", TryLoad(r, "m.ggs", w.Sealed()), "invalid mesh header"); }
+    { GgsWriter w = start(); WriteMeshHeader(w, false, 1, 67108864u + 1); expect("index count over the limit", TryLoad(r, "m.ggs", w.Sealed()), "invalid mesh header"); }
+    // 한도 그대로는 헤더 검사를 통과하고, 데이터가 없어서 읽는 단계에서 잘렸다고 해야 한다.
+    { GgsWriter w = start(); WriteMeshHeader(w, false, 8388608u, 3);   expect("vertex count at the limit", TryLoad(r, "m.ggs", w.Sealed()), "truncated while reading mesh vertices"); }
+    {
+        GgsWriter w = start(); WriteMeshHeader(w, false, 1, 67108864u);
+        for (int i = 0; i < 8; ++i) w.F(0);   // 정점 1개 분량
+        expect("index count at the limit", TryLoad(r, "m.ggs", w.Sealed()), "truncated while reading mesh indices");
+    }
+
+    // 본 수: 0과 65는 거부, 64는 허용(조인트가 0..1만 쓰는 스킨 띠로 실제 로드한다).
+    for (uint32_t bones : {0u, 65u}) {
+        GgsWriter w = start(); WriteMeshHeader(w, true, 1, 3);
+        for (int i = 0; i < 8; ++i) w.F(0);
+        for (uint32_t i : {0u, 0u, 0u}) w.U32(i);
+        for (int i = 0; i < 4; ++i) w.U32(0);   // joints
+        for (float f : {1.f, 0.f, 0.f, 0.f}) w.F(f);   // weights
+        w.U32(bones);
+        expect("bone count", TryLoad(r, "m.ggs", w.Sealed()), bones == 0 ? "invalid bone count 0" : "invalid bone count 65");
+    }
+    fs::path bmp = TempDir() / "bones64.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+    Spec sixtyFour = VisualSpec(bmp);
+    sixtyFour.bones = 64;
+    expect("64 bones load", TryLoad(r, "m.ggs", Serialize(sixtyFour)), "OK");
+    gge_renderer_destroy(r);
+}
+
+void Test_SceneStringAndClipLimitsAreCheckedAtTheirBoundaries()
+{
+    GgeRenderer* r = NewRenderer(64, 48);
+    auto expect = [&](const char* label, const std::string& got, const char* part) {
+        bool ok = Has(got, part);
+        if (!ok) std::printf("  %s: got '%s', expected '%s'\n", label, got.c_str(), part);
+        CHECK(ok);
+    };
+    fs::path bmp = TempDir() / "strings.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+
+    // 문자열 길이: 1 MiB는 허용, 1 MiB + 1은 거부.
+    for (size_t length : {size_t(1) << 20, (size_t(1) << 20) + 1}) {
+        Spec s = VisualSpec(bmp);
+        s.nodes[3].name = std::string(length, 'n');   // 그룹 노드의 이름
+        expect("long name", TryLoad(r, "s.ggs", Serialize(s)), length == (size_t(1) << 20) ? "OK" : "truncated while reading node name");
+    }
+    // 남은 바이트보다 긴 문자열(한도보다는 짧다)도 잘렸다고 해야 한다.
+    {
+        GgsWriter w; w.Raw("GGS1", 4); w.U32(1); w.U32(0); w.U32(0); w.U32(1);
+        w.U32(1000); w.Raw("abc", 3);   // 이름 길이 1000인데 3바이트뿐
+        expect("string longer than the file", TryLoad(r, "s.ggs", w.Sealed()), "truncated while reading node name");
+    }
+
+    // 클립 수(4096)와 채널 수(65536)
+    auto skinnedUpToClipCount = [&] {
+        GgsWriter w; w.Raw("GGS1", 4); w.U32(1);
+        WriteMeshHeader(w, true, 1, 3);
+        for (int i = 0; i < 8; ++i) w.F(0);
+        for (uint32_t i : {0u, 0u, 0u}) w.U32(i);
+        for (int i = 0; i < 4; ++i) w.U32(0);
+        for (float f : {1.f, 0.f, 0.f, 0.f}) w.F(f);
+        ChainData chain = MakeChain(1);
+        w.U32(1); w.I32(chain.parents[0]); w.Floats(chain.inverseBind); w.Floats(chain.translation); w.Floats(chain.rotation); w.Floats(chain.scale);
+        return w;
+    };
+    for (uint32_t n : {4096u, 4097u}) {
+        GgsWriter w = skinnedUpToClipCount(); w.U32(n);
+        expect("clips", TryLoad(r, "s.ggs", w.Sealed()), n == 4096u ? "truncated while reading clips" : "too many clips");
+    }
+    for (uint32_t n : {65536u, 65537u}) {
+        GgsWriter w = skinnedUpToClipCount(); w.U32(1); w.Str("c"); w.F(1.0f); w.U32(n);
+        expect("channels", TryLoad(r, "s.ggs", w.Sealed()), n == 65536u ? "truncated while reading clip channels" : "too many clip channels");
+    }
+    {   // 채널 경로는 0..2만 허용한다(3은 거부).
+        GgsWriter w = skinnedUpToClipCount(); w.U32(1); w.Str("c"); w.F(1.0f); w.U32(1);
+        w.I32(0); w.U32(3); w.U32(1); w.F(0); for (int i = 0; i < 4; ++i) w.F(0);
+        expect("channel path", TryLoad(r, "s.ggs", w.Sealed()), "invalid animation channel path 3");
+    }
+    gge_renderer_destroy(r);
+}
+
+void Test_SceneSkeletonRestPoseIsReadPerBoneAndComponent()
+{
+    // 본마다/성분마다 값이 다른 휴식 변환을 구워 두고(작성기), 같은 값으로 C API로 직접 만든 스켈레톤과 휴식 자세(전역 행렬)를 비교한다.
+    fs::path bmp = TempDir() / "rest.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+    Spec spec = VisualSpec(bmp);
+    spec.distinctRest = true;
+    spec.bones = 4;
+    spec.nodes[2].clip.clear();     // 클립 없음: 휴식 자세
+    GgeRenderer* a = NewRenderer(64, 48);
+    GgeScene* scene = gge_scene_load(a, WriteScene("rest.ggs", Serialize(spec)).string().c_str());
+    if (!scene) std::printf("  load failed: %s\n", gge_last_error());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(a); return; }
+    const int stripObject = gge_scene_find_object(scene, "Strip");
+    std::vector<float> loaded;
+    for (int bone = 0; bone < 4; ++bone) {
+        std::vector<float> m = BoneMatrix(a, stripObject, 4, bone);
+        loaded.insert(loaded.end(), m.begin(), m.end());
+    }
+
+    GgeRenderer* b = NewRenderer(64, 48);
+    int strip = SkinnedStrip(b);
+    int skeleton = CreateSkeleton(b, DistinctRestChain(4));
+    int obj = gge_object_create(b, strip, 0, 0);
+    gge_object_set_skeleton(b, obj, skeleton);
+    std::vector<float> all;
+    for (int bone = 0; bone < 4; ++bone) {
+        std::vector<float> m = BoneMatrix(b, obj, 4, bone);
+        all.insert(all.end(), m.begin(), m.end());
+    }
+    bool same = all.size() == loaded.size();
+    for (size_t i = 0; same && i < all.size(); ++i) same = std::fabs(all[i] - loaded[i]) < 1e-5f;
+    if (!same) std::printf("  rest pose differs from the manually built skeleton\n");
+    CHECK(same);
+    // 서로 다른 값이라는 전제 확인: 휴식 자세가 단순 항등 체인과 달라야 의미 있는 비교다.
+    int strip2 = SkinnedStrip(b);
+    int obj2 = gge_object_create(b, strip2, 0, 0);
+    gge_object_set_skeleton(b, obj2, CreateSkeleton(b, MakeChain(4)));
+    CHECK(BoneMatrix(b, obj2, 4, 3) != BoneMatrix(b, obj, 4, 3));
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(a);
+    gge_renderer_destroy(b);
+}
+
 }  // namespace
 
 int main()
@@ -3909,6 +4142,10 @@ int main()
         {"BakedPlaySampleStartsInsideTheFirstTrigger", Test_BakedPlaySampleStartsInsideTheFirstTrigger},
         {"BakedPlaySampleWalkFollowsTheGameplayRules", Test_BakedPlaySampleWalkFollowsTheGameplayRules},
         {"GoldenPlaySceneFromTheBakedSample", Test_GoldenPlaySceneFromTheBakedSample},
+        {"SceneCountLimitsAreCheckedAtTheirBoundaries", Test_SceneCountLimitsAreCheckedAtTheirBoundaries},
+        {"SceneMeshAndSkeletonLimitsAreCheckedAtTheirBoundaries", Test_SceneMeshAndSkeletonLimitsAreCheckedAtTheirBoundaries},
+        {"SceneStringAndClipLimitsAreCheckedAtTheirBoundaries", Test_SceneStringAndClipLimitsAreCheckedAtTheirBoundaries},
+        {"SceneSkeletonRestPoseIsReadPerBoneAndComponent", Test_SceneSkeletonRestPoseIsReadPerBoneAndComponent},
     };
     for (const Case& c : cases) {
         int before = g_failures;
