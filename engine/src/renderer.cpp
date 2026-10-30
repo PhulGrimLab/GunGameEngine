@@ -542,17 +542,6 @@ XMMATRIX Renderer::LocalMatrix(const Object& o) const
            XMMatrixTranslation(o.position.x, o.position.y, o.position.z);
 }
 
-XMMATRIX Renderer::WorldMatrix(const Object& o) const
-{
-    XMMATRIX world = LocalMatrix(o);
-    for (int p = o.parent; p != 0;) {
-        const Object& parent = objects_.at(p);
-        world = world * LocalMatrix(parent);
-        p = parent.parent;
-    }
-    return world;
-}
-
 XMMATRIX Renderer::CachedWorldMatrix(const Object& o) const
 {
     if (o.worldStamp == renderStamp_) {

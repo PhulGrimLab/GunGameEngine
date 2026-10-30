@@ -40,9 +40,10 @@ public class SampleAssetTests
     [Fact]
     public void TentacleSample_ImportsWithClipsAndLoadsInSampleScene()
     {
+        // 이 테스트는 저장소 안에서만 돈다(build.cmd). 샘플을 못 찾으면 조용히 통과하지 말고 실패해야 경로가 깨진 것을 알 수 있다.
         string? samples = FindSamples();
-        if (samples is null || !File.Exists(Path.Combine(samples, "tentacle.glb")))
-            return;  // 저장소 밖에서 실행되는 경우
+        Assert.True(samples is not null, "assets/samples was not found above the test binaries");
+        Assert.True(File.Exists(Path.Combine(samples, "tentacle.glb")), "assets/samples/tentacle.glb is missing");
 
         ImportedModel model = GltfImporter.Import(Path.Combine(samples, "tentacle.glb"));
         Assert.NotNull(model.Skeleton);

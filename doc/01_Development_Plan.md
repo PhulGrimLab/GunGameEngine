@@ -93,6 +93,7 @@ SIGNALIS 스타일(PS1풍 저해상도 3D, 고정 카메라, 3인칭 탐험/전�
 - **씬**: `*.scene.json`(버전 1). 메시/텍스처 경로는 씬 파일 기준 상대 경로, 회전은 라디안(UI는 도).
 
 ## 테스트 하네스
+- **테스트가 실제로 결함을 잡는지**는 별도로 측정한다(뮤테이션/커버리지). 결과, 약점 유형, 재현 방법은 `doc/03_Test_Quality_Report.md`, 스크립트는 `tools/mutation/`.
 - **C++**: `engine/tests/engine_tests.cpp`. 외부 프레임워크 없이 C API 경계를 검증. 골든 이미지는 `engine/tests/golden/*.ppm`, `GGE_UPDATE_GOLDEN=1`로 재생성(재생성 후에는 반드시 이미지를 눈으로 확인).
 - **C#**: `tools/GunGame.Interop.Tests` (xUnit). 실제 `gge.dll`을 WARP로 호출.
 - **WPF 화면**: `GunGameEditor.exe --selftest <scene.json|obj> <png>`. OS 화면 캡처 없이 앱이 그린 비트맵과 창 전체(`.window.png`)를 직접 저장.

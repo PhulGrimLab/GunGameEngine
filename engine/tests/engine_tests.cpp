@@ -2090,6 +2090,637 @@ void Test_TriggerFiresWhileWalkingThroughZone()
     gge_world_destroy(w);
 }
 
+// ---- 테스트 실효성 보강 ----
+// 뮤테이션 테스트(연산자를 하나씩 바꾼 변이를 만들어 테스트가 잡는지 측정)에서 살아남은 변이를 잡기 위한 테스트들이다.
+// 공통 원인: (1) 도형이 원점 근처에만 있어 평행이동이 소거되는 연산을 못 잡음, (2) 거부 사유(메시지)를 확인하지 않아 다른
+// 검사가 대신 걸러도 통과함, (3) 경계값(한도 바로 위/아래)과 첫 항목 이외의 항목을 확인하지 않음.
+
+bool ErrorContains(const char* fragment) { return std::strstr(gge_last_error(), fragment) != nullptr; }
+
+void Test_PolygonRejectionsNameTheViolatedRule()
+{
+    GgeWorld* w = gge_world_create();
+    auto sq = Rect(0, 0, 2, 2);
+    CHECK(AddRoom(w, sq.data(), 2) == 0);   CHECK(ErrorContains("at least 3"));
+    CHECK(AddRoom(w, nullptr, 4) == 0);     CHECK(ErrorContains("at least 3"));
+    auto nan = sq; nan[3] = std::nanf("");
+    CHECK(AddRoom(w, nan.data(), 4) == 0);  CHECK(ErrorContains("non-finite"));
+    auto inf = sq; inf[0] = INFINITY;
+    CHECK(AddRoom(w, inf.data(), 4) == 0);  CHECK(ErrorContains("non-finite"));
+    const float dup[] = {0, 0, 0, 0, 2, 0, 2, 2};
+    CHECK(AddRoom(w, dup, 4) == 0);         CHECK(ErrorContains("zero-length"));
+    const float line[] = {0, 0, 1, 0, 2, 0};
+    CHECK(AddRoom(w, line, 3) == 0);        CHECK(ErrorContains("zero area"));
+    const float bowtie[] = {0, 0, 4, 2, 4, 0, 0, 1};
+    CHECK(AddRoom(w, bowtie, 4) == 0);      CHECK(ErrorContains("cross"));
+    const float touch[] = {0, 0, 6, 0, 6, 4, 3, 0, 0, 4};  // 꼭짓점 (3,0)이 비인접 변 (0,0)-(6,0) 위에 닿는다
+    CHECK(AddRoom(w, touch, 5) == 0);       CHECK(ErrorContains("cross"));
+    const float touchLater[] = {6, 4, 3, 0, 0, 4, 0, 0, 6, 0};  // 같은 도형을 돌려 시작해, 앞 변의 끝점 (3,0)이 뒤 변 (0,0)-(6,0) 위에 닿게 한다
+    CHECK(AddRoom(w, touchLater, 5) == 0);  CHECK(ErrorContains("cross"));
+
+    // 같은 직선 위에서 되돌아가는 돌기: 각각 다른 위치/길이의 변이 겹친다.
+    const float spikeMid[] = {0, 0, 4, 0, 2, 0, 2, 2};
+    CHECK(AddRoom(w, spikeMid, 4) == 0);    CHECK(ErrorContains("overlap"));
+    const float spikeBeyond[] = {0, 0, 4, 0, -2, 0, -2, 3};  // 두 번째 변이 첫 변을 덮고 시작점 너머까지 간다
+    CHECK(AddRoom(w, spikeBeyond, 4) == 0); CHECK(ErrorContains("overlap"));
+    const float spikeLater[] = {0, 3, 0, 0, 4, 0, 2, 0};      // 둘째/셋째 변 쌍(첫 변이 아닌 곳)에서 되돌아간다
+    CHECK(AddRoom(w, spikeLater, 4) == 0);  CHECK(ErrorContains("overlap"));
+
+    // 유효한 도형은 받아야 한다: 한 직선 위를 지나가는(180도) 꼭짓점이 있어도, 삼각형도 유효하다.
+    const float throughVertex[] = {0, 0, 2, 0, 4, 0, 4, 4, 0, 4};
+    CHECK(AddRoom(w, throughVertex, 5) > 0);
+    const float triangle[] = {0, 0, 4, 0, 0, 3};
+    CHECK(AddRoom(w, triangle, 3) > 0);
+    const float far[] = {1000, -500, 1004, -500, 1004, -496, 1000, -496};  // 원점에서 먼 곳
+    CHECK(AddRoom(w, far, 4) > 0);
+    gge_world_destroy(w);
+}
+
+void Test_RoomCameraRejectionsNameTheViolatedRule()
+{
+    GgeWorld* w = gge_world_create();
+    auto sq = Rect(0, 0, 2, 2);
+    auto add = [&](const float* eye, const float* target, float fov) {
+        return gge_world_add_room(w, sq.data(), 4, eye, target, fov);
+    };
+    const float fine[3] = {4, 3, 5}, origin[3] = {0, 0, 0};
+    const float nanEye[3] = {std::nanf(""), 3, 5}, nanEyeY[3] = {4, std::nanf(""), 5}, infTarget[3] = {0, INFINITY, 0};
+    const float nanTargetZ[3] = {0, 0, std::nanf("")};
+    CHECK(add(nanEye, origin, 0.8f) == 0);     CHECK(ErrorContains("non-finite"));
+    CHECK(add(nanEyeY, origin, 0.8f) == 0);    CHECK(ErrorContains("non-finite"));
+    CHECK(add(fine, infTarget, 0.8f) == 0);    CHECK(ErrorContains("non-finite"));
+    CHECK(add(fine, nanTargetZ, 0.8f) == 0);   CHECK(ErrorContains("non-finite"));
+    CHECK(add(fine, fine, 0.8f) == 0);         CHECK(ErrorContains("differ"));   // eye == target은 "수직" 검사와 구별되어야 한다
+    CHECK(add(fine, origin, 0.0f) == 0);       CHECK(ErrorContains("fov"));
+    CHECK(add(fine, origin, std::nanf("")) == 0); CHECK(ErrorContains("fov"));
+    CHECK(add(fine, origin, 3.2f) == 0);       CHECK(ErrorContains("fov"));
+    CHECK(add(fine, origin, 3.1f) > 0);        // 상한(pi) 바로 아래는 유효
+    const float straightDown[3] = {0, 5, 0}, nearVertical[3] = {0, 1000, 0.001f}, steep[3] = {0, 10, 0.5f};
+    CHECK(add(straightDown, origin, 0.8f) == 0);  CHECK(ErrorContains("straight"));
+    CHECK(add(nearVertical, origin, 0.8f) == 0);  CHECK(ErrorContains("straight"));
+    CHECK(add(steep, origin, 0.8f) > 0);
+    gge_world_destroy(w);
+}
+
+void Test_ColliderRejectsDegenerateBoxes()
+{
+    GgeWorld* w = gge_world_create();
+    CHECK(gge_world_add_box_collider(w, 1, 0, 1, 1) == 0);  CHECK(ErrorContains("min < max"));  // X 폭 0
+    CHECK(gge_world_add_box_collider(w, 0, 1, 1, 1) == 0);  CHECK(ErrorContains("min < max"));  // Z 폭 0
+    CHECK(gge_world_add_box_collider(w, 2, 0, 1, 1) == 0);  CHECK(ErrorContains("min < max"));  // X 뒤바뀜
+    CHECK(gge_world_add_box_collider(w, 0, 2, 1, 1) == 0);  CHECK(ErrorContains("min < max"));  // Z 뒤바뀜
+    CHECK(gge_world_add_box_collider(w, 0, 0, 1, 1) == 1);
+    gge_world_destroy(w);
+}
+
+void Test_MoveCircleRejectsUnreasonableDistancesAndRadii()
+{
+    GgeWorld* w = gge_world_create();
+    float out[2];
+    // 반지름 0.5의 한도: 1024 걸음 x (0.5 x 0.5) = 256. 방향과 무관하게 이동 길이(대각선 포함)로 판정한다.
+    CHECK(gge_world_move_circle(w, 0, 0, 200, 0, 0.5f, out) == 1);
+    CHECK(gge_world_move_circle(w, 0, 0, 0, 200, 0.5f, out) == 1);
+    CHECK(gge_world_move_circle(w, 0, 0, 150, 150, 0.5f, out) == 1);  // 길이 212 < 256
+    CHECK(gge_world_move_circle(w, 0, 0, 300, 0, 0.5f, out) == 0);    CHECK(ErrorContains("too large"));
+    CHECK(gge_world_move_circle(w, 0, 0, 0, 300, 0.5f, out) == 0);    CHECK(ErrorContains("too large"));
+    CHECK(gge_world_move_circle(w, 0, 0, 250, 250, 0.5f, out) == 0);  CHECK(ErrorContains("too large"));  // 길이 354 > 256
+    CHECK(gge_world_move_circle(w, 0, 0, 500, 0, 0.5f, out) == 0);    CHECK(ErrorContains("too large"));  // 한도의 2배
+    CHECK(gge_world_move_circle(w, 0, 0, 1, 0, 0.0f, out) == 0);      CHECK(ErrorContains("radius"));     // 이동량이 작아도 반지름 0은 반지름 오류다
+    CHECK(gge_world_move_circle(w, 0, 0, 1, 0, -1.0f, out) == 0);     CHECK(ErrorContains("radius"));
+    CHECK(gge_world_move_circle(w, 0, 0, 1, 0, std::nanf(""), out) == 0); CHECK(ErrorContains("non-finite"));
+    // 반지름이 클수록 한도도 비례해 커진다(반지름 2: 1024 단위).
+    CHECK(gge_world_move_circle(w, 0, 0, 900, 0, 2.0f, out) == 1);
+    CHECK(gge_world_move_circle(w, 0, 0, 1100, 0, 2.0f, out) == 0);
+    gge_world_destroy(w);
+}
+
+void Test_CameraCutLatchUsesTheDirectionRecordedAtTheCut()
+{
+    // 컷 직후 입력 방향이 대각선(45도)이어도 같은 규칙이 적용된다: 그 방향에서 60도 안쪽이면 고정, 바깥이면 해제.
+    GgeWorld* w = gge_world_create();
+    AddCamRoom(w, 0, -5, 10, 5, kEyeNorth);   // 방 1: 앞 = -Z, 오른쪽 = +X  => 월드 이동 = (ix, -iy)
+    AddCamRoom(w, 10, -5, 20, 5, kEyeEast);   // 방 2: 앞 = +X, 오른쪽 = +Z  => 월드 이동 = (iy, ix)
+    gge_world_update_active_room(w, 5, 0);
+    const float h = 0.70710678f;
+    CHECK(Near(Input(w, h, h), h, -h));
+    gge_world_update_active_room(w, 15, 0);                       // 대각선으로 누른 채 컷
+    CHECK(Near(Input(w, h, h), h, -h));                           // 컷 직후 첫 입력: 방 1 기준 + 이 방향(45도)을 기록
+    const float c50 = 0.99619470f, s50 = -0.08715574f;            // 기록 방향에서 50도 돌린 방향(각도 -5도)
+    CHECK(Near(Input(w, c50, s50), c50, -s50));                   // 60도 안쪽: 여전히 방 1 기준
+    const float c70 = 0.90630779f, s70 = -0.42261826f;            // 기록 방향에서 70도 돌린 방향(각도 -25도)
+    CHECK(Near(Input(w, c70, s70), s70, c70));                    // 60도 바깥: 방 2 기준으로 옮긴다
+    gge_world_destroy(w);
+}
+
+void Test_CenterInsideABoxExitsThroughTheNearestFace()
+{
+    // 상자의 min이 0이 아니어야 면까지 거리 계산(center - min, max - center)의 부호/항을 구별할 수 있다.
+    GgeWorld* w = gge_world_create();
+    gge_world_add_box_collider(w, 10, 10, 14, 14);
+    const float r = 0.5f;
+    P2 minX = Move(w, 10.5f, 12, 0, 0, r);  CHECK(std::fabs(minX.x - 9.5f) < kTol && std::fabs(minX.z - 12) < kTol);
+    P2 maxX = Move(w, 13.5f, 12, 0, 0, r);  CHECK(std::fabs(maxX.x - 14.5f) < kTol && std::fabs(maxX.z - 12) < kTol);
+    P2 minZ = Move(w, 12, 10.5f, 0, 0, r);  CHECK(std::fabs(minZ.x - 12) < kTol && std::fabs(minZ.z - 9.5f) < kTol);
+    P2 maxZ = Move(w, 12, 13.5f, 0, 0, r);  CHECK(std::fabs(maxZ.x - 12) < kTol && std::fabs(maxZ.z - 14.5f) < kTol);
+    gge_world_destroy(w);
+}
+
+void Test_InsideCornerOfTwoWallsNeverPenetrates()
+{
+    GgeWorld* w = gge_world_create();
+    gge_world_add_box_collider(w, 4, -20, 5, 20);   // 동쪽 벽(x = 4가 면)
+    gge_world_add_box_collider(w, -20, 4, 20, 5);   // 남쪽 벽(z = 4가 면)
+    const float r = 1.0f;
+    struct Case { float x, z, dx, dz; };
+    const Case cases[] = {{0, 0, 20, 20}, {0, 0, 6, 3}, {0, 0, 3, 6}, {3.5f, 0, 0, 20}, {-10, -10, 30, 30}, {2, 2, 0.5f, 0.5f}};
+    for (const Case& c : cases) {
+        P2 p = Move(w, c.x, c.z, c.dx, c.dz, r);
+        CHECK(DistanceToBox(p, 4, -20, 5, 20) >= r - kTol);
+        CHECK(DistanceToBox(p, -20, 4, 20, 5) >= r - kTol);
+    }
+    P2 corner = Move(w, 0, 0, 20, 20, r);              // 모서리 안쪽으로 곧장: 양쪽 벽 앞(3, 3)에서 멈춘다
+    CHECK(std::fabs(corner.x - 3.0f) < kTol && std::fabs(corner.z - 3.0f) < kTol);
+    gge_world_destroy(w);
+}
+
+// 별 모양(중심에서 본 각도순 꼭짓점) 다각형은 항상 단순하고, 점의 내외부를 "점이 속한 쐐기의 변에서 중심과 같은 쪽인가"로
+// 독립적으로 판정할 수 있다. 엔진의 교차 횟수 방식과 다른 방법이라 같은 실수를 공유하지 않는다.
+void Test_PolygonContainmentMatchesAnIndependentReference()
+{
+    uint32_t seed = 987654321u;
+    auto rnd = [&]() {
+        seed = seed * 1664525u + 1013904223u;
+        return static_cast<double>(seed >> 8) / static_cast<double>(1 << 24);  // [0, 1)
+    };
+    const double kTwoPi = 6.283185307179586;
+    int polygons = 0, points = 0, insideCount = 0;
+    for (int iter = 0; iter < 300; ++iter) {
+        int n = 4 + static_cast<int>(rnd() * 8);                       // 4..11각형
+        double cx = (iter % 3 == 0) ? 0.0 : (rnd() - 0.5) * 2000.0;     // 원점에서 먼 도형도 섞는다
+        double cz = (iter % 3 == 0) ? 0.0 : (rnd() - 0.5) * 2000.0;
+        double scale = 1.0 + rnd() * 9.0;
+        std::vector<double> ang(n), rad(n);
+        std::vector<float> xz;
+        for (int i = 0; i < n; ++i) {
+            ang[i] = (i + (rnd() - 0.5) * 0.4) * kTwoPi / n;            // 각도순을 유지하는 지터(쐐기 각도 < 180도)
+            rad[i] = scale * (0.4 + rnd() * 0.6);
+            xz.push_back(static_cast<float>(cx + rad[i] * std::cos(ang[i])));
+            xz.push_back(static_cast<float>(cz + rad[i] * std::sin(ang[i])));
+        }
+        std::vector<float> submitted = xz;
+        if (iter % 2 == 1) {                                            // 감김 방향을 뒤집어도 같아야 한다
+            for (int i = 0; i < n; ++i) {
+                submitted[2 * i] = xz[2 * (n - 1 - i)];
+                submitted[2 * i + 1] = xz[2 * (n - 1 - i) + 1];
+            }
+        }
+        GgeWorld* w = gge_world_create();
+        int room = AddRoom(w, submitted.data(), n);
+        CHECK(room == 1);
+        if (room != 1) {
+            gge_world_destroy(w);
+            continue;
+        }
+        ++polygons;
+
+        for (int k = 0; k < 40; ++k) {
+            double px = cx + (rnd() - 0.5) * 2.6 * scale, pz = cz + (rnd() - 0.5) * 2.6 * scale;
+            double fx = static_cast<float>(px), fz = static_cast<float>(pz);
+            // 점이 속한 쐐기: 중심에서 본 각도가 [ang[i], ang[i+1]) 안
+            double a = std::atan2(fz - cz, fx - cx);
+            int wedge = -1;
+            for (int i = 0; i < n; ++i) {
+                double gap = std::fmod(ang[(i + 1) % n] - ang[i] + 2 * kTwoPi, kTwoPi);
+                double off = std::fmod(a - ang[i] + 2 * kTwoPi, kTwoPi);
+                if (off < gap) { wedge = i; break; }
+            }
+            CHECK(wedge >= 0);
+            if (wedge < 0) continue;
+            double ax = xz[2 * wedge], az = xz[2 * wedge + 1];
+            double bx = xz[2 * ((wedge + 1) % n)], bz = xz[2 * ((wedge + 1) % n) + 1];
+            double edgeLen = std::hypot(bx - ax, bz - az);
+            double sp = (bx - ax) * (fz - az) - (bz - az) * (fx - ax);   // 점이 변의 어느 쪽인가
+            double sc = (bx - ax) * (cz - az) - (bz - az) * (cx - ax);   // 중심이 변의 어느 쪽인가
+            if (std::fabs(sp) / edgeLen < 0.02 * scale) continue;        // 경계 근처는 판정이 모호하다
+            bool expected = sp * sc > 0;
+            int found = gge_world_find_room(w, static_cast<float>(fx), static_cast<float>(fz));
+            ++points;
+            if (expected) ++insideCount;
+            if ((found == 1) != expected) {
+                std::printf("  mismatch: polygon %d n=%d point (%g, %g) expected %d\n", iter, n, fx, fz, expected ? 1 : 0);
+            }
+            CHECK((found == 1) == expected);
+        }
+        gge_world_destroy(w);
+    }
+    CHECK(polygons == 300);
+    CHECK(points > 5000);                                  // 충분히 많은 점을 비교했다
+    CHECK(insideCount > 1500 && insideCount < points - 1500);  // 안/밖이 모두 충분히 섞여 있다(한쪽만 맞는 구현을 거른다)
+}
+
+// ---- 클립 샘플링: 모든 키/모든 축 ----
+std::vector<float> BoneMatrix(GgeRenderer* r, int object, int bones, int bone)
+{
+    std::vector<float> m(static_cast<size_t>(bones) * 16);
+    CHECK(gge_object_get_pose(r, object, m.data(), bones) == bones);
+    return std::vector<float>(m.begin() + bone * 16, m.begin() + bone * 16 + 16);
+}
+
+void Test_ClipSamplesEveryKeySegmentOnEveryAxis()
+{
+    GgeRenderer* r = NewRenderer();
+    int obj = gge_object_create(r, SkinnedStrip(r), 0, 0);
+    gge_object_set_skeleton(r, obj, ChainSkeleton(r));
+    // 이동: 네 키가 모든 축(x,y,z)에서 서로 다른 값을 갖는다(한 축만 쓰면 성분 인덱스 오류를 못 잡는다).
+    int clip = CreateClip(r, 3.0f, {{0, 0, {0, 1, 2, 3}, {1, 2, 3, 10, 20, 30, 100, 200, 300, -5, -6, -7}}});
+    CHECK(clip > 0);
+    auto expectAt = [&](float t, V3 e) {
+        CHECK(gge_object_set_pose(r, obj, clip, t, 0, 0, 0) == 1);
+        V3 got = BonePositions(r, obj, 3)[0];
+        if (!Near(got, e, 1e-3f)) std::printf("  t=%g got (%g,%g,%g) expected (%g,%g,%g)\n", t, got.x, got.y, got.z, e.x, e.y, e.z);
+        CHECK(Near(got, e, 1e-3f));
+    };
+    expectAt(0.0f, {1, 2, 3});
+    expectAt(0.25f, {3.25f, 6.5f, 9.75f});
+    expectAt(0.5f, {5.5f, 11, 16.5f});
+    expectAt(1.5f, {55, 110, 165});
+    expectAt(2.0f, {100, 200, 300});
+    expectAt(2.5f, {47.5f, 97, 146.5f});
+    expectAt(3.0f, {-5, -6, -7});
+    expectAt(9.0f, {-5, -6, -7});     // 끝 너머는 마지막 키
+    expectAt(-1.0f, {1, 2, 3});       // 시작 앞은 첫 키
+    gge_renderer_destroy(r);
+}
+
+void Test_ScaleChannelSamplesEveryKeyOnEveryAxis()
+{
+    GgeRenderer* r = NewRenderer();
+    int obj = gge_object_create(r, SkinnedStrip(r), 0, 0);
+    gge_object_set_skeleton(r, obj, ChainSkeleton(r));
+    int clip = CreateClip(r, 2.0f, {{0, 2, {0, 1, 2}, {1, 2, 3, 2, 4, 6, 4, 1, 2}}});
+    CHECK(clip > 0);
+    auto expectScale = [&](float t, float sx, float sy, float sz) {
+        CHECK(gge_object_set_pose(r, obj, clip, t, 0, 0, 0) == 1);
+        std::vector<float> m = BoneMatrix(r, obj, 3, 0);
+        CHECK(std::fabs(m[0] - sx) < 1e-4f && std::fabs(m[5] - sy) < 1e-4f && std::fabs(m[10] - sz) < 1e-4f);
+    };
+    expectScale(0.0f, 1, 2, 3);
+    expectScale(0.5f, 1.5f, 3, 4.5f);
+    expectScale(1.0f, 2, 4, 6);
+    expectScale(1.5f, 3, 2.5f, 4);
+    expectScale(2.0f, 4, 1, 2);
+    gge_renderer_destroy(r);
+}
+
+void Test_RotationKeysAreNormalizedAndSlerpedPerSegment()
+{
+    GgeRenderer* r = NewRenderer();
+    int obj = gge_object_create(r, SkinnedStrip(r), 0, 0);
+    gge_object_set_skeleton(r, obj, ChainSkeleton(r));
+    // Z축 각도 0, 60, 90, 180도의 쿼터니언을 일부러 정규화하지 않은 크기(2, 0.5, 3, 1)로 준다. 엔진이 모든 키를 정규화해야 한다.
+    auto q = [](float angle, float scale) { return std::array<float, 4>{0, 0, std::sin(angle / 2) * scale, std::cos(angle / 2) * scale}; };
+    std::vector<float> values;
+    for (auto k : {q(0, 2.0f), q(kPi / 3, 0.5f), q(kPi / 2, 3.0f), q(kPi, 1.0f)})
+        values.insert(values.end(), k.begin(), k.end());
+    int clip = CreateClip(r, 3.0f, {{0, 1, {0, 1, 2, 3}, values}});
+    CHECK(clip > 0);
+    auto expectAngle = [&](float t, float angle) {
+        CHECK(gge_object_set_pose(r, obj, clip, t, 0, 0, 0) == 1);
+        std::vector<float> m = BoneMatrix(r, obj, 3, 0);
+        // Z 회전(행 벡터): 첫 행 = (cos, sin, 0), 둘째 행 = (-sin, cos, 0). 정규화가 틀리면 행의 길이가 1이 아니다.
+        if (std::fabs(m[0] - std::cos(angle)) > 1e-3f) std::printf("  t=%g got cos %g expected %g\n", t, m[0], std::cos(angle));
+        CHECK(std::fabs(m[0] - std::cos(angle)) < 1e-3f && std::fabs(m[1] - std::sin(angle)) < 1e-3f);
+        CHECK(std::fabs(m[4] + std::sin(angle)) < 1e-3f && std::fabs(m[5] - std::cos(angle)) < 1e-3f);
+    };
+    expectAngle(0.0f, 0.0f);
+    expectAngle(0.5f, kPi / 6);               // 구간 0: 0 -> 60도의 중간
+    expectAngle(1.0f, kPi / 3);
+    expectAngle(1.5f, 5 * kPi / 12);          // 구간 1: 60 -> 90도의 중간
+    expectAngle(2.5f, 3 * kPi / 4);           // 구간 2: 90 -> 180도의 중간
+    expectAngle(3.0f, kPi);
+    gge_renderer_destroy(r);
+}
+
+void Test_SkeletonRejectsNonFiniteRestTransformsIndividually()
+{
+    GgeRenderer* r = NewRenderer();
+    ChainData ok = MakeChain(3);
+    ChainData t = ok; t.translation[4] = std::nanf("");
+    CHECK(CreateSkeleton(r, t) == 0);  CHECK(ErrorContains("rest transform"));
+    ChainData q = ok; q.rotation[5] = INFINITY;
+    CHECK(CreateSkeleton(r, q) == 0);  CHECK(ErrorContains("rest transform"));
+    ChainData s = ok; s.scale[7] = std::nanf("");
+    CHECK(CreateSkeleton(r, s) == 0);  CHECK(ErrorContains("rest transform"));
+    gge_renderer_destroy(r);
+}
+
+void Test_ClipDurationRules()
+{
+    GgeRenderer* r = NewRenderer();
+    const KeyChannel pose{0, 0, {0}, {0, 1, 0}};
+    CHECK(CreateClip(r, 0.0f, {pose}) > 0);                       // 길이 0(키 하나)은 유효한 정지 포즈다
+    CHECK(CreateClip(r, std::nanf(""), {pose}) == 0);  CHECK(ErrorContains("duration"));
+    CHECK(CreateClip(r, INFINITY, {pose}) == 0);       CHECK(ErrorContains("duration"));
+    CHECK(CreateClip(r, -0.5f, {pose}) == 0);          CHECK(ErrorContains("duration"));
+    gge_renderer_destroy(r);
+}
+
+// ---- 렌더러 인자 검증: 경계값과 항목별 확인 ----
+void Test_RendererArgumentValidationTables()
+{
+    CHECK(gge_renderer_create(10, 0, 1) == nullptr);
+    CHECK(gge_renderer_create(0, 10, 1) == nullptr);
+    CHECK(gge_renderer_create(-5, 10, 1) == nullptr);
+    CHECK(gge_renderer_create(10, -5, 1) == nullptr);
+    GgeRenderer* ok = gge_renderer_create(1, 1, 1);
+    CHECK(ok != nullptr);
+    gge_renderer_destroy(ok);
+
+    GgeRenderer* r = NewRenderer();
+    float v[3 * 8] = {};
+    for (int i = 0; i < 3; ++i) v[i * 8 + 5] = 1;
+    uint32_t idx[3] = {0, 1, 2}, atEnd[3] = {0, 1, 3}, four[4] = {0, 1, 2, 0};
+    CHECK(gge_mesh_create(r, v, 3, idx, 3) > 0);
+    CHECK(gge_mesh_create(r, v, 3, nullptr, 3) == 0);
+    CHECK(gge_mesh_create(r, v, 0, idx, 3) == 0);
+    CHECK(gge_mesh_create(r, v, -1, idx, 3) == 0);
+    CHECK(gge_mesh_create(r, v, 3, idx, 0) == 0);
+    CHECK(gge_mesh_create(r, v, 3, idx, -3) == 0);
+    CHECK(gge_mesh_create(r, v, 3, four, 4) == 0);
+    CHECK(gge_mesh_create(r, v, 3, atEnd, 3) == 0);  // 인덱스 == 정점 수: 경계 바로 밖
+
+    std::vector<uint8_t> pixels(4097u * 4, 200);
+    CHECK(gge_texture_create(r, pixels.data(), 4096, 1) > 0);   // 한도 정확히: 허용
+    CHECK(gge_texture_create(r, pixels.data(), 1, 4096) > 0);
+    CHECK(gge_texture_create(r, pixels.data(), 4097, 1) == 0);
+    CHECK(gge_texture_create(r, pixels.data(), 1, 4097) == 0);
+    CHECK(gge_texture_create(r, pixels.data(), 0, 1) == 0);
+    CHECK(gge_texture_create(r, pixels.data(), 1, 0) == 0);
+    CHECK(gge_texture_create(r, pixels.data(), -1, 1) == 0);
+    CHECK(gge_texture_create(r, pixels.data(), 1, -1) == 0);
+    CHECK(gge_texture_create(r, nullptr, 1, 1) == 0);
+    gge_renderer_destroy(r);
+}
+
+void Test_SkinWeightValidationChecksEveryVertexAndSlot()
+{
+    GgeRenderer* r = NewRenderer();
+    float v[3 * 8] = {};
+    for (int i = 0; i < 3; ++i) v[i * 8 + 5] = 1;
+    const uint32_t tri[3] = {0, 1, 2};
+    uint32_t joints[12] = {0, 1, 2, 0, 0, 1, 2, 0, 0, 1, 2, 0};
+    float weights[12] = {0.5f, 0.5f, 0, 0, 0.5f, 0.5f, 0, 0, 0.5f, 0.5f, 0, 0};
+    CHECK(gge_mesh_create_skinned(r, v, 3, joints, weights, tri, 3) > 0);
+
+    float w2 = weights[11];
+    weights[11] = -0.1f;                                           // 셋째 정점의 넷째 슬롯: 음수
+    CHECK(gge_mesh_create_skinned(r, v, 3, joints, weights, tri, 3) == 0);  CHECK(ErrorContains("weight"));
+    weights[11] = w2;
+    weights[6] = std::nanf("");                                    // 둘째 정점의 셋째 슬롯: NaN
+    CHECK(gge_mesh_create_skinned(r, v, 3, joints, weights, tri, 3) == 0);  CHECK(ErrorContains("weight"));
+    weights[6] = 0;
+    joints[5] = 64;                                                // 둘째 정점의 둘째 슬롯: 가중치 > 0인데 본 번호가 상한(64) 이상
+    CHECK(gge_mesh_create_skinned(r, v, 3, joints, weights, tri, 3) == 0);  CHECK(ErrorContains("joint index"));
+    joints[5] = 63;                                                // 마지막 허용 번호
+    CHECK(gge_mesh_create_skinned(r, v, 3, joints, weights, tri, 3) > 0);
+
+    // 가중치 0인 슬롯의 본 번호는 쓰이지 않으므로 아무 값이어도 되고, 스켈레톤 호환 검사에도 영향을 주지 않는다.
+    uint32_t garbage[12] = {0, 99, 7, 63, 0, 99, 7, 63, 0, 99, 7, 63};
+    float onlyFirst[12] = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
+    int mesh = gge_mesh_create_skinned(r, v, 3, garbage, onlyFirst, tri, 3);
+    CHECK(mesh > 0);
+    int obj = gge_object_create(r, mesh, 0, 0);
+    CHECK(gge_object_set_skeleton(r, obj, ChainSkeleton(r)) == 1);  // 본 3개: 실제로 쓰는 번호는 0뿐
+    gge_renderer_destroy(r);
+}
+
+void Test_VertexWithoutSkinWeightsFollowsBoneZero()
+{
+    GgeRenderer* r = NewRenderer(64, 48);
+    gge_renderer_set_camera(r, 0, 0, 6, 0, 0, 0, 0.8f);
+    const float v[] = {
+        -1, -1, 0, 0, 0, 1, 0, 1,
+         1, -1, 0, 0, 0, 1, 1, 1,
+         0,  1, 0, 0, 0, 1, 0.5f, 0,
+    };
+    const uint32_t tri[3] = {0, 1, 2}, joints[12] = {};
+    const float noInfluence[12] = {1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0};   // 셋째 정점은 영향이 전혀 없다
+    const float allBoneZero[12] = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
+    int meshA = gge_mesh_create_skinned(r, v, 3, joints, noInfluence, tri, 3);
+    int meshB = gge_mesh_create_skinned(r, v, 3, joints, allBoneZero, tri, 3);
+    CHECK(meshA > 0 && meshB > 0);
+    int skeleton = ChainSkeleton(r);
+    int clip = CreateClip(r, 1.0f, {{0, 0, {0, 1}, {0, 0, 0, 0, 1.0f, 0}}});   // 본 0이 위로 1 이동
+    auto frame = [&](int mesh, float time) {
+        int obj = gge_object_create(r, mesh, 0, 0);
+        gge_object_set_skeleton(r, obj, skeleton);
+        gge_object_set_pose(r, obj, clip, time, 0, 0, 0);
+        gge_object_set_color(r, obj, 0.9f, 0.6f, 0.3f);
+        Image img = Render(r);
+        gge_object_destroy(r, obj);
+        return img;
+    };
+    Image moved = frame(meshA, 1.0f);
+    CHECK(moved.bgra == frame(meshB, 1.0f).bgra);       // 영향 없는 정점은 본 0에 고정: 모든 정점이 본 0인 메시와 같다
+    CHECK(moved.bgra != frame(meshA, 0.0f).bgra);       // (포즈가 실제로 화면을 바꾼다)
+    gge_renderer_destroy(r);
+}
+
+void Test_DestroyObjectKeepsUnrelatedObjects()
+{
+    GgeRenderer* r = NewRenderer();
+    int mesh = CubeMesh(r);
+    int parent = gge_object_create(r, mesh, 0, 0);
+    int child = gge_object_create(r, mesh, 0, parent);
+    int grandchild = gge_object_create(r, mesh, 0, child);
+    int unrelatedRoot = gge_object_create(r, mesh, 0, 0);
+    int unrelatedChild = gge_object_create(r, mesh, 0, unrelatedRoot);
+    CHECK(gge_object_destroy(r, parent) == 1);
+    for (int gone : {parent, child, grandchild})
+        CHECK(gge_object_set_color(r, gone, 1, 1, 1) == 0);          // 서브트리는 사라졌다
+    for (int kept : {unrelatedRoot, unrelatedChild})
+        CHECK(gge_object_set_color(r, kept, 1, 1, 1) == 1);          // 관련 없는 오브젝트는 그대로다
+    gge_renderer_destroy(r);
+}
+
+void Test_ClipBoneRangeIsCheckedAgainstTheSkeletonBothWays()
+{
+    GgeRenderer* r = NewRenderer();
+    int skeleton = ChainSkeleton(r);                       // 본 3개(0..2)
+    int clipOk = CreateClip(r, 1.0f, {ZRotation(2, 0, 1)});
+    int clipBad = CreateClip(r, 1.0f, {ZRotation(3, 0, 1)});  // 본 번호 == 본 수: 경계 바로 밖
+    CHECK(clipOk > 0 && clipBad > 0);
+
+    int obj = gge_object_create(r, SkinnedStrip(r), 0, 0);
+    CHECK(gge_object_set_skeleton(r, obj, skeleton) == 1);
+    CHECK(gge_object_set_pose(r, obj, clipOk, 0, 0, 0, 0) == 1);
+    CHECK(gge_object_set_pose(r, obj, clipBad, 0, 0, 0, 0) == 0);  CHECK(ErrorContains("clip targets bone"));
+
+    // 반대 순서: 스켈레톤이 없을 때 지정한 클립은 스켈레톤을 붙이는 시점에 검사된다.
+    int obj2 = gge_object_create(r, SkinnedStrip(r), 0, 0);
+    CHECK(gge_object_set_pose(r, obj2, clipBad, 0, 0, 0, 0) == 1);
+    CHECK(gge_object_set_skeleton(r, obj2, skeleton) == 0);        CHECK(ErrorContains("clip targets bone"));
+    CHECK(gge_object_set_pose(r, obj2, 0, 0, 0, 0, 0) == 1);
+    CHECK(gge_object_set_skeleton(r, obj2, skeleton) == 1);
+    gge_renderer_destroy(r);
+}
+
+void Test_SkinnedMeshWithoutSkeletonRendersInBindPose()
+{
+    GgeRenderer* r = NewRenderer();
+    int obj = gge_object_create(r, SkinnedStrip(r), 0, 0);    // 스켈레톤 없음: 정점을 바인드 포즈 그대로 그린다
+    gge_object_set_color(r, obj, 0.9f, 0.6f, 0.3f);
+    gge_renderer_set_camera(r, 0, 1, 5, 0, 1, 0, 0.8f);
+    Image img = Render(r);
+    CHECK(img.At(img.width / 2, img.height / 2) != img.At(0, 0));   // 그려졌다(오류 없이)
+    gge_renderer_destroy(r);
+}
+
+void Test_BackgroundColorFollowsColorBits()
+{
+    GgeRenderer* r = NewRenderer(8, 8);
+    auto background = [&]() { Image img = Render(r); uint32_t px = img.At(4, 4); return std::array<int, 3>{Red(px), Green(px), Blue(px)}; };
+    CHECK((background() == std::array<int, 3>{13, 13, 20}));        // 기본(8비트): (0.05, 0.05, 0.08) x 255
+    CHECK(gge_renderer_set_retro(r, 0, 5, 0, 0) == 1);
+    CHECK((background() == std::array<int, 3>{16, 16, 16}));        // 5비트: 31단계로 양자화
+    CHECK(gge_renderer_set_retro(r, 0, 1, 0, 0) == 1);
+    CHECK((background() == std::array<int, 3>{0, 0, 0}));           // 1비트: 2단계
+    CHECK(gge_renderer_set_retro(r, 0, 8, 0, 0) == 1);
+    CHECK((background() == std::array<int, 3>{13, 13, 20}));        // 8비트로 돌아오면 양자화가 없다
+    gge_renderer_destroy(r);
+}
+
+// ---- 로더 경계 ----
+void Test_ObjIndexBoundaries()
+{
+    fs::path dir = TempDir();
+    GgeRenderer* r = NewRenderer();
+    auto load = [&](const char* name, const std::string& text) {
+        fs::path p = dir / name;
+        WriteText(p, text);
+        return gge_mesh_load_obj(r, p.string().c_str());
+    };
+    CHECK(load("idx_ok.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n") > 0);
+    CHECK(load("idx_last.obj", "v 0 0 0\nf 1 1 1\n") > 0);           // 마지막 정점(1)은 유효
+    CHECK(load("idx_past.obj", "v 0 0 0\nf 1 1 2\n") == 0);          // 정점 수 바로 다음(2): 경계 밖
+    CHECK(ErrorContains("range"));
+    CHECK(load("idx_zero.obj", "v 0 0 0\nf 0 1 1\n") == 0);          // 0은 유효한 인덱스가 아니다
+    CHECK(ErrorContains("range"));
+    CHECK(load("idx_neg_last.obj", "v 0 0 0\nf -1 -1 -1\n") > 0);    // -1 = 마지막 정점
+    CHECK(load("idx_neg_past.obj", "v 0 0 0\nf -1 -1 -2\n") == 0);   // -2는 정점 수(1)보다 한 칸 더 뒤
+    CHECK(ErrorContains("range"));
+    CHECK(load("idx_neg_far.obj", "v 0 0 0\nf -1 -1 -9\n") == 0);
+    gge_renderer_destroy(r);
+}
+
+void Test_GgmHeaderAndIndexBoundaries()
+{
+    fs::path dir = TempDir();
+    GgeRenderer* r = NewRenderer();
+    // 헤더에 적은 개수와 실제로 쓴 데이터가 다를 수 있게 만들어 각 검사를 따로 건드린다.
+    auto make = [&](const char* name, uint32_t headerVertices, uint32_t headerIndices, uint32_t realVertices,
+                    const std::vector<uint32_t>& indices) {
+        fs::path p = dir / name;
+        std::ofstream f(p, std::ios::binary);
+        f.write("GGM1", 4);
+        f.write(reinterpret_cast<const char*>(&headerVertices), 4);
+        f.write(reinterpret_cast<const char*>(&headerIndices), 4);
+        std::vector<float> vertices(static_cast<size_t>(realVertices) * 8, 0.5f);
+        f.write(reinterpret_cast<const char*>(vertices.data()), static_cast<std::streamsize>(vertices.size() * 4));
+        f.write(reinterpret_cast<const char*>(indices.data()), static_cast<std::streamsize>(indices.size() * 4));
+        f.close();  // 닫아서 내용을 반영한 뒤에 읽는다
+        return gge_mesh_load_ggm(r, p.string().c_str());
+    };
+    const uint32_t kMax = 64u * 1024 * 1024;
+    CHECK(make("ggm_ok.ggm", 3, 3, 3, {0, 1, 2}) > 0);
+    CHECK(make("ggm_v0.ggm", 0, 3, 0, {0, 1, 2}) == 0);        CHECK(ErrorContains("invalid GGM1 header"));
+    CHECK(make("ggm_i0.ggm", 3, 0, 3, {}) == 0);               CHECK(ErrorContains("invalid GGM1 header"));
+    CHECK(make("ggm_i4.ggm", 3, 4, 3, {0, 1, 2, 0}) == 0);     CHECK(ErrorContains("invalid GGM1 header"));   // 3의 배수가 아님
+    CHECK(make("ggm_vbig.ggm", kMax + 1, 3, 3, {0, 1, 2}) == 0);   CHECK(ErrorContains("invalid GGM1 header")); // 정점 수 상한 초과
+    CHECK(make("ggm_ibig.ggm", 3, kMax + 2, 3, {0, 1, 2}) == 0);   CHECK(ErrorContains("invalid GGM1 header")); // (kMax+2)는 3의 배수
+    CHECK(make("ggm_edge.ggm", 3, 3, 3, {0, 1, 3}) == 0);      CHECK(ErrorContains("out of range"));         // 인덱스 == 정점 수
+    CHECK(make("ggm_short.ggm", 3, 6, 3, {0, 1, 2}) == 0);     CHECK(ErrorContains("does not match"));       // 헤더보다 짧은 파일
+    CHECK(make("ggm_long.ggm", 3, 3, 3, {0, 1, 2, 0}) == 0);   CHECK(ErrorContains("does not match"));       // 헤더보다 긴 파일
+    gge_renderer_destroy(r);
+}
+
+void Test_TextureLoadEnforcesTheSizeLimitPerDimension()
+{
+    fs::path dir = TempDir();
+    GgeRenderer* r = NewRenderer();
+    auto load = [&](const char* name, int w, int h) {
+        fs::path p = dir / name;
+        WriteBmp(p, w, h, std::vector<uint8_t>(static_cast<size_t>(w) * h * 3, 128));
+        return gge_texture_load(r, p.string().c_str());
+    };
+    CHECK(load("tex_1x1.bmp", 1, 1) > 0);
+    CHECK(load("tex_4096x1.bmp", 4096, 1) > 0);                      // 한도 정확히: 허용
+    CHECK(load("tex_1x4096.bmp", 1, 4096) > 0);
+    CHECK(load("tex_4097x1.bmp", 4097, 1) == 0);  CHECK(ErrorContains("too large"));   // 가로만 초과
+    CHECK(load("tex_1x4097.bmp", 1, 4097) == 0);  CHECK(ErrorContains("too large"));   // 세로만 초과
+    gge_renderer_destroy(r);
+}
+
+// 임의 축 회전: x,y,z,w 네 성분이 모두 0이 아닌 쿼터니언 키. Z축 회전만 쓰면 x,y 성분이 항상 0이라 성분 인덱스 오류를 못 잡는다.
+// 기대값은 엔진 코드와 독립적으로(표준 slerp 공식 + 쿼터니언 -> 회전 행렬) 계산한다.
+struct Quat { double x, y, z, w; };
+
+Quat Normalized(Quat q)
+{
+    double len = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    return {q.x / len, q.y / len, q.z / len, q.w / len};
+}
+
+Quat SlerpRef(Quat a, Quat b, double t)
+{
+    double dot = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+    if (dot < 0) { b = {-b.x, -b.y, -b.z, -b.w}; dot = -dot; }   // 짧은 쪽으로 돈다
+    double theta = std::acos(std::fmin(1.0, dot)), s = std::sin(theta);
+    double ka = s < 1e-6 ? 1 - t : std::sin((1 - t) * theta) / s, kb = s < 1e-6 ? t : std::sin(t * theta) / s;
+    return {ka * a.x + kb * b.x, ka * a.y + kb * b.y, ka * a.z + kb * b.z, ka * a.w + kb * b.w};
+}
+
+// 행 벡터 규약의 3x3(행 우선): 열 벡터 회전 행렬 R의 전치. 엔진의 본 행렬 앞 3x3(m[0..2], m[4..6], m[8..10])과 비교한다.
+std::array<double, 9> RotationRows(Quat q)
+{
+    q = Normalized(q);
+    double x = q.x, y = q.y, z = q.z, w = q.w;
+    return {1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w),
+            2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w),
+            2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y)};
+}
+
+void Test_RotationKeysOnArbitraryAxesMatchAnIndependentReference()
+{
+    GgeRenderer* r = NewRenderer();
+    int obj = gge_object_create(r, SkinnedStrip(r), 0, 0);
+    gge_object_set_skeleton(r, obj, ChainSkeleton(r));
+    // 정규화하지 않은 크기로 준다(엔진이 키마다 정규화해야 한다). 연속한 키의 내적이 양수/음수인 경우를 모두 섞는다.
+    const Quat keys[4] = {{0.1, 0.2, 0.3, 0.9}, {0.5, -0.4, 0.2, 1.4}, {-0.3, 0.6, 0.1, -0.65}, {0.2, 0.2, -0.7, 0.6}};
+    std::vector<float> values;
+    for (const Quat& k : keys)
+        values.insert(values.end(), {static_cast<float>(k.x), static_cast<float>(k.y), static_cast<float>(k.z), static_cast<float>(k.w)});
+    int clip = CreateClip(r, 3.0f, {{0, 1, {0, 1, 2, 3}, values}});
+    CHECK(clip > 0);
+
+    auto expectAt = [&](float t, Quat expected) {
+        CHECK(gge_object_set_pose(r, obj, clip, t, 0, 0, 0) == 1);
+        std::vector<float> m = BoneMatrix(r, obj, 3, 0);
+        std::array<double, 9> e = RotationRows(expected);
+        const int idx[9] = {0, 1, 2, 4, 5, 6, 8, 9, 10};
+        bool ok = true;
+        for (int i = 0; i < 9; ++i) ok = ok && std::fabs(m[idx[i]] - e[i]) < 2e-3;
+        if (!ok) std::printf("  t=%g rotation differs from the reference\n", t);
+        CHECK(ok);
+    };
+    for (int k = 0; k < 4; ++k) expectAt(static_cast<float>(k), Normalized(keys[k]));                       // 키 위치
+    for (int k = 0; k < 3; ++k) {
+        expectAt(k + 0.5f, SlerpRef(Normalized(keys[k]), Normalized(keys[k + 1]), 0.5));                        // 구간 중간
+        expectAt(k + 0.25f, SlerpRef(Normalized(keys[k]), Normalized(keys[k + 1]), 0.25));
+    }
+    gge_renderer_destroy(r);
+}
+
 }  // namespace
 
 int main()
@@ -2166,6 +2797,30 @@ int main()
         {"TriggerDisableAndEnableWhileInside", Test_TriggerDisableAndEnableWhileInside},
         {"TriggerQueueIsFifoAndBounded", Test_TriggerQueueIsFifoAndBounded},
         {"TriggerFiresWhileWalkingThroughZone", Test_TriggerFiresWhileWalkingThroughZone},
+        {"PolygonRejectionsNameTheViolatedRule", Test_PolygonRejectionsNameTheViolatedRule},
+        {"RoomCameraRejectionsNameTheViolatedRule", Test_RoomCameraRejectionsNameTheViolatedRule},
+        {"ColliderRejectsDegenerateBoxes", Test_ColliderRejectsDegenerateBoxes},
+        {"MoveCircleRejectsUnreasonableDistancesAndRadii", Test_MoveCircleRejectsUnreasonableDistancesAndRadii},
+        {"CameraCutLatchUsesTheDirectionRecordedAtTheCut", Test_CameraCutLatchUsesTheDirectionRecordedAtTheCut},
+        {"CenterInsideABoxExitsThroughTheNearestFace", Test_CenterInsideABoxExitsThroughTheNearestFace},
+        {"InsideCornerOfTwoWallsNeverPenetrates", Test_InsideCornerOfTwoWallsNeverPenetrates},
+        {"PolygonContainmentMatchesAnIndependentReference", Test_PolygonContainmentMatchesAnIndependentReference},
+        {"ClipSamplesEveryKeySegmentOnEveryAxis", Test_ClipSamplesEveryKeySegmentOnEveryAxis},
+        {"ScaleChannelSamplesEveryKeyOnEveryAxis", Test_ScaleChannelSamplesEveryKeyOnEveryAxis},
+        {"RotationKeysAreNormalizedAndSlerpedPerSegment", Test_RotationKeysAreNormalizedAndSlerpedPerSegment},
+        {"SkeletonRejectsNonFiniteRestTransformsIndividually", Test_SkeletonRejectsNonFiniteRestTransformsIndividually},
+        {"ClipDurationRules", Test_ClipDurationRules},
+        {"RendererArgumentValidationTables", Test_RendererArgumentValidationTables},
+        {"SkinWeightValidationChecksEveryVertexAndSlot", Test_SkinWeightValidationChecksEveryVertexAndSlot},
+        {"VertexWithoutSkinWeightsFollowsBoneZero", Test_VertexWithoutSkinWeightsFollowsBoneZero},
+        {"DestroyObjectKeepsUnrelatedObjects", Test_DestroyObjectKeepsUnrelatedObjects},
+        {"ClipBoneRangeIsCheckedAgainstTheSkeletonBothWays", Test_ClipBoneRangeIsCheckedAgainstTheSkeletonBothWays},
+        {"SkinnedMeshWithoutSkeletonRendersInBindPose", Test_SkinnedMeshWithoutSkeletonRendersInBindPose},
+        {"BackgroundColorFollowsColorBits", Test_BackgroundColorFollowsColorBits},
+        {"ObjIndexBoundaries", Test_ObjIndexBoundaries},
+        {"GgmHeaderAndIndexBoundaries", Test_GgmHeaderAndIndexBoundaries},
+        {"TextureLoadEnforcesTheSizeLimitPerDimension", Test_TextureLoadEnforcesTheSizeLimitPerDimension},
+        {"RotationKeysOnArbitraryAxesMatchAnIndependentReference", Test_RotationKeysOnArbitraryAxesMatchAnIndependentReference},
     };
     for (const Case& c : cases) {
         int before = g_failures;

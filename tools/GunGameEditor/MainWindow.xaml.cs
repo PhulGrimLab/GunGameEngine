@@ -520,8 +520,17 @@ public partial class MainWindow : Window
             return;
         if (_lastMouse is not { } last) return;
         Point now = e.GetPosition(Viewport);
-        _camera.Rotate(-(float)(now.X - last.X) * 0.01f, (float)(now.Y - last.Y) * 0.01f);
+        OrbitDrag(last, now);
         _lastMouse = now;
+    }
+
+    /// <summary>마우스를 from에서 to로 끌었을 때의 궤도 회전. 이벤트 핸들러와 분리해 두어(핸들러는 실제 커서 위치를 읽는다)
+    /// 좌표만으로 테스트할 수 있다. 플레이 중에는 카메라가 방에 고정되어 있어 무시한다.</summary>
+    internal void OrbitDrag(Point from, Point to)
+    {
+        if (_play is not null)
+            return;
+        _camera.Rotate(-(float)(to.X - from.X) * 0.01f, (float)(to.Y - from.Y) * 0.01f);
         Redraw();
     }
 

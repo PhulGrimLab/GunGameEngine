@@ -154,4 +154,34 @@ public sealed class PlayModeTests(UiHost host) : UiTestBase(host)
         }
         finally { Directory.Delete(Path.GetDirectoryName(path)!, true); }
     });
+
+    [Fact]
+    public void DraggingTheViewport_OrbitsTheEditCamera() => Ui(s =>
+    {
+        s.Window.AddMesh(EditorSession.Sample("cube.obj"));
+        float yaw = s.Window.Camera.Yaw, pitch = s.Window.Camera.Pitch;
+        byte[] before = s.ViewportPixels();
+
+        s.Window.OrbitDrag(new System.Windows.Point(100, 100), new System.Windows.Point(160, 120));
+        Assert.True(s.Window.Camera.Yaw < yaw);        // 오른쪽으로 끌면 시계 방향(-yaw)
+        Assert.True(s.Window.Camera.Pitch > pitch);    // 아래로 끌면 위에서 내려다본다(+pitch)
+        byte[] moved = s.ViewportPixels();
+        Assert.NotEqual(before, moved);
+
+        s.Window.OrbitDrag(new System.Windows.Point(160, 120), new System.Windows.Point(100, 100));  // 반대로 끌면 원래대로
+        Assert.Equal(yaw, s.Window.Camera.Yaw, 4);
+        Assert.Equal(pitch, s.Window.Camera.Pitch, 4);
+        Assert.Equal(before, s.ViewportPixels());
+    });
+
+    [Fact]
+    public void OrbitDragIsIgnoredWhilePlaying() => WithPlayScene(s =>
+    {
+        float yaw = s.Window.Camera.Yaw;
+        s.Click("Play");
+        byte[] playing = s.ViewportPixels();
+        s.Window.OrbitDrag(new System.Windows.Point(0, 0), new System.Windows.Point(200, 80));
+        Assert.Equal(yaw, s.Window.Camera.Yaw);
+        Assert.Equal(playing, s.ViewportPixels());
+    });
 }

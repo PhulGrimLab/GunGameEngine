@@ -107,8 +107,7 @@ private:
     void RequireClipFits(int clipId, int skeletonId) const;
     std::vector<DirectX::XMFLOAT4X4> Pose(const Object& o) const;
     DirectX::XMMATRIX LocalMatrix(const Object& o) const;
-    DirectX::XMMATRIX WorldMatrix(const Object& o) const;
-    // WorldMatrix와 같은 결과를 Render 중 한 번만 계산하도록 부모 체인을 캐시한다(깊은 계층에서 O(깊이^2) -> O(깊이)).
+    // 부모 체인을 곱한 월드 행렬. Render 중 오브젝트마다 한 번만 계산하도록 캐시한다(깊은 계층에서 O(깊이^2) -> O(깊이)).
     DirectX::XMMATRIX CachedWorldMatrix(const Object& o) const;
     ComPtr<ID3D11ShaderResourceView> MakeTexture(const uint8_t* rgba, int width, int height);
 
