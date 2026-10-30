@@ -7,6 +7,10 @@ public sealed class SceneDocument
 {
     public ObservableCollection<SceneNode> Roots { get; } = [];
 
+    /// <summary>방, 충돌체, 트리거, 플레이어. 노드 구조와는 독립이며 플레이 모드와 씬 파일 저장/로드에 쓰인다.
+    /// 에디터에는 아직 편집 UI가 없어 씬 파일(JSON)에서 읽어 온다.</summary>
+    public GameplayData Gameplay { get; set; } = new();
+
     /// <summary>노드가 추가/삭제/이동될 때 발생한다. 속성 변경은 포함하지 않는다.</summary>
     public event Action? StructureChanged;
 

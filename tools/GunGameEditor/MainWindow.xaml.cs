@@ -29,6 +29,9 @@ public partial class MainWindow : Window
     private SceneNode? _dragNode;
     private readonly DispatcherTimer _animationTimer = new(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
     private long _lastTick;
+    private GameplayOverlay? _overlay;
+    private PlaySession? _play;
+    private readonly List<string> _playLog = [];
 
     public MainWindow()
     {
@@ -44,6 +47,7 @@ public partial class MainWindow : Window
             _renderer = new EngineRenderer(RenderWidth, RenderHeight, useWarp: SelfTest.IsRequested);
             ApplyRetro();
             _sync = new SceneSync(_renderer);
+            _overlay = new GameplayOverlay(_renderer);
             _sync.Changed += OnSceneChanged;
             _sync.PoseChanged += Redraw;  // 애니메이션 틱은 다시 그리기만 한다(상태 표시줄/클립 목록은 건드리지 않는다)
             Inspector.ClipNamesProvider = _sync.GetClipNames;
@@ -68,7 +72,13 @@ public partial class MainWindow : Window
             long now = Stopwatch.GetTimestamp();
             float dt = (float)Stopwatch.GetElapsedTime(_lastTick, now).TotalSeconds;
             _lastTick = now;
-            _sync?.Tick(Math.Min(dt, 0.1f));  // 창이 멈췄다 돌아올 때 애니메이션이 튀지 않게 상한을 둔다
+            float step = Math.Min(dt, 0.1f);
+            if (_play is not null)
+            {
+                (float inputX, float inputY) = ReadPlayInput();
+                StepPlay(inputX, inputY, step);
+            }
+            _sync?.Tick(step);  // 창이 멈췄다 돌아올 때 애니메이션이 튀지 않게 상한을 둔다
         };
         _animationTimer.Start();
     }
@@ -79,6 +89,8 @@ public partial class MainWindow : Window
     private void OnClosed(object? sender, EventArgs e)
     {
         _animationTimer.Stop();
+        _play?.Dispose();
+        _overlay?.Dispose();  // 렌더러보다 먼저 정리한다
         _sync?.Dispose();
         _renderer?.Dispose();
     }
@@ -139,11 +151,13 @@ public partial class MainWindow : Window
 
     private void SetDocument(SceneDocument document, string? path)
     {
+        StopPlay();  // 플레이 중에 씬이 바뀌면 이전 씬의 세션을 끝낸다
         _document = document;
         _scenePath = path;
         Hierarchy.ItemsSource = document.Roots;
         Inspector.Show(null);
         _sync?.Attach(document);
+        UpdateOverlay();
         UpdateTitle();
         if (path is not null && _sync?.Errors.Count == 0)
             StatusText.Text = "Opened " + path;
@@ -290,6 +304,131 @@ public partial class MainWindow : Window
         }
     }
 
+    // ---- 게임플레이 오버레이 ----
+    private void OnGameplayOverlayChanged(object sender, RoutedEventArgs e) => UpdateOverlay();
+
+    /// <summary>"Show gameplay"가 켜져 있으면 문서의 방/충돌체/트리거를 뷰포트에 표시하고, 아니면 지운다.</summary>
+    private void UpdateOverlay()
+    {
+        if (_overlay is null)
+            return;
+        if (GameplayCheck.IsChecked == true)
+            _overlay.Show(_document.Gameplay);
+        else
+            _overlay.Hide();
+        Redraw();
+    }
+
+    internal bool GameplayOverlayVisible => _overlay?.Visible == true;
+
+    // ---- 플레이 모드 ----
+    internal bool IsPlaying => _play is not null;
+
+    /// <summary>진행 중인 플레이 세션(테스트가 위치/활성 방을 확인하는 용도). 플레이 중이 아니면 null.</summary>
+    internal PlaySession? CurrentPlay => _play;
+
+    /// <summary>플레이 중 발생한 트리거 이벤트/카메라 전환 기록(시작할 때 비워진다).</summary>
+    internal IReadOnlyList<string> PlayLog => _playLog;
+
+    private void OnPlayToggle(object sender, RoutedEventArgs e)
+    {
+        if (_play is null)
+            StartPlay();
+        else
+            StopPlay();
+    }
+
+    /// <summary>씬의 gameplay 데이터로 플레이를 시작한다. 시작할 수 없으면 사유를 상태 표시줄에 띄우고 false.</summary>
+    internal bool StartPlay()
+    {
+        if (_play is not null || _sync is null)
+            return false;
+        try
+        {
+            _play = PlaySession.Start(_document);
+        }
+        catch (PlayException ex)
+        {
+            StatusText.Text = "Play failed: " + ex.Message;
+            return false;
+        }
+        _playLog.Clear();
+        SetEditingEnabled(false);
+        PlayButton.Content = "Stop";
+        ApplyPlayPose();
+        StatusText.Text = $"Playing in '{_play.ActiveRoomName}': WASD / arrow keys to move";
+        return true;
+    }
+
+    /// <summary>플레이를 끝내고 플레이어를 문서의 위치로 되돌리고 편집 카메라/UI를 복원한다.</summary>
+    internal void StopPlay()
+    {
+        if (_play is null)
+            return;
+        SceneNode player = _play.PlayerNode;
+        _play.Dispose();
+        _play = null;
+        _sync?.ClearPreview(player);  // 문서는 바뀐 적이 없으므로 화면만 원래 값으로 되돌리면 된다
+        SetEditingEnabled(true);
+        PlayButton.Content = "Play";
+        StatusText.Text = "Stopped";
+        Redraw();
+    }
+
+    /// <summary>한 프레임을 진행한다(타이머가 키보드 입력으로 부르고, 테스트는 직접 부른다).</summary>
+    internal void StepPlay(float inputX, float inputY, float dt)
+    {
+        if (_play is null)
+            return;
+        try
+        {
+            string roomBefore = _play.ActiveRoomName;
+            foreach (PlayEvent e in _play.Step(inputX, inputY, dt))
+                Log($"{(e.Kind == TriggerEventKind.Enter ? "Enter" : "Exit")} '{e.TriggerName}' (tag {e.Tag})");
+            if (_play.ActiveRoomName != roomBefore)
+                Log($"Camera: room '{_play.ActiveRoomName}'");
+            ApplyPlayPose();
+        }
+        catch (EngineException ex)
+        {
+            StatusText.Text = "Play error: " + ex.Message;
+            StopPlay();
+        }
+    }
+
+    private void Log(string line)
+    {
+        _playLog.Add(line);
+        StatusText.Text = line;
+    }
+
+    private void ApplyPlayPose()
+    {
+        if (_play is { } play)
+            _sync?.Preview(play.PlayerNode, play.PlayerPosition, play.PlayerRotation);  // PoseChanged -> 다시 그리기
+    }
+
+    /// <summary>WASD/방향키를 입력 축으로 읽는다(오른쪽+, 화면 위쪽+). 키 상태는 창이 활성일 때만 갱신된다.</summary>
+    private static (float X, float Y) ReadPlayInput()
+    {
+        static float Axis(Key positive, Key positiveAlt, Key negative, Key negativeAlt) =>
+            (Keyboard.IsKeyDown(positive) || Keyboard.IsKeyDown(positiveAlt) ? 1f : 0f) -
+            (Keyboard.IsKeyDown(negative) || Keyboard.IsKeyDown(negativeAlt) ? 1f : 0f);
+        return (Axis(Key.D, Key.Right, Key.A, Key.Left), Axis(Key.W, Key.Up, Key.S, Key.Down));
+    }
+
+    /// <summary>플레이 중에는 씬 편집(툴바, 계층, 인스펙터)을 막는다: 노드가 바뀌거나 사라지면 세션이 어긋난다.</summary>
+    private void SetEditingEnabled(bool enabled)
+    {
+        FileBar.IsEnabled = enabled;
+        NodeBar.IsEnabled = enabled;
+        Hierarchy.IsEnabled = enabled;
+        if (enabled)
+            Inspector.Show(Selected);  // 선택 상태에 맞게 인스펙터 활성 여부를 되돌린다
+        else
+            Inspector.IsEnabled = false;
+    }
+
     // ---- 렌더 ----
     private void OnRetroChanged(object sender, RoutedEventArgs e)
     {
@@ -314,7 +453,15 @@ public partial class MainWindow : Window
     internal void Redraw()
     {
         if (_renderer is null) return;
-        _renderer.SetCamera(_camera.Eye, _camera.Target, FovY);
+        if (_play is not null)
+        {
+            RoomCameraData room = _play.Camera;  // 플레이 중에는 활성 방의 고정 카메라
+            _renderer.SetCamera(room.Eye, room.Target, room.FovY);
+        }
+        else
+        {
+            _renderer.SetCamera(_camera.Eye, _camera.Target, FovY);
+        }
         _renderer.Render();
         unsafe
         {
@@ -355,6 +502,8 @@ public partial class MainWindow : Window
 
     private void OnMouseDown(object sender, MouseButtonEventArgs e)
     {
+        if (_play is not null)
+            return;  // 플레이 중에는 카메라가 방에 고정되어 있다
         _lastMouse = e.GetPosition(Viewport);
         Viewport.CaptureMouse();
     }
@@ -367,6 +516,8 @@ public partial class MainWindow : Window
 
     private void OnMouseMove(object sender, MouseEventArgs e)
     {
+        if (_play is not null)
+            return;
         if (_lastMouse is not { } last) return;
         Point now = e.GetPosition(Viewport);
         _camera.Rotate(-(float)(now.X - last.X) * 0.01f, (float)(now.Y - last.Y) * 0.01f);
@@ -376,6 +527,8 @@ public partial class MainWindow : Window
 
     private void OnMouseWheel(object sender, MouseWheelEventArgs e)
     {
+        if (_play is not null)
+            return;
         _camera.Zoom(e.Delta > 0 ? 0.9f : 1.1f);
         Redraw();
     }

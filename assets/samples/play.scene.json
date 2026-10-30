@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "nodes": [
+    { "name": "Floor",  "mesh": "cube.obj", "position": [0, -0.1, 0],   "scale": [6, 0.1, 4],       "color": [0.4, 0.4, 0.45] },
+    { "name": "Pillar", "mesh": "cube.obj", "position": [-2, 0.5, 2],   "scale": [0.5, 0.5, 0.5],   "color": [0.7, 0.5, 0.4] },
+    { "name": "Hero",   "mesh": "cube.obj", "position": [-4, 0.35, 0],  "scale": [0.35, 0.35, 0.35], "color": [0.9, 0.6, 0.2] }
+  ],
+  "gameplay": {
+    "rooms": [
+      {
+        "name": "Hall",
+        "polygon": [-6, -4, 0, -4, 0, 4, -6, 4],
+        "camera": { "eye": [-3, 6, 9], "target": [-3, 0, 0], "fov": 0.8 }
+      },
+      {
+        "name": "Annex",
+        "polygon": [0, -4, 6, -4, 6, 4, 0, 4],
+        "camera": { "eye": [10, 4, 0], "target": [3, 0, 0], "fov": 0.8 }
+      }
+    ],
+    "colliders": [
+      { "name": "Pillar",    "min": [-2.5, 1.5], "max": [-1.5, 2.5] },
+      { "name": "WallNorth", "min": [-7, -5],    "max": [7, -4] },
+      { "name": "WallSouth", "min": [-7, 4],     "max": [7, 5] },
+      { "name": "WallWest",  "min": [-7, -5],    "max": [-6, 5] },
+      { "name": "WallEast",  "min": [6, -5],     "max": [7, 5] }
+    ],
+    "triggers": [
+      { "name": "StartPad", "tag": 1, "polygon": [-5, -1, -3, -1, -3, 1, -5, 1] },
+      { "name": "Door",     "tag": 7, "polygon": [2, -1, 4, -1, 4, 1, 2, 1] }
+    ],
+    "player": { "node": "Hero", "spawn": [-4, 0], "radius": 0.4, "speed": 3 }
+  }
+}

@@ -30,6 +30,51 @@ public static class SceneSerializer
     {
         public int Version { get; set; }
         public List<NodeDto>? Nodes { get; set; }
+        public GameplayDto? Gameplay { get; set; }  // 선택: 없으면 게임플레이 데이터가 없는 씬(이전 버전 파일과 호환)
+    }
+
+    private sealed class GameplayDto
+    {
+        public List<RoomDto?>? Rooms { get; set; }
+        public List<ColliderDto?>? Colliders { get; set; }
+        public List<TriggerDto?>? Triggers { get; set; }
+        public PlayerDto? Player { get; set; }
+    }
+
+    private sealed class CameraDto
+    {
+        public float[]? Eye { get; set; }
+        public float[]? Target { get; set; }
+        public float? Fov { get; set; }
+    }
+
+    private sealed class RoomDto
+    {
+        public string? Name { get; set; }
+        public float[]? Polygon { get; set; }
+        public CameraDto? Camera { get; set; }
+    }
+
+    private sealed class ColliderDto
+    {
+        public string? Name { get; set; }
+        public float[]? Min { get; set; }
+        public float[]? Max { get; set; }
+    }
+
+    private sealed class TriggerDto
+    {
+        public string? Name { get; set; }
+        public float[]? Polygon { get; set; }
+        public int? Tag { get; set; }
+    }
+
+    private sealed class PlayerDto
+    {
+        public string? Node { get; set; }
+        public float[]? Spawn { get; set; }
+        public float? Radius { get; set; }
+        public float? Speed { get; set; }
     }
 
     private sealed class NodeDto
@@ -54,7 +99,12 @@ public static class SceneSerializer
         if (document.Roots.Any(root => DepthOf(root) > MaxDepth))
             throw new SceneFormatException("scene hierarchy is too deep");
         string baseDir = Path.GetDirectoryName(Path.GetFullPath(path))!;
-        var file = new SceneFile { Version = CurrentVersion, Nodes = document.Roots.Select(n => ToDto(n, baseDir)).ToList() };
+        var file = new SceneFile
+        {
+            Version = CurrentVersion,
+            Nodes = document.Roots.Select(n => ToDto(n, baseDir)).ToList(),
+            Gameplay = document.Gameplay.IsEmpty ? null : ToDto(document.Gameplay),
+        };
         string json = JsonSerializer.Serialize(file, Options);
 
         string temp = $"{path}.{Guid.NewGuid():N}.tmp";
@@ -96,6 +146,7 @@ public static class SceneSerializer
         var document = new SceneDocument();
         foreach (NodeDto? dto in file.Nodes)
             document.Add(FromDto(dto, baseDir, depth: 1), null);
+        document.Gameplay = FromDto(file.Gameplay);
         return document;
     }
 
@@ -143,6 +194,115 @@ public static class SceneSerializer
             child.Parent = node;
         }
         return node;
+    }
+
+    private static GameplayDto ToDto(GameplayData data) => new()
+    {
+        Rooms = data.Rooms.Count == 0 ? null : data.Rooms.Select(r => (RoomDto?)new RoomDto
+        {
+            Name = r.Name,
+            Polygon = r.Polygon,
+            Camera = new CameraDto { Eye = ToArray(r.Eye), Target = ToArray(r.Target), Fov = r.Fov },
+        }).ToList(),
+        Colliders = data.Colliders.Count == 0 ? null : data.Colliders.Select(c => (ColliderDto?)new ColliderDto
+        {
+            Name = c.Name,
+            Min = [c.MinX, c.MinZ],
+            Max = [c.MaxX, c.MaxZ],
+        }).ToList(),
+        Triggers = data.Triggers.Count == 0 ? null : data.Triggers.Select(t => (TriggerDto?)new TriggerDto
+        {
+            Name = t.Name,
+            Polygon = t.Polygon,
+            Tag = t.Tag,
+        }).ToList(),
+        Player = data.Player is not { } p ? null : new PlayerDto
+        {
+            Node = p.Node,
+            Spawn = p.Spawn is { } spawn ? [spawn.X, spawn.Z] : null,
+            Radius = p.Radius,
+            Speed = p.Speed,
+        },
+    };
+
+    /// <summary>게임플레이 섹션을 읽는다. 모양(배열 길이, 유한한 수, null 항목)만 검사하고, 다각형이 단순한지 같은 기하 검사는
+    /// 엔진이 플레이를 시작할 때 한다.</summary>
+    private static GameplayData FromDto(GameplayDto? dto)
+    {
+        var data = new GameplayData();
+        if (dto is null)
+            return data;
+
+        foreach (RoomDto? room in dto.Rooms ?? [])
+        {
+            if (room is null)
+                throw new SceneFormatException("gameplay.rooms contains a null entry");
+            string name = room.Name ?? "Room";
+            if (room.Camera is null)
+                throw new SceneFormatException($"room '{name}' needs a 'camera'");
+            float fov = room.Camera.Fov ?? 0.8f;
+            if (!float.IsFinite(fov))
+                throw new SceneFormatException($"room '{name}': 'fov' must be a finite number");
+            data.Rooms.Add(new RoomDef
+            {
+                Name = name,
+                Polygon = ToPolygon(room.Polygon, $"room '{name}'"),
+                Eye = ToVec3(room.Camera.Eye ?? throw new SceneFormatException($"room '{name}' camera needs 'eye'"), $"room '{name}' eye"),
+                Target = ToVec3(room.Camera.Target ?? throw new SceneFormatException($"room '{name}' camera needs 'target'"), $"room '{name}' target"),
+                Fov = fov,
+            });
+        }
+
+        foreach (ColliderDto? collider in dto.Colliders ?? [])
+        {
+            if (collider is null)
+                throw new SceneFormatException("gameplay.colliders contains a null entry");
+            string name = collider.Name ?? "Collider";
+            Vec2 min = ToVec2(collider.Min, $"collider '{name}' min");
+            Vec2 max = ToVec2(collider.Max, $"collider '{name}' max");
+            data.Colliders.Add(new ColliderDef { Name = name, MinX = min.X, MinZ = min.Z, MaxX = max.X, MaxZ = max.Z });
+        }
+
+        foreach (TriggerDto? trigger in dto.Triggers ?? [])
+        {
+            if (trigger is null)
+                throw new SceneFormatException("gameplay.triggers contains a null entry");
+            string name = trigger.Name ?? "Trigger";
+            data.Triggers.Add(new TriggerDef { Name = name, Polygon = ToPolygon(trigger.Polygon, $"trigger '{name}'"), Tag = trigger.Tag ?? 0 });
+        }
+
+        if (dto.Player is { } player)
+        {
+            if (string.IsNullOrWhiteSpace(player.Node))
+                throw new SceneFormatException("gameplay.player needs a 'node' name");
+            float radius = player.Radius ?? 0.4f, speed = player.Speed ?? 3f;
+            if (!float.IsFinite(radius) || radius <= 0)
+                throw new SceneFormatException("gameplay.player 'radius' must be a positive finite number");
+            if (!float.IsFinite(speed) || speed < 0)
+                throw new SceneFormatException("gameplay.player 'speed' must be a non-negative finite number");
+            data.Player = new PlayerDef
+            {
+                Node = player.Node,
+                Spawn = player.Spawn is null ? null : ToVec2(player.Spawn, "player spawn"),
+                Radius = radius,
+                Speed = speed,
+            };
+        }
+        return data;
+    }
+
+    private static float[] ToPolygon(float[]? values, string owner)
+    {
+        if (values is null || values.Length < 6 || values.Length % 2 != 0 || values.Any(v => !float.IsFinite(v)))
+            throw new SceneFormatException($"{owner}: 'polygon' must be at least three (x, z) pairs of finite numbers");
+        return values;
+    }
+
+    private static Vec2 ToVec2(float[]? values, string field)
+    {
+        if (values is null || values.Length != 2 || values.Any(v => !float.IsFinite(v)))
+            throw new SceneFormatException($"{field} must be two finite numbers (x, z)");
+        return new Vec2(values[0], values[1]);
     }
 
     private static float[] ToArray(Vec3 v) => [v.X, v.Y, v.Z];

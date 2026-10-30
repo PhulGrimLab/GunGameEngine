@@ -5,17 +5,21 @@
         Loaded="OnLoaded" Closed="OnClosed">
     <DockPanel>
         <ToolBarTray DockPanel.Dock="Top">
-            <ToolBar>
+            <ToolBar x:Name="FileBar">
                 <Button Content="New" Click="OnNewScene" />
                 <Button Content="Open Scene..." Click="OnOpenScene" />
                 <Button Content="Save" Click="OnSaveScene" />
                 <Button Content="Save As..." Click="OnSaveSceneAs" />
             </ToolBar>
-            <ToolBar>
+            <ToolBar x:Name="NodeBar">
                 <Button Content="Add Mesh..." Click="OnAddMesh" />
                 <Button Content="Add Group" Click="OnAddGroup" />
                 <Button Content="Delete" Click="OnDelete" />
                 <Button Content="OBJ to GGM..." Click="OnConvertObj" />
+            </ToolBar>
+            <ToolBar x:Name="PlayBar">
+                <Button x:Name="PlayButton" Content="Play" Click="OnPlayToggle" />
+                <CheckBox x:Name="GameplayCheck" Content="Show gameplay" Click="OnGameplayOverlayChanged" />
             </ToolBar>
             <ToolBar>
                 <CheckBox x:Name="SnapCheck" Content="Vertex snap" IsChecked="True" Click="OnRetroChanged" />

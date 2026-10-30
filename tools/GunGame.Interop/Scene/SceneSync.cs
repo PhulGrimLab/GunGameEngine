@@ -75,6 +75,26 @@ public sealed class SceneSync : IDisposable
     /// <summary>노드의 현재 재생 시간(초). 애니메이션이 없으면 null.</summary>
     public float? GetAnimationTime(SceneNode node) => _players.TryGetValue(node, out AnimationPlayer? p) && p.Current is not null ? p.Time : null;
 
+    /// <summary>노드의 위치/회전을 문서(SceneNode)는 건드리지 않고 화면(엔진 오브젝트)에만 덮어쓴다. 플레이 모드에서 플레이어를
+    /// 움직일 때 쓴다. 크기와 색은 노드의 값을 유지한다. 씬에 없는 노드면 false. 다시 그리기만 하면 되므로 PoseChanged를 발생시킨다.</summary>
+    public bool Preview(SceneNode node, Vec3 position, Vec3 rotation)
+    {
+        if (!_entries.TryGetValue(node, out Entry? entry))
+            return false;
+        _engine.SetObjectTransform(entry.ObjectId, position, rotation, node.Scale);
+        PoseChanged?.Invoke();
+        return true;
+    }
+
+    /// <summary>Preview로 덮어쓴 변환을 지우고 노드의 문서 값으로 되돌린다.</summary>
+    public void ClearPreview(SceneNode node)
+    {
+        if (!_entries.TryGetValue(node, out Entry? entry))
+            return;
+        ApplyTransform(node, entry.ObjectId);
+        PoseChanged?.Invoke();
+    }
+
     public void Rebuild()
     {
         _errors.Clear();
