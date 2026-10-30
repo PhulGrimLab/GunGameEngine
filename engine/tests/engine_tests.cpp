@@ -3382,6 +3382,7 @@ struct Spec {
     bool hasSpawn = false;
     float spawn[2] = {0, 0};
     bool badQuadIndex = false;  // 정점 수(4)를 넘는 인덱스를 넣는다
+    bool stripFirst = false;    // 메시 순서를 바꾼다: 스킨 띠가 0번, 사각형이 1번
     int bones = 3;              // 스킨 띠 스켈레톤의 본 수(체인)
     bool distinctRest = false;  // 본마다/성분마다 다른 휴식 변환(로더가 본별 인덱스를 제대로 읽는지 보려는 용도)
 };
@@ -3423,7 +3424,7 @@ std::vector<uint8_t> Serialize(const Spec& spec)
 
     w.U32(static_cast<uint32_t>(spec.meshCount));
     for (int m = 0; m < spec.meshCount; ++m) {
-        if (m == 0) {  // 정적 사각형
+        if ((m == 0) != spec.stripFirst) {  // 정적 사각형
             w.U8(0); w.U32(4); w.U32(6);
             w.Floats(QuadVertices());
             for (uint32_t i : {0u, 1u, spec.badQuadIndex ? 9u : 2u, 0u, 2u, 3u}) w.U32(i);
@@ -3597,6 +3598,36 @@ void Test_SceneBuiltFromTheFormatSpecRendersLikeManualConstruction()
     CHECK(first.bgra != Render(a).bgra);  // 애니메이션이 실제로 진행했다
 
     gge_scene_destroy(scene);
+    gge_renderer_destroy(a);
+    gge_renderer_destroy(b);
+}
+
+void Test_SceneMeshOrderInTheFileDoesNotMatter()
+{
+    // 스킨 메시가 0번이어도(경계: 메시 번호 0) 정적/스킨 구분과 애니메이션이 똑같이 동작해야 한다.
+    fs::path bmp = TempDir() / "scene_order.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+    GgeRenderer* a = NewRenderer(160, 120);
+    GgeRenderer* b = NewRenderer(160, 120);
+    int stripObject = 0, clip = 0;
+    BuildVisualSceneManually(b, bmp, &stripObject, &clip);
+
+    Spec spec = VisualSpec(bmp);
+    spec.stripFirst = true;
+    spec.nodes[0].mesh = 1; spec.nodes[1].mesh = 1; spec.nodes[2].mesh = 0;   // 사각형 = 1번, 스킨 띠 = 0번
+    GgeScene* scene = gge_scene_load(a, WriteScene("order.ggs", Serialize(spec)).string().c_str());
+    if (!scene) std::printf("  load failed: %s\n", gge_last_error());
+    CHECK(scene != nullptr);
+    if (scene) {
+        gge_renderer_set_camera(a, 0, 2.5f, 7, 0, 0.8f, 0, 0.8f);
+        CHECK(Render(a).bgra == Render(b).bgra);
+        for (int i = 0; i < 3; ++i) gge_scene_step(scene, 0, 0, 0.2f);
+        float t = 0;
+        for (int i = 0; i < 3; ++i) { t += 0.2f * 1.5f; t -= std::floor(t); }
+        gge_object_set_pose(b, stripObject, clip, t, 0, 0, 0);
+        CHECK(Render(a).bgra == Render(b).bgra);   // 스킨 메시가 0번이어도 클립이 재생된다
+        gge_scene_destroy(scene);
+    }
     gge_renderer_destroy(a);
     gge_renderer_destroy(b);
 }
@@ -4142,6 +4173,7 @@ int main()
         {"BakedPlaySampleStartsInsideTheFirstTrigger", Test_BakedPlaySampleStartsInsideTheFirstTrigger},
         {"BakedPlaySampleWalkFollowsTheGameplayRules", Test_BakedPlaySampleWalkFollowsTheGameplayRules},
         {"GoldenPlaySceneFromTheBakedSample", Test_GoldenPlaySceneFromTheBakedSample},
+        {"SceneMeshOrderInTheFileDoesNotMatter", Test_SceneMeshOrderInTheFileDoesNotMatter},
         {"SceneCountLimitsAreCheckedAtTheirBoundaries", Test_SceneCountLimitsAreCheckedAtTheirBoundaries},
         {"SceneMeshAndSkeletonLimitsAreCheckedAtTheirBoundaries", Test_SceneMeshAndSkeletonLimitsAreCheckedAtTheirBoundaries},
         {"SceneStringAndClipLimitsAreCheckedAtTheirBoundaries", Test_SceneStringAndClipLimitsAreCheckedAtTheirBoundaries},
