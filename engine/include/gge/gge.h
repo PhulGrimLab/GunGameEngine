@@ -156,5 +156,29 @@ GGE_API int gge_world_move_input(GgeWorld* w, float input_x, float input_y, floa
 // 입력 방향 기준을 비운다. 다음 gge_world_move_input은 그 시점의 활성 방 카메라 기준으로 시작한다.
 GGE_API void gge_world_reset_input_frame(GgeWorld* w);
 
+// ---- 트리거 (영역 진입/퇴장 이벤트) ----
+// 플레이어 한 명의 위치(점)로 판정한다. 영역은 방과 같은 규칙의 XZ 평면 다각형(경계 포함, 오목 가능)이다.
+#define GGE_TRIGGER_ENTER 1
+#define GGE_TRIGGER_EXIT 2
+
+// 영역을 추가하고 트리거 ID(1부터)를 반환한다. 다각형 검사는 gge_world_add_room과 같다. tag는 이벤트에 그대로 실리는
+// 호출자 정의 값(문/아이템 식별 등)이다.
+GGE_API int gge_world_add_trigger(GgeWorld* w, const float* xz, int vertex_count, int tag);
+
+// 꺼진 트리거는 "플레이어가 밖에 있는 것"으로 본다: 안에 있는 채로 끄면 다음 update에서 EXIT, 안에서 다시 켜면 ENTER가 생긴다.
+GGE_API int gge_world_set_trigger_enabled(GgeWorld* w, int trigger_id, int enabled);
+
+// 플레이어 위치를 반영하고 이번 호출에서 생긴 이벤트 수(0 이상)를 반환한다. 실패(비유한 값)는 -1.
+// 한 호출 안에서는 EXIT가 먼저, 그다음 ENTER이며 각각 트리거 ID 순이다. 처음부터 안에 있으면 ENTER가 생긴다.
+// 위치는 프레임마다 샘플링하므로 한 프레임 이동 거리보다 얇은 영역은 건너뛸 수 있다.
+GGE_API int gge_world_update_triggers(GgeWorld* w, float x, float z);
+
+// 가장 오래된 이벤트 하나를 꺼내 1을 반환한다. 없으면 0. 각 출력 포인터는 필요 없으면 NULL이어도 된다.
+// 큐는 1024개까지이며 가득 차면 가장 오래된 것부터 버린다(매 프레임 폴링해야 한다).
+GGE_API int gge_world_poll_trigger_event(GgeWorld* w, int* trigger_id, int* kind, int* tag);
+
+// 마지막 update 기준으로 영역 안이면 1, 밖(또는 꺼짐)이면 0, 알 수 없는 ID면 -1.
+GGE_API int gge_world_is_inside_trigger(const GgeWorld* w, int trigger_id);
+
 // 마지막 오류 메시지(UTF-8). 스레드별로 유지된다.
 GGE_API const char* gge_last_error(void);

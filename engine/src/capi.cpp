@@ -336,4 +336,52 @@ GGE_API int gge_world_move_input(GgeWorld* w, float input_x, float input_y, floa
 
 GGE_API void gge_world_reset_input_frame(GgeWorld* w) { w->impl.ResetInputFrame(); }
 
+GGE_API int gge_world_add_trigger(GgeWorld* w, const float* xz, int vertex_count, int tag)
+{
+    return Guard([&] { return w->impl.AddTrigger(xz, vertex_count, tag); });
+}
+
+GGE_API int gge_world_set_trigger_enabled(GgeWorld* w, int trigger_id, int enabled)
+{
+    return Guard([&] { w->impl.SetTriggerEnabled(trigger_id, enabled != 0); return 1; });
+}
+
+GGE_API int gge_world_update_triggers(GgeWorld* w, float x, float z)
+{
+    try {
+        return w->impl.UpdateTriggers(x, z);
+    } catch (const std::exception& e) {
+        gge::LastError() = e.what();
+        return -1;  // 0은 "이벤트 없음"이라는 정상 결과라 실패는 -1로 구분한다
+    }
+}
+
+GGE_API int gge_world_poll_trigger_event(GgeWorld* w, int* trigger_id, int* kind, int* tag)
+{
+    gge::TriggerEvent event;
+    if (!w->impl.PollTriggerEvent(event)) {
+        return 0;
+    }
+    if (trigger_id) {
+        *trigger_id = event.triggerId;
+    }
+    if (kind) {
+        *kind = event.kind;
+    }
+    if (tag) {
+        *tag = event.tag;
+    }
+    return 1;
+}
+
+GGE_API int gge_world_is_inside_trigger(const GgeWorld* w, int trigger_id)
+{
+    try {
+        return w->impl.IsInsideTrigger(trigger_id) ? 1 : 0;
+    } catch (const std::exception& e) {
+        gge::LastError() = e.what();
+        return -1;
+    }
+}
+
 GGE_API const char* gge_last_error(void) { return gge::LastError().c_str(); }

@@ -1902,6 +1902,194 @@ void Test_ResourceDestroyRespectsUsageAndIds()
     gge_renderer_destroy(r);
 }
 
+// ---- 6단계: 트리거 (영역 진입/퇴장 이벤트) ----
+struct Ev { int id, kind, tag; };
+
+// 큐에 쌓인 이벤트를 모두 꺼낸다.
+std::vector<Ev> Drain(GgeWorld* w)
+{
+    std::vector<Ev> out;
+    Ev e{};
+    while (gge_world_poll_trigger_event(w, &e.id, &e.kind, &e.tag) == 1) {
+        out.push_back(e);
+    }
+    return out;
+}
+
+bool Is(const Ev& e, int id, int kind, int tag) { return e.id == id && e.kind == kind && e.tag == tag; }
+
+void Test_TriggerRejectsBadInput()
+{
+    GgeWorld* w = gge_world_create();
+    auto sq = Rect(0, 0, 2, 2);
+    CHECK(gge_world_add_trigger(w, sq.data(), 4, 5) == 1);
+    CHECK(gge_world_add_trigger(w, sq.data(), 2, 5) == 0);  // 방과 같은 다각형 검사
+    CHECK(gge_world_add_trigger(w, nullptr, 4, 5) == 0);
+    const float bowtie[] = {0, 0, 4, 2, 4, 0, 0, 1};
+    CHECK(gge_world_add_trigger(w, bowtie, 4, 5) == 0);
+    CHECK(std::strstr(gge_last_error(), "self-intersecting") != nullptr);
+    CHECK(gge_world_add_trigger(w, sq.data(), 4, 6) == 2);  // 실패한 호출이 ID를 소모하지 않았다
+
+    CHECK(gge_world_set_trigger_enabled(w, 0, 1) == 0);
+    CHECK(gge_world_set_trigger_enabled(w, 3, 1) == 0);
+    CHECK(gge_world_is_inside_trigger(w, 3) == -1);
+    CHECK(gge_world_is_inside_trigger(w, 1) == 0);
+    CHECK(gge_world_update_triggers(w, std::nanf(""), 0) == -1);  // 0(이벤트 없음)과 구별되는 실패
+    CHECK(gge_world_update_triggers(w, 0, INFINITY) == -1);
+    CHECK(gge_world_poll_trigger_event(w, nullptr, nullptr, nullptr) == 0);  // 큐가 비었다
+    gge_world_destroy(w);
+}
+
+void Test_TriggerEnterAndExitEvents()
+{
+    GgeWorld* w = gge_world_create();
+    auto zone = Rect(0, 0, 2, 2);
+    int id = gge_world_add_trigger(w, zone.data(), 4, 77);
+
+    CHECK(gge_world_update_triggers(w, -1, 1) == 0);   // 밖: 이벤트 없음
+    CHECK(Drain(w).empty());
+    CHECK(gge_world_is_inside_trigger(w, id) == 0);
+
+    CHECK(gge_world_update_triggers(w, 1, 1) == 1);    // 들어옴
+    int eid = 0, kind = 0, tag = 0;
+    CHECK(gge_world_poll_trigger_event(w, &eid, &kind, &tag) == 1);
+    CHECK(eid == id && kind == GGE_TRIGGER_ENTER && tag == 77);
+    CHECK(gge_world_poll_trigger_event(w, &eid, &kind, &tag) == 0);  // 하나뿐
+    CHECK(gge_world_is_inside_trigger(w, id) == 1);
+
+    CHECK(gge_world_update_triggers(w, 1.5f, 0.5f) == 0);  // 안에서 움직임: 이벤트 없음
+    CHECK(gge_world_update_triggers(w, 1.9f, 1.9f) == 0);
+    CHECK(Drain(w).empty());
+
+    CHECK(gge_world_update_triggers(w, 3, 1) == 1);    // 나감
+    std::vector<Ev> out = Drain(w);
+    CHECK(out.size() == 1 && Is(out[0], id, GGE_TRIGGER_EXIT, 77));
+    CHECK(gge_world_is_inside_trigger(w, id) == 0);
+
+    CHECK(gge_world_update_triggers(w, 2, 1) == 1);    // 경계(x=2)는 안이다
+    CHECK(Drain(w).size() == 1);
+    CHECK(gge_world_poll_trigger_event(w, nullptr, nullptr, nullptr) == 0);
+    gge_world_destroy(w);
+
+    // 오목(L자) 영역: 오목 모서리 바깥(3,3)은 안이 아니다.
+    GgeWorld* w2 = gge_world_create();
+    const float ell[] = {0, 0, 4, 0, 4, 2, 2, 2, 2, 4, 0, 4};
+    gge_world_add_trigger(w2, ell, 6, 1);
+    CHECK(gge_world_update_triggers(w2, 3, 3) == 0);
+    CHECK(gge_world_update_triggers(w2, 1, 3) == 1);
+    gge_world_destroy(w2);
+}
+
+void Test_TriggerFiresEnterWhenSpawnedInside()
+{
+    GgeWorld* w = gge_world_create();
+    auto zone = Rect(0, 0, 2, 2);
+    gge_world_add_trigger(w, zone.data(), 4, 9);
+    CHECK(gge_world_update_triggers(w, 1, 1) == 1);  // 첫 갱신에서 이미 안에 있다
+    std::vector<Ev> out = Drain(w);
+    CHECK(out.size() == 1 && Is(out[0], 1, GGE_TRIGGER_ENTER, 9));
+    gge_world_destroy(w);
+}
+
+void Test_TriggerEventsOrderExitsBeforeEnters()
+{
+    GgeWorld* w = gge_world_create();
+    auto a = Rect(0, 0, 2, 2), b = Rect(2, 0, 4, 2), c = Rect(3, 0, 6, 2);  // b와 c는 겹친다. a와 b는 x=2에서 맞닿는다
+    gge_world_add_trigger(w, a.data(), 4, 10);  // ID 1
+    gge_world_add_trigger(w, b.data(), 4, 20);  // ID 2
+    gge_world_add_trigger(w, c.data(), 4, 30);  // ID 3
+    gge_world_update_triggers(w, 1, 1);
+    Drain(w);                                    // A 안에서 시작
+
+    CHECK(gge_world_update_triggers(w, 3.5f, 1) == 3);  // A에서 나와 B와 C(겹침)로 동시에 들어간다
+    std::vector<Ev> out = Drain(w);
+    CHECK(out.size() == 3);
+    if (out.size() == 3) {
+        CHECK(Is(out[0], 1, GGE_TRIGGER_EXIT, 10));    // Exit가 먼저
+        CHECK(Is(out[1], 2, GGE_TRIGGER_ENTER, 20));   // 그다음 Enter, 트리거 ID 순
+        CHECK(Is(out[2], 3, GGE_TRIGGER_ENTER, 30));
+    }
+    gge_world_destroy(w);
+}
+
+void Test_TriggerDisableAndEnableWhileInside()
+{
+    GgeWorld* w = gge_world_create();
+    auto zone = Rect(0, 0, 2, 2);
+    int id = gge_world_add_trigger(w, zone.data(), 4, 1);
+    gge_world_update_triggers(w, 1, 1);
+    Drain(w);
+
+    CHECK(gge_world_set_trigger_enabled(w, id, 0) == 1);     // 안에 있는 채로 끈다
+    CHECK(gge_world_is_inside_trigger(w, id) == 1);          // 다음 update 전까지는 바뀌지 않는다
+    CHECK(gge_world_update_triggers(w, 1, 1) == 1);
+    std::vector<Ev> out = Drain(w);
+    CHECK(out.size() == 1 && Is(out[0], id, GGE_TRIGGER_EXIT, 1));
+    CHECK(gge_world_is_inside_trigger(w, id) == 0);
+
+    CHECK(gge_world_update_triggers(w, 5, 5) == 0);          // 꺼진 채 밖으로
+    CHECK(gge_world_update_triggers(w, 1, 1) == 0);          // 꺼진 영역에 들어가도 이벤트가 없다
+    CHECK(gge_world_set_trigger_enabled(w, id, 1) == 1);     // 안에서 다시 켠다
+    CHECK(gge_world_update_triggers(w, 1, 1) == 1);
+    out = Drain(w);
+    CHECK(out.size() == 1 && Is(out[0], id, GGE_TRIGGER_ENTER, 1));
+    gge_world_destroy(w);
+}
+
+void Test_TriggerQueueIsFifoAndBounded()
+{
+    GgeWorld* w = gge_world_create();
+    auto zone = Rect(0, 0, 2, 2);
+    gge_world_add_trigger(w, zone.data(), 4, 3);
+    // 폴링하지 않고 들락거린다: 이벤트 1200개(짝수 번째 Enter, 홀수 번째 Exit)를 만든다.
+    for (int i = 0; i < 600; ++i) {
+        CHECK(gge_world_update_triggers(w, 1, 1) == 1);
+        CHECK(gge_world_update_triggers(w, 5, 5) == 1);
+    }
+    std::vector<Ev> out = Drain(w);
+    CHECK(out.size() == 1024);                  // 상한: 가득 차면 가장 오래된 것부터 버린다
+    if (out.size() == 1024) {
+        CHECK(out.front().kind == GGE_TRIGGER_ENTER);   // 남은 첫 이벤트는 176번째(짝수 = Enter)
+        CHECK(out.back().kind == GGE_TRIGGER_EXIT);     // 마지막은 1199번째(홀수 = Exit): 최신 것이 남는다
+        for (size_t i = 1; i < out.size(); ++i) {       // 순서가 유지된다(Enter/Exit이 번갈아)
+            CHECK(out[i].kind != out[i - 1].kind);
+        }
+    }
+    CHECK(gge_world_poll_trigger_event(w, nullptr, nullptr, nullptr) == 0);
+    gge_world_destroy(w);
+}
+
+void Test_TriggerFiresWhileWalkingThroughZone()
+{
+    // 입력 -> 이동(충돌 포함) -> 트리거 갱신을 프레임 루프로 묶어 문 앞 영역을 지나가는 시나리오.
+    GgeWorld* w = gge_world_create();
+    AddCamRoom(w, -10, -5, 20, 5, kEyeEast);  // 동쪽 카메라: 앞 입력 = +X
+    auto doorZone = Rect(5, -2, 7, 2);
+    int door = gge_world_add_trigger(w, doorZone.data(), 4, 100);
+    gge_world_add_box_collider(w, 12, -5, 13, 5);  // 더 앞쪽의 벽
+
+    P2 pos = {0, 0};
+    int enterFrame = -1, exitFrame = -1, enters = 0, exits = 0;
+    for (int frame = 0; frame < 400; ++frame) {
+        gge_world_update_active_room(w, pos.x, pos.z);
+        P2 d = Input(w, 0, 1, 3.0f, 1.0f / 60.0f);  // 속도 3, 프레임당 0.05
+        pos = Move(w, pos.x, pos.z, d.x, d.z, 0.5f);
+        CHECK(gge_world_update_triggers(w, pos.x, pos.z) >= 0);
+        for (const Ev& e : Drain(w)) {
+            CHECK(e.id == door && e.tag == 100);
+            if (e.kind == GGE_TRIGGER_ENTER) { ++enters; if (enterFrame < 0) enterFrame = frame; }
+            else { ++exits; if (exitFrame < 0) exitFrame = frame; }
+        }
+    }
+    CHECK(enters == 1 && exits == 1);                        // 한 번 들어가고 한 번 나온다(벽에 막혀 더 가지 못한다)
+    CHECK(enterFrame >= 0 && exitFrame > enterFrame);
+    CHECK(std::fabs(enterFrame * 0.05f - 5.0f) < 0.2f);      // 영역 경계(x=5)에 도달한 시점에 들어왔다
+    CHECK(std::fabs(exitFrame * 0.05f - 7.0f) < 0.2f);       // x=7을 넘을 때 나갔다
+    CHECK(std::fabs(pos.x - 11.5f) < kTol);                  // 벽 앞(12 - 0.5)에서 멈췄다
+    CHECK(gge_world_is_inside_trigger(w, door) == 0);
+    gge_world_destroy(w);
+}
+
 }  // namespace
 
 int main()
@@ -1971,6 +2159,13 @@ int main()
         {"InputMoveThroughCollisionPerCamera", Test_InputMoveThroughCollisionPerCamera},
         {"WorldMatrixCacheTracksChangesBetweenFrames", Test_WorldMatrixCacheTracksChangesBetweenFrames},
         {"ResourceDestroyRespectsUsageAndIds", Test_ResourceDestroyRespectsUsageAndIds},
+        {"TriggerRejectsBadInput", Test_TriggerRejectsBadInput},
+        {"TriggerEnterAndExitEvents", Test_TriggerEnterAndExitEvents},
+        {"TriggerFiresEnterWhenSpawnedInside", Test_TriggerFiresEnterWhenSpawnedInside},
+        {"TriggerEventsOrderExitsBeforeEnters", Test_TriggerEventsOrderExitsBeforeEnters},
+        {"TriggerDisableAndEnableWhileInside", Test_TriggerDisableAndEnableWhileInside},
+        {"TriggerQueueIsFifoAndBounded", Test_TriggerQueueIsFifoAndBounded},
+        {"TriggerFiresWhileWalkingThroughZone", Test_TriggerFiresWhileWalkingThroughZone},
     };
     for (const Case& c : cases) {
         int before = g_failures;

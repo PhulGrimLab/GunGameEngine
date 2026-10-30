@@ -1,5 +1,7 @@
 #include "world.h"
 
+#include "polygon.h"
+
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -9,10 +11,7 @@ namespace gge {
 
 namespace {
 
-constexpr int kMinPolygonVertices = 3;
 constexpr double kPi = 3.14159265358979323846;
-// 경계 위 판정과 퇴화(면적 0, 한 직선 위) 판정에 쓰는 허용 오차. 월드 단위(미터급 좌표)에 맞춘 값.
-constexpr double kEpsilon = 1e-6;
 // 한 번의 MoveCircle이 허용하는 최대 걸음 수 환산 이동량(radius/2 걸음 기준). 초과하면 거부한다.
 constexpr float kMaxMoveSteps = 1024.0f;
 // 입력 크기가 이 값 미만이면 입력 없음으로 본다(아날로그 스틱의 잔떨림 제거).
@@ -22,105 +21,8 @@ constexpr float kLatchReleaseCos = 0.5f;
 // 시선의 (수평 성분 길이 / 전체 길이)가 이 값 이하(거의 수직으로 내려보는 카메라, 약 0.06도)이면 "앞" 방향이
 // 정해지지 않거나 불안정하다. 좌표 크기와 무관하도록 절대값이 아니라 비율로 판정한다.
 constexpr float kMinHorizontalLookRatio = 1e-3f;
-
-struct Pt {
-    double x, z;
-};
-
-Pt PointAt(const float* xz, int i) { return {xz[2 * i], xz[2 * i + 1]}; }
-
-double Cross(Pt o, Pt a, Pt b) { return (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x); }
-
-double Dot(Pt o, Pt a, Pt b) { return (a.x - o.x) * (b.x - o.x) + (a.z - o.z) * (b.z - o.z); }
-
-// p가 선분 ab 위(허용 오차 안)에 있는가.
-bool OnSegment(Pt a, Pt b, Pt p)
-{
-    double lenSq = Dot(a, b, b);
-    if (lenSq <= 0.0) {
-        return std::hypot(p.x - a.x, p.z - a.z) <= kEpsilon;
-    }
-    double t = Dot(a, p, b) / lenSq;
-    if (t < 0.0) {
-        t = 0.0;
-    } else if (t > 1.0) {
-        t = 1.0;
-    }
-    return std::hypot(p.x - (a.x + t * (b.x - a.x)), p.z - (a.z + t * (b.z - a.z))) <= kEpsilon;
-}
-
-// 선분 ab와 cd가 (끝점 접촉 포함) 만나는가.
-bool SegmentsTouch(Pt a, Pt b, Pt c, Pt d)
-{
-    double d1 = Cross(a, b, c), d2 = Cross(a, b, d), d3 = Cross(c, d, a), d4 = Cross(c, d, b);
-    if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
-        return true;
-    }
-    return OnSegment(a, b, c) || OnSegment(a, b, d) || OnSegment(c, d, a) || OnSegment(c, d, b);
-}
-
-// 다각형이 면적을 갖는 단순 다각형인지 검사하고 아니면 사유와 함께 예외를 던진다.
-void ValidatePolygon(const float* xz, int n)
-{
-    if (!xz || n < kMinPolygonVertices) {
-        throw std::runtime_error("room polygon needs at least 3 vertices");
-    }
-    for (int i = 0; i < 2 * n; ++i) {
-        if (!std::isfinite(xz[i])) {
-            throw std::runtime_error("room polygon has a non-finite coordinate");
-        }
-    }
-
-    double area2 = 0.0;
-    for (int i = 0; i < n; ++i) {
-        Pt a = PointAt(xz, i), b = PointAt(xz, (i + 1) % n);
-        if (std::hypot(b.x - a.x, b.z - a.z) <= kEpsilon) {
-            throw std::runtime_error("room polygon has a zero-length edge");
-        }
-        area2 += a.x * b.z - b.x * a.z;
-    }
-    if (std::fabs(area2) <= kEpsilon) {
-        throw std::runtime_error("room polygon has zero area");
-    }
-
-    for (int i = 0; i < n; ++i) {
-        Pt a = PointAt(xz, i), b = PointAt(xz, (i + 1) % n);
-        for (int j = i + 1; j < n; ++j) {
-            Pt c = PointAt(xz, j), d = PointAt(xz, (j + 1) % n);
-            bool adjacent = (j == i + 1) || (i == 0 && j == n - 1);
-            if (adjacent) {
-                // 이웃한 두 변은 공유 꼭짓점에서 만나는 것이 정상이다. 같은 직선 위에서 되돌아가는(뾰족한 돌기) 경우만 거부한다.
-                Pt shared = (j == i + 1) ? b : a;
-                Pt farA = (j == i + 1) ? a : b;
-                Pt farB = (j == i + 1) ? d : c;
-                if (std::fabs(Cross(shared, farA, farB)) <= kEpsilon && Dot(shared, farA, farB) > 0.0) {
-                    throw std::runtime_error("room polygon edges overlap (self-intersecting)");
-                }
-            } else if (SegmentsTouch(a, b, c, d)) {
-                throw std::runtime_error("room polygon edges cross (self-intersecting)");
-            }
-        }
-    }
-}
-
-// (x,z)가 다각형 안이거나 경계 위인가. 경계는 포함으로 봐서 맞닿은 방 사이에 틈이 생기지 않게 한다.
-bool Contains(const std::vector<float>& polygon, double x, double z)
-{
-    int n = static_cast<int>(polygon.size() / 2);
-    Pt p{x, z};
-    bool inside = false;
-    for (int i = 0, j = n - 1; i < n; j = i++) {
-        Pt a = PointAt(polygon.data(), i), b = PointAt(polygon.data(), j);
-        if (OnSegment(a, b, p)) {
-            return true;
-        }
-        // 짝-홀 규칙: p에서 +x 방향 반직선이 변을 가로지르는 횟수의 홀짝.
-        if ((a.z > z) != (b.z > z) && x < (b.x - a.x) * (z - a.z) / (b.z - a.z) + a.x) {
-            inside = !inside;
-        }
-    }
-    return inside;
-}
+// 폴링되지 않은 트리거 이벤트를 쌓아 두는 최대 개수. 넘으면 가장 오래된 것부터 버린다.
+constexpr size_t kMaxQueuedTriggerEvents = 1024;
 
 }  // namespace
 
@@ -188,7 +90,7 @@ Vec2 World::MoveCircle(float x, float z, float dx, float dz, float radius) const
 int World::FindRoom(float x, float z) const
 {
     for (size_t i = 0; i < _rooms.size(); ++i) {
-        if (Contains(_rooms[i].polygon, x, z)) {
+        if (PolygonContains(_rooms[i].polygon, x, z)) {
             return static_cast<int>(i) + 1;
         }
     }
@@ -197,7 +99,7 @@ int World::FindRoom(float x, float z) const
 
 int World::UpdateActiveRoom(float x, float z)
 {
-    if (_activeRoom != 0 && Contains(RoomById(_activeRoom).polygon, x, z)) {
+    if (_activeRoom != 0 && PolygonContains(RoomById(_activeRoom).polygon, x, z)) {
         return _activeRoom;  // 여전히 현재 방 안: 겹침 경계에서도 전환하지 않는다.
     }
     int found = FindRoom(x, z);
@@ -262,6 +164,80 @@ void World::ResetInputFrame()
 {
     _inputRoom = 0;
     _hasCutDirection = false;
+}
+
+int World::AddTrigger(const float* xz, int vertexCount, int tag)
+{
+    ValidatePolygon(xz, vertexCount);
+    Trigger trigger;
+    trigger.polygon.assign(xz, xz + 2 * vertexCount);
+    trigger.tag = tag;
+    _triggers.push_back(std::move(trigger));
+    return static_cast<int>(_triggers.size());
+}
+
+void World::SetTriggerEnabled(int triggerId, bool enabled) { TriggerById(triggerId).enabled = enabled; }
+
+int World::UpdateTriggers(float x, float z)
+{
+    if (!std::isfinite(x) || !std::isfinite(z)) {
+        throw std::runtime_error("trigger update has a non-finite position");
+    }
+    // 먼저 모든 트리거의 새 상태를 계산해 두고(이벤트를 쌓는 동안 상태가 섞이지 않게), Exit -> Enter 순서로 쌓는다.
+    std::vector<bool> now(_triggers.size());
+    for (size_t i = 0; i < _triggers.size(); ++i) {
+        now[i] = _triggers[i].enabled && PolygonContains(_triggers[i].polygon, x, z);
+    }
+    int produced = 0;
+    for (size_t i = 0; i < _triggers.size(); ++i) {
+        if (_triggers[i].inside && !now[i]) {
+            PushEvent(_triggers[i], static_cast<int>(i) + 1, kTriggerExit);
+            ++produced;
+        }
+    }
+    for (size_t i = 0; i < _triggers.size(); ++i) {
+        if (!_triggers[i].inside && now[i]) {
+            PushEvent(_triggers[i], static_cast<int>(i) + 1, kTriggerEnter);
+            ++produced;
+        }
+    }
+    for (size_t i = 0; i < _triggers.size(); ++i) {
+        _triggers[i].inside = now[i];
+    }
+    return produced;
+}
+
+bool World::PollTriggerEvent(TriggerEvent& out)
+{
+    if (_events.empty()) {
+        return false;
+    }
+    out = _events.front();
+    _events.pop_front();
+    return true;
+}
+
+bool World::IsInsideTrigger(int triggerId) const { return TriggerById(triggerId).inside; }
+
+void World::PushEvent(const Trigger& trigger, int triggerId, int kind)
+{
+    if (_events.size() >= kMaxQueuedTriggerEvents) {
+        _events.pop_front();  // 가득 참: 폴링되지 않은 가장 오래된 이벤트를 버린다
+    }
+    _events.push_back({triggerId, kind, trigger.tag});
+}
+
+World::Trigger& World::TriggerById(int triggerId)
+{
+    if (triggerId < 1 || triggerId > static_cast<int>(_triggers.size())) {
+        throw std::runtime_error("unknown trigger id " + std::to_string(triggerId));
+    }
+    return _triggers[triggerId - 1];
+}
+
+const World::Trigger& World::TriggerById(int triggerId) const
+{
+    return const_cast<World*>(this)->TriggerById(triggerId);
 }
 
 const RoomCamera& World::GetRoomCamera(int roomId) const { return RoomById(roomId).camera; }

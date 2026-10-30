@@ -1,9 +1,21 @@
 #pragma once
+#include <deque>
 #include <vector>
 
 #include "collision.h"
 
 namespace gge {
+
+// 트리거 이벤트 종류(gge.h의 GGE_TRIGGER_*와 같은 값).
+constexpr int kTriggerEnter = 1;
+constexpr int kTriggerExit = 2;
+
+// 트리거 영역에 플레이어가 들어오거나 나갔다는 이벤트. tag는 영역을 만들 때 호출자가 정한 값(문/아이템 연결용)이다.
+struct TriggerEvent {
+    int triggerId;
+    int kind;  // kTriggerEnter / kTriggerExit
+    int tag;
+};
 
 // 방에 배정된 고정 카메라. 값은 gge_renderer_set_camera에 그대로 넘길 수 있다.
 struct RoomCamera {
@@ -60,6 +72,29 @@ public:
     // 방 카메라. 알 수 없는 ID면 예외를 던진다.
     const RoomCamera& GetRoomCamera(int roomId) const;
 
+    // ---- 트리거 ----
+    // 플레이어 한 명의 위치(점)로 영역 진입/퇴장을 판정한다. 영역은 방과 같은 규칙의 XZ 평면 다각형(경계 포함)이다.
+
+    // 트리거 영역을 추가하고 ID(>0)를 반환한다. 다각형이 잘못되면(AddRoom과 같은 검사) 예외. tag는 이벤트에 그대로 실린다.
+    int AddTrigger(const float* xz, int vertexCount, int tag);
+
+    // 꺼진 트리거는 "플레이어가 밖에 있는 것"으로 취급한다: 안에 있는 채로 끄면 다음 UpdateTriggers에서 Exit,
+    // 안에 있는 채로 다시 켜면 Enter 이벤트가 생긴다. 알 수 없는 ID면 예외.
+    void SetTriggerEnabled(int triggerId, bool enabled);
+
+    // 플레이어 위치를 반영해 상태가 바뀐 트리거마다 이벤트를 큐에 쌓고, 이번 호출에서 생긴 이벤트 수를 반환한다.
+    // 한 번의 호출 안에서는 Exit가 모두 먼저, 그다음 Enter가 오고 각각 트리거 ID 순이다(A에서 나와 B로 들어가면 Exit A, Enter B).
+    // 처음 호출에서 이미 안에 있으면 Enter가 생긴다. 비유한 값이면 예외.
+    // 주의: 위치를 프레임마다 샘플링하므로 한 프레임 이동 거리보다 얇은 영역은 건너뛸 수 있다.
+    int UpdateTriggers(float x, float z);
+
+    // 가장 오래된 이벤트 하나를 꺼내 out에 쓰고 true. 없으면 false. 큐는 1024개까지이며 가득 차면 가장 오래된 것을 버린다
+    // (호출자가 폴링하지 않는 버그가 있어도 메모리가 무한히 늘지 않게 한다).
+    bool PollTriggerEvent(TriggerEvent& out);
+
+    // 마지막 UpdateTriggers 기준으로 플레이어가 영역 안에 있는가(꺼진 트리거는 항상 false). 알 수 없는 ID면 예외.
+    bool IsInsideTrigger(int triggerId) const;
+
 private:
     struct Room {
         std::vector<float> polygon;  // x0,z0,x1,z1,...
@@ -67,10 +102,22 @@ private:
         float forward[2];  // 시선의 수평 성분(정규화). AddRoom이 한 번 계산한다.
     };
 
+    struct Trigger {
+        std::vector<float> polygon;
+        int tag = 0;
+        bool enabled = true;
+        bool inside = false;  // 마지막 UpdateTriggers에서 (켜져 있고) 안에 있었는가
+    };
+
     const Room& RoomById(int roomId) const;
+    Trigger& TriggerById(int triggerId);
+    const Trigger& TriggerById(int triggerId) const;
+    void PushEvent(const Trigger& trigger, int triggerId, int kind);
 
     std::vector<Box> _boxes;  // 인덱스 + 1 == 콜라이더 ID
     std::vector<Room> _rooms;  // 인덱스 + 1 == 방 ID
+    std::vector<Trigger> _triggers;  // 인덱스 + 1 == 트리거 ID
+    std::deque<TriggerEvent> _events;  // 오래된 것이 앞
     int _activeRoom = 0;
     int _inputRoom = 0;  // 입력 방향 기준으로 고정된 방(0 = 아직 없음). MoveInput 참고
     bool _hasCutDirection = false;  // 컷 이후 첫 입력 방향을 기록했는가(_inputRoom != _activeRoom인 동안만 의미 있음)

@@ -5,6 +5,7 @@ add_library(gge SHARED
     src/mesh_io.cpp
     src/texture_loader.cpp
     src/collision.cpp
+    src/polygon.cpp
     src/world.cpp
     src/capi.cpp)
 target_include_directories(gge PUBLIC include PRIVATE src)
