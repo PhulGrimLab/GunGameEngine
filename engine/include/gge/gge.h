@@ -203,4 +203,26 @@ GGE_API int gge_world_poll_trigger_event(GgeWorld* w, int* trigger_id, int* kind
 GGE_API int gge_world_is_inside_trigger(const GgeWorld* w, int trigger_id);
 
 // 마지막 오류 메시지(UTF-8). 스레드별로 유지된다.
+// ---- 구운 씬 런타임 (독립 플레이어가 쓴다) ----
+// .ggs는 에디터(C# SceneBaker)가 씬과 거기서 참조하는 메시/텍스처/glTF를 하나로 합친 파일이다. 로드하면 렌더러에 메시/텍스처/
+// 오브젝트/조명을 만들고 게임플레이 월드(방/충돌체/트리거/플레이어)를 구성한다. 규칙은 에디터의 플레이 모드와 같다:
+// 프레임 순서(gge_scene_step) = 입력 -> 활성 방 카메라 기준 이동 -> 충돌 -> 활성 방 갱신 -> 트리거 -> 애니메이션 ->
+// 플레이어 변환 적용 -> 렌더러 카메라를 활성 방 카메라로. 플레이어 모델 앞쪽은 +Z로 가정한다.
+typedef struct GgeScene GgeScene;
+
+// 실패하면 NULL(gge_last_error에 사유: 파일을 못 읽음, 형식/체크섬 오류, 항목별 오류). 렌더러의 조명/그림자 설정은 씬의 값으로 바뀐다.
+GGE_API GgeScene* gge_scene_load(GgeRenderer* r, const char* path_utf8);
+// 씬이 만든 오브젝트/조명/리소스를 렌더러에서 제거한다. 반드시 렌더러보다 먼저 파괴해야 한다.
+GGE_API void gge_scene_destroy(GgeScene* s);
+// 한 프레임 진행. 입력 축은 -1..1(오른쪽+, 화면 위쪽+), dt는 유한하고 0 이상인 초. 플레이어가 없는 씬은 애니메이션만 진행한다.
+GGE_API int gge_scene_step(GgeScene* s, float input_x, float input_y, float dt);
+// 가장 오래된 트리거 이벤트를 꺼낸다(없으면 0). kind는 GGE_TRIGGER_ENTER/EXIT. trigger_name은 다음 호출 전까지 유효한 UTF-8(NULL 가능).
+GGE_API int gge_scene_poll_event(GgeScene* s, int* kind, int* tag, const char** trigger_name);
+// 플레이어의 바닥 위치와 Y축 회전(라디안). 플레이어가 없는 씬이면 0을 반환한다. 각 포인터는 NULL 가능.
+GGE_API int gge_scene_get_player(const GgeScene* s, float* x, float* z, float* yaw);
+// 활성 방 이름(UTF-8, 다음 호출 전까지 유효). 방이 없으면 빈 문자열.
+GGE_API const char* gge_scene_active_room_name(const GgeScene* s);
+// 이름이 같은 첫 노드의 렌더러 오브젝트 ID(없으면 0). 테스트/도구가 오브젝트를 직접 만질 때 쓴다.
+GGE_API int gge_scene_find_object(const GgeScene* s, const char* node_name_utf8);
+
 GGE_API const char* gge_last_error(void);

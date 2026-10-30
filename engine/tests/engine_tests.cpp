@@ -3319,6 +3319,467 @@ void Test_GoldenLitSceneRetro()
     gge_renderer_destroy(r);
 }
 
+// ---- 8단계: 구운 씬(.ggs) 런타임 ----
+// 형식은 engine/src/scene_io.cpp 맨 위 주석이 기준이다. 아래 작성기는 그 문서만 보고 C# SceneBaker와 별개로 만든 것이라,
+// 로더가 문서대로 읽는지를 두 구현의 합의가 아니라 문서 기준으로 확인한다.
+uint32_t TestCrc32(const std::vector<uint8_t>& data)
+{
+    uint32_t crc = 0xFFFFFFFFu;
+    for (uint8_t b : data) {
+        crc ^= b;
+        for (int k = 0; k < 8; ++k) crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320u : crc >> 1;
+    }
+    return ~crc;
+}
+
+struct GgsWriter {
+    std::vector<uint8_t> bytes;
+    void Raw(const void* p, size_t n) { const uint8_t* b = static_cast<const uint8_t*>(p); bytes.insert(bytes.end(), b, b + n); }
+    void U8(uint8_t v) { Raw(&v, 1); }
+    void U32(uint32_t v) { Raw(&v, 4); }
+    void I32(int32_t v) { Raw(&v, 4); }
+    void F(float v) { Raw(&v, 4); }
+    void Floats(const std::vector<float>& v) { for (float f : v) F(f); }
+    void Vec3(float x, float y, float z) { F(x); F(y); F(z); }
+    void Str(const std::string& s) { U32(static_cast<uint32_t>(s.size())); Raw(s.data(), s.size()); }
+    // 끝에 CRC-32를 붙여 완성된 파일 바이트를 돌려준다.
+    std::vector<uint8_t> Sealed() const
+    {
+        std::vector<uint8_t> out = bytes;
+        uint32_t crc = TestCrc32(bytes);
+        out.insert(out.end(), reinterpret_cast<uint8_t*>(&crc), reinterpret_cast<uint8_t*>(&crc) + 4);
+        return out;
+    }
+};
+
+struct SpecNode {
+    std::string name;
+    int parent = -1, mesh = -1, texture = -1;
+    float pos[3] = {0, 0, 0}, rot[3] = {0, 0, 0}, scale[3] = {1, 1, 1}, color[3] = {0.8f, 0.8f, 0.8f};
+    float alpha = 1;
+    bool casts = false;
+    std::string clip;
+    bool playing = true;
+    float speed = 1;
+};
+
+struct SpecRoom {
+    std::string name;
+    std::vector<float> polygon;
+    float eye[3], target[3], fov;
+};
+
+// 메시 0 = 정면 사각형(정적), 메시 1 = 3본 체인에 묶인 띠(스킨, 클립 "bend" 하나).
+struct Spec {
+    std::vector<std::vector<uint8_t>> textures;
+    int meshCount = 2;
+    std::vector<SpecNode> nodes;
+    std::string clipName = "bend";
+    int pointLights = 0;
+    std::vector<SpecRoom> rooms;
+    bool hasPlayer = false;
+    int playerNode = 0;
+    bool hasSpawn = false;
+    float spawn[2] = {0, 0};
+    bool badQuadIndex = false;  // 정점 수(4)를 넘는 인덱스를 넣는다
+};
+
+std::vector<uint8_t> ReadFileBytes(const fs::path& path)
+{
+    std::ifstream f(path, std::ios::binary);
+    return std::vector<uint8_t>(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+}
+
+std::vector<float> QuadVertices()
+{
+    return {-1, -1, 0, 0, 0, 1, 0, 1,   1, -1, 0, 0, 0, 1, 1, 1,   1, 1, 0, 0, 0, 1, 1, 0,   -1, 1, 0, 0, 0, 1, 0, 0};
+}
+
+std::vector<uint8_t> Serialize(const Spec& spec)
+{
+    GgsWriter w;
+    w.Raw("GGS1", 4);
+    w.U32(1);
+    w.U32(static_cast<uint32_t>(spec.textures.size()));
+    for (const auto& t : spec.textures) { w.U32(static_cast<uint32_t>(t.size())); w.Raw(t.data(), t.size()); }
+
+    w.U32(static_cast<uint32_t>(spec.meshCount));
+    for (int m = 0; m < spec.meshCount; ++m) {
+        if (m == 0) {  // 정적 사각형
+            w.U8(0); w.U32(4); w.U32(6);
+            w.Floats(QuadVertices());
+            for (uint32_t i : {0u, 1u, spec.badQuadIndex ? 9u : 2u, 0u, 2u, 3u}) w.U32(i);
+            continue;
+        }
+        // 스킨 띠: SkinnedStrip과 같은 데이터
+        w.U8(1); w.U32(6); w.U32(12);
+        w.Floats({-0.3f, 0, 0, 0, 0, 1, 0, 1,   0.3f, 0, 0, 0, 0, 1, 1, 1,
+                  -0.3f, 1, 0, 0, 0, 1, 0, 0.5f, 0.3f, 1, 0, 0, 0, 1, 1, 0.5f,
+                  -0.3f, 2, 0, 0, 0, 1, 0, 0,   0.3f, 2, 0, 0, 0, 1, 1, 0});
+        for (uint32_t i : {0u, 1u, 3u, 0u, 3u, 2u, 2u, 3u, 5u, 2u, 5u, 4u}) w.U32(i);
+        for (uint32_t j : {0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 1u, 0u, 0u, 0u, 1u, 0u, 0u, 0u, 1u, 0u, 0u, 0u, 1u, 0u, 0u, 0u}) w.U32(j);
+        w.Floats({1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0});
+        ChainData chain = MakeChain(3);
+        w.U32(3);
+        for (int p : chain.parents) w.I32(p);
+        w.Floats(chain.inverseBind); w.Floats(chain.translation); w.Floats(chain.rotation); w.Floats(chain.scale);
+        w.U32(1);
+        w.Str(spec.clipName);
+        w.F(1.0f);
+        w.U32(2);
+        for (int bone : {1, 2}) {
+            KeyChannel c = ZRotation(bone, 0, 1);
+            w.I32(c.bone); w.U32(1); w.U32(static_cast<uint32_t>(c.times.size()));
+            w.Floats(c.times); w.Floats(c.values);
+        }
+    }
+
+    w.U32(static_cast<uint32_t>(spec.nodes.size()));
+    for (const SpecNode& n : spec.nodes) {
+        w.Str(n.name); w.I32(n.parent); w.I32(n.mesh); w.I32(n.texture);
+        w.Vec3(n.pos[0], n.pos[1], n.pos[2]); w.Vec3(n.rot[0], n.rot[1], n.rot[2]);
+        w.Vec3(n.scale[0], n.scale[1], n.scale[2]); w.Vec3(n.color[0], n.color[1], n.color[2]);
+        w.F(n.alpha); w.U8(n.casts ? 1 : 0); w.Str(n.clip); w.U8(n.playing ? 1 : 0); w.F(n.speed);
+    }
+
+    w.Vec3(0.2f, 0.2f, 0.25f);          // ambient
+    w.Vec3(-0.5f, -1.0f, -0.3f);        // sun direction
+    w.Vec3(0.5f, 0.5f, 0.45f);          // sun color
+    w.U32(static_cast<uint32_t>(spec.pointLights));
+    for (int i = 0; i < spec.pointLights; ++i) { w.Vec3(-2.0f + i, 2, 2); w.Vec3(1, 0.4f, 0.2f); w.F(6); }
+    w.U8(0); w.F(0); w.F(0.5f);         // shadow off
+
+    w.U32(static_cast<uint32_t>(spec.rooms.size()));
+    for (const SpecRoom& r : spec.rooms) {
+        w.Str(r.name); w.U32(static_cast<uint32_t>(r.polygon.size() / 2)); w.Floats(r.polygon);
+        w.Vec3(r.eye[0], r.eye[1], r.eye[2]); w.Vec3(r.target[0], r.target[1], r.target[2]); w.F(r.fov);
+    }
+    w.U32(0);  // colliders
+    w.U32(0);  // triggers
+    w.U8(spec.hasPlayer ? 1 : 0);
+    if (spec.hasPlayer) {
+        w.I32(spec.playerNode); w.U8(spec.hasSpawn ? 1 : 0); w.F(spec.spawn[0]); w.F(spec.spawn[1]); w.F(0.4f); w.F(3);
+    }
+    return w.Sealed();
+}
+
+fs::path WriteScene(const std::string& name, const std::vector<uint8_t>& bytes)
+{
+    fs::path path = TempDir() / name;
+    std::ofstream f(path, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    return path;
+}
+
+// 사각형(텍스처) 패널 + 그 자식 배지, 스킨 띠(클립 재생), 그룹 노드.
+Spec VisualSpec(const fs::path& bmp)
+{
+    Spec s;
+    s.textures.push_back(ReadFileBytes(bmp));
+    SpecNode panel; panel.name = "Panel"; panel.mesh = 0; panel.texture = 0;
+    panel.pos[0] = 1.5f; panel.pos[1] = 1.0f; panel.rot[1] = 0.4f; panel.scale[0] = panel.scale[1] = panel.scale[2] = 0.8f; panel.color[0] = 1; panel.color[1] = 0.9f; panel.color[2] = 0.8f;
+    SpecNode badge; badge.name = "Badge"; badge.parent = 0; badge.mesh = 0; badge.pos[0] = 0.5f; badge.pos[1] = 0.6f; badge.scale[0] = badge.scale[1] = badge.scale[2] = 0.3f;
+    badge.color[0] = 0.2f; badge.color[1] = 0.9f; badge.color[2] = 0.3f; badge.alpha = 0.5f;
+    SpecNode strip; strip.name = "Strip"; strip.mesh = 1; strip.clip = "bend"; strip.speed = 1.5f; strip.pos[0] = -1.5f; strip.color[0] = 0.9f; strip.color[1] = 0.6f; strip.color[2] = 0.3f;
+    SpecNode group; group.name = "Group";
+    s.nodes = {panel, badge, strip, group};
+    s.pointLights = 2;
+    return s;
+}
+
+// 위와 같은 장면을 C API로 직접 만든다(기준).
+void BuildVisualSceneManually(GgeRenderer* r, const fs::path& bmp, int* stripObject, int* clipId)
+{
+    int quad = QuadMesh(r, 1.0f);
+    int tex = gge_texture_load(r, bmp.string().c_str());
+    int strip = SkinnedStrip(r);
+    int skeleton = ChainSkeleton(r);
+    int clip = CreateClip(r, 1.0f, {ZRotation(1, 0, 1), ZRotation(2, 0, 1)});
+
+    int panel = gge_object_create(r, quad, tex, 0);
+    const float pp[3] = {1.5f, 1.0f, 0}, pr[3] = {0, 0.4f, 0}, ps[3] = {0.8f, 0.8f, 0.8f};
+    gge_object_set_transform(r, panel, pp, pr, ps);
+    gge_object_set_color(r, panel, 1, 0.9f, 0.8f);
+    int badge = gge_object_create(r, quad, 0, panel);
+    const float bp[3] = {0.5f, 0.6f, 0}, br[3] = {0, 0, 0}, bs[3] = {0.3f, 0.3f, 0.3f};
+    gge_object_set_transform(r, badge, bp, br, bs);
+    gge_object_set_color(r, badge, 0.2f, 0.9f, 0.3f);
+    gge_object_set_alpha(r, badge, 0.5f);
+    int stripObj = gge_object_create(r, strip, 0, 0);
+    gge_object_set_skeleton(r, stripObj, skeleton);
+    gge_object_set_pose(r, stripObj, clip, 0, 0, 0, 0);
+    Place(r, stripObj, -1.5f, 0, 0);
+    gge_object_set_color(r, stripObj, 0.9f, 0.6f, 0.3f);
+    gge_object_create(r, 0, 0, 0);  // 그룹 노드
+    *stripObject = stripObj;
+    *clipId = clip;  // 호출자가 Step마다 포즈 시간을 직접 지정한다
+
+    gge_renderer_set_ambient(r, 0.2f, 0.2f, 0.25f);
+    const float sunDir[3] = {-0.5f, -1.0f, -0.3f}, sunColor[3] = {0.5f, 0.5f, 0.45f};
+    gge_renderer_set_directional_light(r, sunDir, sunColor);
+    const float color[3] = {1, 0.4f, 0.2f};
+    for (int i = 0; i < 2; ++i) {
+        const float pos[3] = {-2.0f + i, 2, 2};
+        gge_light_create_point(r, pos, color, 6);
+    }
+    gge_renderer_set_shadow(r, 0, 0, 0.5f);
+    gge_renderer_set_camera(r, 0, 2.5f, 7, 0, 0.8f, 0, 0.8f);
+}
+
+const char* kSamplePlayGgs = "../../assets/samples/play.ggs";
+
+fs::path SamplePlayScene() { return fs::path(GGE_TEST_DATA_DIR) / kSamplePlayGgs; }
+
+std::string DrainEvents(GgeScene* scene)
+{
+    std::string text;
+    int kind = 0, tag = 0;
+    const char* name = nullptr;
+    while (gge_scene_poll_event(scene, &kind, &tag, &name)) {
+        if (!text.empty()) text += ", ";
+        text += std::string(kind == GGE_TRIGGER_ENTER ? "Enter " : "Exit ") + name + " " + std::to_string(tag);
+    }
+    return text;
+}
+
+void Test_SceneBuiltFromTheFormatSpecRendersLikeManualConstruction()
+{
+    fs::path bmp = TempDir() / "scene_quad.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+    fs::path ggs = WriteScene("visual.ggs", Serialize(VisualSpec(bmp)));
+
+    GgeRenderer* a = NewRenderer(160, 120);
+    GgeScene* scene = gge_scene_load(a, ggs.string().c_str());
+    if (!scene) std::printf("  load failed: %s\n", gge_last_error());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(a); return; }
+    gge_renderer_set_camera(a, 0, 2.5f, 7, 0, 0.8f, 0, 0.8f);
+
+    GgeRenderer* b = NewRenderer(160, 120);
+    int stripObject = 0, clip = 0;
+    BuildVisualSceneManually(b, bmp, &stripObject, &clip);
+
+    CHECK(scene != nullptr && gge_scene_find_object(scene, "Panel") > 0);
+    CHECK(gge_scene_find_object(scene, "Badge") > gge_scene_find_object(scene, "Panel"));   // 자식은 부모 뒤에 만들어진다
+    CHECK(gge_scene_find_object(scene, "Strip") > 0 && gge_scene_find_object(scene, "Group") > 0);
+    CHECK(gge_scene_find_object(scene, "Nothing") == 0);
+
+    Image first = Render(a);
+    CHECK(first.bgra == Render(b).bgra);   // 시간 0: 같은 자세, 같은 조명, 같은 텍스처
+
+    // 클립 "bend"를 속도 1.5로 재생: 0.2초씩 5번 = 1.5초 -> 시간은 감겨서 (0.2*1.5*5) mod 1 = 0.5
+    float t = 0;
+    for (int i = 0; i < 5; ++i) {
+        CHECK(gge_scene_step(scene, 0, 0, 0.2f) == 1);
+        t = t + 0.2f * 1.5f;
+        t = t - std::floor(t);
+        CHECK(gge_object_set_pose(b, stripObject, clip, t, 0, 0, 0) == 1);
+        CHECK(Render(a).bgra == Render(b).bgra);
+    }
+    CHECK(first.bgra != Render(a).bgra);  // 애니메이션이 실제로 진행했다
+
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(a);
+    gge_renderer_destroy(b);
+}
+
+void Test_PausedClipStaysAtTimeZeroAndStaticMeshIgnoresClip()
+{
+    fs::path bmp = TempDir() / "scene_quad2.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+    Spec spec = VisualSpec(bmp);
+    spec.nodes[2].playing = false;                       // 멈춘 클립: 시간 0 자세로 정지
+    spec.nodes[0].clip = "whatever";                      // 정적 메시의 클립 이름은 에디터처럼 무시한다
+    GgeRenderer* r = NewRenderer(160, 120);
+    GgeScene* scene = gge_scene_load(r, WriteScene("paused.ggs", Serialize(spec)).string().c_str());
+    CHECK(scene != nullptr);
+    if (scene) {
+        gge_renderer_set_camera(r, 0, 2.5f, 7, 0, 0.8f, 0, 0.8f);
+        Image before = Render(r);
+        for (int i = 0; i < 10; ++i) CHECK(gge_scene_step(scene, 0, 0, 0.25f) == 1);
+        CHECK(Render(r).bgra == before.bgra);
+        gge_scene_destroy(scene);
+    }
+    gge_renderer_destroy(r);
+}
+
+void Test_SceneLoadRejectsDamagedAndInconsistentFiles()
+{
+    fs::path bmp = TempDir() / "scene_quad3.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+    GgeRenderer* r = NewRenderer(64, 48);
+
+    auto expectRejected = [&](const char* label, const std::vector<uint8_t>& bytes, const char* reason) {
+        GgeScene* scene = gge_scene_load(r, WriteScene("bad.ggs", bytes).string().c_str());
+        bool named = std::strstr(gge_last_error(), reason) != nullptr;
+        if (scene || !named) std::printf("  %s: loaded=%d, error='%s' (expected '%s')\n", label, scene != nullptr, gge_last_error(), reason);
+        CHECK(scene == nullptr && named);
+        if (scene) gge_scene_destroy(scene);
+    };
+    auto withCrc = [](std::vector<uint8_t> body) {
+        uint32_t crc = TestCrc32(body);
+        body.insert(body.end(), reinterpret_cast<uint8_t*>(&crc), reinterpret_cast<uint8_t*>(&crc) + 4);
+        return body;
+    };
+
+    Spec good = VisualSpec(bmp);
+    std::vector<uint8_t> file = Serialize(good);
+    // 파일 수준
+    CHECK(gge_scene_load(r, (TempDir() / "does_not_exist.ggs").string().c_str()) == nullptr);
+    CHECK(std::strstr(gge_last_error(), "cannot open file") != nullptr);
+    CHECK(gge_scene_load(r, nullptr) == nullptr);
+    CHECK(gge_scene_load(nullptr, "x.ggs") == nullptr);
+    expectRejected("too short", std::vector<uint8_t>(file.begin(), file.begin() + 10), "not a GGS1 scene file");
+    std::vector<uint8_t> badMagic = file; badMagic[0] = 'X';
+    expectRejected("bad magic", badMagic, "not a GGS1 scene file");
+    std::vector<uint8_t> badVersion = file; badVersion[4] = 9;
+    expectRejected("version", badVersion, "unsupported scene version 9");
+    std::vector<uint8_t> flipped = file; flipped[file.size() / 2] ^= 1;
+    expectRejected("checksum", flipped, "checksum mismatch");
+    expectRejected("cut", std::vector<uint8_t>(file.begin(), file.end() - 1), "checksum mismatch");
+
+    // 체크섬을 맞춘 구조 손상
+    std::vector<uint8_t> body(file.begin(), file.end() - 4);
+    expectRejected("truncated body", withCrc(std::vector<uint8_t>(body.begin(), body.begin() + body.size() / 2)), "truncated");
+    std::vector<uint8_t> trailing = body; trailing.push_back(0);
+    expectRejected("trailing bytes", withCrc(trailing), "trailing bytes");
+    std::vector<uint8_t> huge = body; const uint32_t many = 0xFFFFFFFFu; std::memcpy(&huge[8], &many, 4);
+    expectRejected("texture count", withCrc(huge), "too many textures");
+
+    // 내용 수준(작성기로 만든 일관된 파일의 참조 오류)
+    auto mutate = [&](auto edit) { Spec s = VisualSpec(bmp); edit(s); return Serialize(s); };
+    expectRejected("mesh ref", mutate([](Spec& s) { s.nodes[0].mesh = 5; }), "node 'Panel' references mesh 5 which does not exist");
+    expectRejected("texture ref", mutate([](Spec& s) { s.nodes[0].texture = 3; }), "node 'Panel' references texture 3 which does not exist");
+    expectRejected("parent after child", mutate([](Spec& s) { s.nodes[0].parent = 1; }), "a parent must come before its children");
+    expectRejected("parent self", mutate([](Spec& s) { s.nodes[1].parent = 1; }), "a parent must come before its children");
+    expectRejected("parent range", mutate([](Spec& s) { s.nodes[1].parent = -2; }), "a parent must come before its children");
+    expectRejected("unknown clip", mutate([](Spec& s) { s.nodes[2].clip = "missing"; }), "clip 'missing' was not found");
+    expectRejected("bad image", mutate([](Spec& s) { s.textures[0] = {1, 2, 3, 4}; }), "cannot decode image");
+    expectRejected("empty image", mutate([](Spec& s) { s.textures[0].clear(); }), "cannot decode image");
+    expectRejected("player node range", mutate([](Spec& s) { s.hasPlayer = true; s.playerNode = 9; }), "the player node 9 does not exist");
+    expectRejected("player is a child", mutate([](Spec& s) { s.hasPlayer = true; s.playerNode = 1; }), "must be a root node");
+    expectRejected("player without rooms", mutate([](Spec& s) { s.hasPlayer = true; s.playerNode = 0; }), "no rooms");
+    expectRejected("spawn outside", mutate([](Spec& s) {
+        s.hasPlayer = true; s.playerNode = 0; s.hasSpawn = true; s.spawn[0] = 50; s.spawn[1] = 50;
+        s.rooms.push_back({"R", {0, 0, 4, 0, 4, 4, 0, 4}, {2, 5, 9}, {2, 0, 2}, 0.8f});
+    }), "outside every room");
+    expectRejected("bad room polygon", mutate([](Spec& s) { s.rooms.push_back({"Bad", {0, 0, 1, 1, 2, 2}, {2, 5, 9}, {2, 0, 2}, 0.8f}); }), "room 'Bad'");
+    expectRejected("bad mesh data", mutate([](Spec& s) { s.badQuadIndex = true; }), "mesh 0: mesh index out of range");
+    gge_renderer_destroy(r);
+}
+
+void Test_SceneStepRejectsBadTimeAndFailedLoadLeavesNothingBehind()
+{
+    fs::path bmp = TempDir() / "scene_quad4.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+    GgeRenderer* r = NewRenderer(96, 72);
+    gge_renderer_set_camera(r, 0, 2.5f, 7, 0, 0.8f, 0, 0.8f);
+    Image empty = Render(r);
+
+    GgeScene* scene = gge_scene_load(r, WriteScene("ok.ggs", Serialize(VisualSpec(bmp))).string().c_str());
+    CHECK(scene != nullptr);
+    if (scene) {
+        CHECK(gge_scene_step(scene, 0, 0, -0.1f) == 0);
+        CHECK(std::strstr(gge_last_error(), "dt must be") != nullptr);
+        CHECK(gge_scene_step(scene, 0, 0, std::nanf("")) == 0);
+        CHECK(gge_scene_step(scene, 0, 0, INFINITY) == 0);
+        CHECK(gge_scene_step(scene, 0, 0, 0) == 1);   // 0은 허용
+        float x = 7, z = 7, yaw = 7;
+        CHECK(gge_scene_get_player(scene, &x, &z, &yaw) == 0);        // 플레이어 없는 씬
+        CHECK(x == 7 && z == 7 && yaw == 7);                           // 출력은 건드리지 않는다
+        CHECK(std::strcmp(gge_scene_active_room_name(scene), "") == 0);
+        CHECK(gge_scene_poll_event(scene, nullptr, nullptr, nullptr) == 0);
+        gge_scene_destroy(scene);
+    }
+    gge_renderer_set_camera(r, 0, 2.5f, 7, 0, 0.8f, 0, 0.8f);
+    CHECK(Render(r).bgra == empty.bgra);   // 소멸하면 오브젝트가 모두 사라진다(조명은 씬 값으로 남는다: 배경만 보임)
+
+    // 로드의 마지막 단계(스폰 검사)에서 실패하는 씬을 여러 번 불러도 아무것도 쌓이지 않는다:
+    // 매번 점광원 5개를 만들므로 정리되지 않으면 8개 한도에서 다른 오류로 바뀐다.
+    Spec failing = VisualSpec(bmp);
+    failing.pointLights = 5;
+    failing.hasPlayer = true; failing.playerNode = 0; failing.hasSpawn = true; failing.spawn[0] = 50; failing.spawn[1] = 50;
+    failing.rooms.push_back({"R", {0, 0, 4, 0, 4, 4, 0, 4}, {2, 5, 9}, {2, 0, 2}, 0.8f});
+    std::string path = WriteScene("fails.ggs", Serialize(failing)).string();
+    for (int i = 0; i < 12; ++i) {
+        CHECK(gge_scene_load(r, path.c_str()) == nullptr);
+        CHECK(std::strstr(gge_last_error(), "outside every room") != nullptr);
+    }
+    CHECK(Render(r).bgra == empty.bgra);
+    GgeScene* again = gge_scene_load(r, WriteScene("ok2.ggs", Serialize(VisualSpec(bmp))).string().c_str());
+    CHECK(again != nullptr);   // 이전 실패들이 점광원 자리를 차지하지 않았다
+    gge_scene_destroy(again);
+    gge_renderer_destroy(r);
+}
+
+void Test_BakedPlaySampleStartsInsideTheFirstTrigger()
+{
+    GgeRenderer* r = NewRenderer(160, 120);
+    GgeScene* scene = gge_scene_load(r, SamplePlayScene().string().c_str());
+    if (!scene) std::printf("  load failed: %s\n", gge_last_error());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+
+    float x = 0, z = 0, yaw = 9;
+    CHECK(gge_scene_get_player(scene, &x, &z, &yaw) == 1);
+    CHECK(x == -4.0f && z == 0.0f && yaw == 0.0f);
+    CHECK(std::strcmp(gge_scene_active_room_name(scene), "Hall") == 0);
+    CHECK(DrainEvents(scene) == "Enter StartPad 1");   // 스폰이 StartPad 안
+    CHECK(DrainEvents(scene).empty());
+    CHECK(gge_scene_find_object(scene, "Hero") > 0 && gge_scene_find_object(scene, "Pillar") > 0);
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(r);
+}
+
+void Test_BakedPlaySampleWalkFollowsTheGameplayRules()
+{
+    GgeRenderer* r = NewRenderer(160, 120);
+    GgeScene* scene = gge_scene_load(r, SamplePlayScene().string().c_str());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+    std::string events = DrainEvents(scene);
+
+    // 오른쪽으로 계속 걷는다: StartPad를 벗어나고, 방 경계(x=0)를 넘어 카메라가 바뀌고, Door에 들어갔다 나오고, 동쪽 벽(x=6, 반지름 0.4)에서 멈춘다.
+    std::string rooms;
+    std::string lastRoom = gge_scene_active_room_name(scene);
+    for (int i = 0; i < 200; ++i) {
+        CHECK(gge_scene_step(scene, 1, 0, 1.0f / 30) == 1);
+        std::string e = DrainEvents(scene);
+        if (!e.empty()) events += (events.empty() ? "" : ", ") + e;
+        if (gge_scene_active_room_name(scene) != lastRoom) {
+            lastRoom = gge_scene_active_room_name(scene);
+            rooms += lastRoom + ";";
+        }
+    }
+    CHECK(events == "Enter StartPad 1, Exit StartPad 1, Enter Door 7, Exit Door 7");
+    CHECK(rooms == "Annex;");
+    float x = 0, z = 0, yaw = 0;
+    CHECK(gge_scene_get_player(scene, &x, &z, &yaw) == 1);
+    CHECK(std::fabs(x - 5.6f) < 1e-3f && std::fabs(z) < 1e-3f);          // 동쪽 벽(6)에서 반지름만큼 떨어져 멈춘다
+    CHECK(std::fabs(yaw - kPi / 2) < 1e-4f);                              // +X를 향한다(모델 앞쪽 +Z 가정: atan2(x, z))
+
+    // 아래쪽 입력: 화면 위쪽(+) = 카메라가 보는 방향. Annex 카메라는 -X를 향하므로 +Y 입력은 -X로 간다.
+    float x0 = x;
+    for (int i = 0; i < 10; ++i) gge_scene_step(scene, 0, 1, 1.0f / 30);
+    gge_scene_get_player(scene, &x, &z, &yaw);
+    CHECK(x < x0 - 0.5f && std::fabs(z) < 1e-3f);
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(r);
+}
+
+void Test_GoldenPlaySceneFromTheBakedSample()
+{
+    GgeRenderer* r = NewRenderer(320, 240);
+    GgeScene* scene = gge_scene_load(r, SamplePlayScene().string().c_str());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+    gge_renderer_set_retro(r, 1, 5, 1, 1);
+    for (int i = 0; i < 100; ++i) gge_scene_step(scene, 1, 0, 1.0f / 30);   // Annex 방으로 걸어 들어간다
+    CHECK(MatchesGolden("play_scene_320x240", Render(r)));
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(r);
+}
+
 }  // namespace
 
 int main()
@@ -3441,6 +3902,13 @@ int main()
         {"SkinnedObjectCastsTheShadowOfItsCurrentPose", Test_SkinnedObjectCastsTheShadowOfItsCurrentPose},
         {"GoldenLitScene", Test_GoldenLitScene},
         {"GoldenLitSceneRetro", Test_GoldenLitSceneRetro},
+        {"SceneBuiltFromTheFormatSpecRendersLikeManualConstruction", Test_SceneBuiltFromTheFormatSpecRendersLikeManualConstruction},
+        {"PausedClipStaysAtTimeZeroAndStaticMeshIgnoresClip", Test_PausedClipStaysAtTimeZeroAndStaticMeshIgnoresClip},
+        {"SceneLoadRejectsDamagedAndInconsistentFiles", Test_SceneLoadRejectsDamagedAndInconsistentFiles},
+        {"SceneStepRejectsBadTimeAndFailedLoadLeavesNothingBehind", Test_SceneStepRejectsBadTimeAndFailedLoadLeavesNothingBehind},
+        {"BakedPlaySampleStartsInsideTheFirstTrigger", Test_BakedPlaySampleStartsInsideTheFirstTrigger},
+        {"BakedPlaySampleWalkFollowsTheGameplayRules", Test_BakedPlaySampleWalkFollowsTheGameplayRules},
+        {"GoldenPlaySceneFromTheBakedSample", Test_GoldenPlaySceneFromTheBakedSample},
     };
     for (const Case& c : cases) {
         int before = g_failures;

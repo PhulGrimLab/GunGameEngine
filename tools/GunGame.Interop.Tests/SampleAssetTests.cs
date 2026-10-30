@@ -35,6 +35,25 @@ public class SampleAssetTests
         builder.KeyedAnimations.Add(("curl", [0f, 1f, 2f],
             [(1, [0f, 1.0f, 0f]), (2, [0f, 1.2f, 0f])]));
         builder.Write(target, "tentacle");
+
+        // 독립 플레이어/엔진 테스트가 쓰는 구운 샘플. 씬 JSON이나 형식이 바뀌면 다시 만들어야 한다(아래 BakedPlaySample_IsUpToDate가 알려 준다).
+        string? samples = FindSamples();
+        if (samples is not null)
+            File.WriteAllBytes(Path.Combine(target, "play.ggs"), SceneBaker.BakeToBytes(SceneSerializer.Load(Path.Combine(samples, "play.scene.json"))));
+    }
+
+    [Fact]
+    public void BakedPlaySample_IsUpToDate()
+    {
+        // assets/samples/play.ggs는 play.scene.json을 구운 결과여야 한다(C++ 엔진 테스트와 플레이어가 이 파일을 그대로 읽는다).
+        // 어긋났다면: GGE_WRITE_SAMPLES=<assets/samples 폴더>로 이 테스트 클래스를 실행해 다시 만든다.
+        string? samples = FindSamples();
+        Assert.True(samples is not null, "assets/samples was not found above the test binaries");
+        string baked = Path.Combine(samples, "play.ggs");
+        Assert.True(File.Exists(baked), "assets/samples/play.ggs is missing (regenerate with GGE_WRITE_SAMPLES)");
+
+        byte[] expected = SceneBaker.BakeToBytes(SceneSerializer.Load(Path.Combine(samples, "play.scene.json")));
+        Assert.True(expected.AsSpan().SequenceEqual(File.ReadAllBytes(baked)), "play.ggs does not match play.scene.json: regenerate it with GGE_WRITE_SAMPLES");
     }
 
     [Fact]

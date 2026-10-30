@@ -153,6 +153,42 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OnBakeScene(object sender, RoutedEventArgs e)
+    {
+        var dialog = new SaveFileDialog
+        {
+            Filter = "Baked scene (*.ggs)|*.ggs",
+            DefaultExt = ".ggs",
+            FileName = (_scenePath is null ? "scene" : Path.GetFileNameWithoutExtension(_scenePath)) + ".ggs",
+        };
+        if (dialog.ShowDialog(this) == true)
+            BakeTo(dialog.FileName);
+    }
+
+    /// <summary>
+    /// 씬을 독립 실행 플레이어(gge_player.exe)용 바이너리 씬(.ggs)으로 굽는다. 씬에 로드 문제가 있으면(없는 메시/텍스처 등)
+    /// 문제가 있는 채로 굽지 않고 거부한다. 구운 결과는 파일에 쓰기 전에 엔진으로 다시 로드해 검증한다(SceneBaker).
+    /// </summary>
+    internal bool BakeTo(string path)
+    {
+        if (_sync is { Errors.Count: > 0 } sync)
+        {
+            StatusText.Text = "Bake refused: the scene has load problems: " + sync.Errors[0];
+            return false;
+        }
+        try
+        {
+            SceneBaker.Bake(_document, path);
+            StatusText.Text = $"Baked {path} (run it with gge_player.exe)";
+            return true;
+        }
+        catch (BakeException ex)
+        {
+            StatusText.Text = "Bake failed: " + ex.Message;
+            return false;
+        }
+    }
+
     private void SetDocument(SceneDocument document, string? path)
     {
         StopPlay();  // 플레이 중에 씬이 바뀌면 이전 씬의 세션을 끝낸다

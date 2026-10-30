@@ -45,20 +45,19 @@ private:
 
 }  // namespace
 
-ImageData LoadImageFile(const std::string& pathUtf8)
-{
-    ComScope com;
+namespace {
 
+ComPtr<IWICImagingFactory> CreateFactory()
+{
     ComPtr<IWICImagingFactory> factory;
     Check(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory)),
           "WIC factory");
+    return factory;
+}
 
-    ComPtr<IWICBitmapDecoder> decoder;
-    std::wstring wide = Utf8ToWide(pathUtf8);
-    if (FAILED(factory->CreateDecoderFromFilename(wide.c_str(), nullptr, GENERIC_READ,
-                                                  WICDecodeMetadataCacheOnDemand, &decoder)))
-        throw std::runtime_error("cannot decode image: " + pathUtf8);
-
+// 디코더의 첫 프레임을 RGBA8로 변환한다. what은 오류 메시지용 이름(파일 경로 등).
+ImageData DecodeFirstFrame(IWICImagingFactory* factory, IWICBitmapDecoder* decoder, const std::string& pathUtf8)
+{
     ComPtr<IWICBitmapFrameDecode> frame;
     Check(decoder->GetFrame(0, &frame), "WIC GetFrame");
 
@@ -85,6 +84,38 @@ ImageData LoadImageFile(const std::string& pathUtf8)
     Check(converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(image.rgba.size()), image.rgba.data()),
           "WIC CopyPixels");
     return image;
+}
+
+}  // namespace
+
+ImageData LoadImageFile(const std::string& pathUtf8)
+{
+    ComScope com;
+    ComPtr<IWICImagingFactory> factory = CreateFactory();
+
+    ComPtr<IWICBitmapDecoder> decoder;
+    std::wstring wide = Utf8ToWide(pathUtf8);
+    if (FAILED(factory->CreateDecoderFromFilename(wide.c_str(), nullptr, GENERIC_READ,
+                                                  WICDecodeMetadataCacheOnDemand, &decoder)))
+        throw std::runtime_error("cannot decode image: " + pathUtf8);
+    return DecodeFirstFrame(factory.Get(), decoder.Get(), pathUtf8);
+}
+
+ImageData LoadImageMemory(const uint8_t* data, size_t size, const std::string& what)
+{
+    if (!data || size == 0 || size > 0xFFFFFFFFull)
+        throw std::runtime_error("cannot decode image: " + what + " (empty or too large)");
+    ComScope com;
+    ComPtr<IWICImagingFactory> factory = CreateFactory();
+
+    ComPtr<IWICStream> stream;
+    Check(factory->CreateStream(&stream), "WIC CreateStream");
+    // 스트림은 이 버퍼를 복사하지 않고 가리키므로 디코딩이 끝날 때까지 data가 살아 있어야 한다(이 함수 안에서 끝난다).
+    Check(stream->InitializeFromMemory(const_cast<BYTE*>(data), static_cast<DWORD>(size)), "WIC InitializeFromMemory");
+    ComPtr<IWICBitmapDecoder> decoder;
+    if (FAILED(factory->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnDemand, &decoder)))
+        throw std::runtime_error("cannot decode image: " + what);
+    return DecodeFirstFrame(factory.Get(), decoder.Get(), what);
 }
 
 }  // namespace gge

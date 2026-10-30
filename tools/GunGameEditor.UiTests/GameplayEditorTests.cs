@@ -547,3 +547,107 @@ public sealed class GameplayEditorTests(UiHost host) : UiTestBase(host)
         Assert.True(s.ButtonByLabel("Add Light").IsEnabled);
     });
 }
+
+/// <summary>"Bake Player Scene..." 버튼 뒤의 로직(파일 대화상자 이후): 구운 파일이 만들어지고 엔진이 로드하는지, 실패 사유와 거부.</summary>
+public sealed class BakeEditorTests(UiHost host) : UiTestBase(host)
+{
+    private static string TempScene(string json, params string[] copyFromSamples)
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "gge_bake_ui_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        foreach (string sample in copyFromSamples)
+            File.Copy(EditorSession.Sample(sample), Path.Combine(dir, sample));
+        string path = Path.Combine(dir, "scene.json");
+        File.WriteAllText(path, json);
+        return path;
+    }
+
+    [Fact]
+    public void BakeTo_WritesAPlayableFile_AndReportsIt() => Ui(s =>
+    {
+        string path = TempScene("{\"version\":1,\"nodes\":[{\"name\":\"Hero\",\"mesh\":\"cube.obj\",\"position\":[2,0,2]}]}", "cube.obj");
+        try
+        {
+            Assert.True(s.Window.OpenScenePath(path));
+            s.Pump();
+            s.Click("Add Room");
+            s.Select(s.Roots.Single());
+            s.Click("Set Player");
+            string baked = Path.Combine(Path.GetDirectoryName(path)!, "out.ggs");
+
+            Assert.True(s.Window.BakeTo(baked));
+
+            Assert.StartsWith("Baked", s.Status);
+            using var renderer = new GunGame.Interop.EngineRenderer(64, 48, useWarp: true);
+            using GunGame.Interop.EngineScene scene = GunGame.Interop.EngineScene.Load(renderer, baked);
+            Assert.Equal(new GunGame.Interop.Vec2(2, 2), scene.Player!.Value.Position);
+            Assert.Equal("Room", scene.ActiveRoomName);
+        }
+        finally { Directory.Delete(Path.GetDirectoryName(path)!, true); }
+    });
+
+    [Fact]
+    public void BakeTo_ReportsWhyItCannotBake_AndKeepsAnExistingFile() => Ui(s =>
+    {
+        string path = TempScene("{\"version\":1,\"nodes\":[{\"name\":\"Hero\",\"mesh\":\"cube.obj\",\"position\":[2,0,2]}]}", "cube.obj");
+        try
+        {
+            Assert.True(s.Window.OpenScenePath(path));
+            s.Pump();
+            s.Click("Add Room");
+            s.Select(s.Roots.Single());
+            s.Click("Set Player");
+            string baked = Path.Combine(Path.GetDirectoryName(path)!, "out.ggs");
+            Assert.True(s.Window.BakeTo(baked));
+            byte[] before = File.ReadAllBytes(baked);
+
+            var player = (GunGame.Scene.PlayerDef)s.SelectedGameplay!.Def;
+            player.Spawn = new GunGame.Interop.Vec2(50, 50);   // 방 밖: 구울 때 엔진 검증이 잡는다
+            Assert.False(s.Window.BakeTo(baked));
+            Assert.StartsWith("Bake failed", s.Status);
+            Assert.Contains("does not load in the engine", s.Status);
+            Assert.Equal(before, File.ReadAllBytes(baked));
+        }
+        finally { Directory.Delete(Path.GetDirectoryName(path)!, true); }
+    });
+
+    [Fact]
+    public void BakeTo_RefusesAScene_WhoseAssetsFailedToLoad() => Ui(s =>
+    {
+        string path = TempScene("{\"version\":1,\"nodes\":[{\"name\":\"Lost\",\"mesh\":\"missing.obj\"}]}");
+        try
+        {
+            Assert.True(s.Window.OpenScenePath(path));
+            s.Pump();
+            string baked = Path.Combine(Path.GetDirectoryName(path)!, "out.ggs");
+
+            Assert.False(s.Window.BakeTo(baked));
+
+            Assert.StartsWith("Bake refused: the scene has load problems", s.Status);
+            Assert.False(File.Exists(baked));
+        }
+        finally { Directory.Delete(Path.GetDirectoryName(path)!, true); }
+    });
+
+    [Fact]
+    public void BakeButton_IsInTheFileBar_AndLockedWhilePlaying() => Ui(s =>
+    {
+        string path = TempScene("{\"version\":1,\"nodes\":[{\"name\":\"Hero\",\"mesh\":\"cube.obj\",\"position\":[2,0,2]}]}", "cube.obj");
+        try
+        {
+            Assert.Contains(s.Window.FileBar.Items.OfType<System.Windows.Controls.Button>(), b => b.Content as string == "Bake Player Scene...");
+            Assert.True(s.Window.OpenScenePath(path));
+            s.Pump();
+            s.Click("Add Room");
+            s.Select(s.Roots.Single());
+            s.Click("Set Player");
+            Assert.True(s.ButtonByLabel("Bake Player Scene...").IsEnabled);
+
+            s.Click("Play");
+            Assert.True(s.Window.IsPlaying, s.Status);
+            Assert.False(s.ButtonByLabel("Bake Player Scene...").IsEnabled);   // 플레이 중에는 파일/씬 편집이 잠긴다
+            s.Click("Stop");
+        }
+        finally { Directory.Delete(Path.GetDirectoryName(path)!, true); }
+    });
+}

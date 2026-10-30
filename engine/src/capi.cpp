@@ -7,6 +7,8 @@
 #include "mesh_io.h"
 #include "obj_loader.h"
 #include "renderer.h"
+#include "scene.h"
+#include "scene_io.h"
 #include "texture_loader.h"
 #include "world.h"
 
@@ -17,6 +19,12 @@ struct GgeRenderer {
 
 struct GgeWorld {
     gge::World impl;
+};
+
+struct GgeScene {
+    gge::Scene impl;
+    std::string eventName;  // gge_scene_poll_event가 돌려준 이름의 저장소
+    GgeScene(gge::Renderer& r, gge::SceneData data) : impl(r, std::move(data)) {}
 };
 
 namespace {
@@ -425,3 +433,57 @@ GGE_API int gge_world_is_inside_trigger(const GgeWorld* w, int trigger_id)
 }
 
 GGE_API const char* gge_last_error(void) { return gge::LastError().c_str(); }
+
+GGE_API GgeScene* gge_scene_load(GgeRenderer* r, const char* path_utf8)
+{
+    try {
+        if (!r)
+            throw std::runtime_error("null renderer");
+        return new GgeScene(r->impl, gge::ReadSceneFile(path_utf8 ? path_utf8 : ""));
+    } catch (const std::exception& e) {
+        gge::LastError() = e.what();
+        return nullptr;
+    }
+}
+
+GGE_API void gge_scene_destroy(GgeScene* s) { delete s; }
+
+GGE_API int gge_scene_step(GgeScene* s, float input_x, float input_y, float dt)
+{
+    return Guard([&] { s->impl.Step(input_x, input_y, dt); return 1; });
+}
+
+GGE_API int gge_scene_poll_event(GgeScene* s, int* kind, int* tag, const char** trigger_name)
+{
+    gge::SceneEvent e;
+    if (!s->impl.PollEvent(e))
+        return 0;
+    s->eventName = std::move(e.triggerName);
+    if (kind)
+        *kind = e.kind;
+    if (tag)
+        *tag = e.tag;
+    if (trigger_name)
+        *trigger_name = s->eventName.c_str();
+    return 1;
+}
+
+GGE_API int gge_scene_get_player(const GgeScene* s, float* x, float* z, float* yaw)
+{
+    if (!s->impl.HasPlayer())
+        return 0;
+    if (x)
+        *x = s->impl.PlayerPosition().x;
+    if (z)
+        *z = s->impl.PlayerPosition().z;
+    if (yaw)
+        *yaw = s->impl.PlayerYaw();
+    return 1;
+}
+
+GGE_API const char* gge_scene_active_room_name(const GgeScene* s) { return s->impl.ActiveRoomName().c_str(); }
+
+GGE_API int gge_scene_find_object(const GgeScene* s, const char* node_name_utf8)
+{
+    return s->impl.FindObject(node_name_utf8 ? node_name_utf8 : "");
+}

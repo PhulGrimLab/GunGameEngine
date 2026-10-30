@@ -251,6 +251,9 @@ public sealed unsafe class EngineRenderer : IDisposable
 
     private nint Handle => _handle != 0 ? _handle : throw new ObjectDisposedException(nameof(EngineRenderer));
 
+    /// <summary>네이티브 렌더러 핸들(같은 어셈블리의 EngineScene이 쓴다). 해제된 렌더러면 ObjectDisposedException.</summary>
+    internal nint NativeHandle => Handle;
+
     private static void Check(int result)
     {
         if (result == 0)

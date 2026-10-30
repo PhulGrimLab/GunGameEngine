@@ -10,6 +10,7 @@
                 <Button Content="Open Scene..." Click="OnOpenScene" />
                 <Button Content="Save" Click="OnSaveScene" />
                 <Button Content="Save As..." Click="OnSaveSceneAs" />
+                <Button Content="Bake Player Scene..." Click="OnBakeScene" />
             </ToolBar>
             <ToolBar x:Name="NodeBar">
                 <Button Content="Add Mesh..." Click="OnAddMesh" />
