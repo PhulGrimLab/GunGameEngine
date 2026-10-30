@@ -41,8 +41,12 @@ public sealed unsafe class EngineRenderer : IDisposable
     public static void ConvertObjToGgm(string objPath, string ggmPath) =>
         Check(Native.gge_convert_obj_to_ggm(objPath, ggmPath));
 
+    /// <exception cref="ArgumentException">rgba가 width x height x 4바이트보다 짧을 때(네이티브가 배열 뒤를 읽지 않도록).</exception>
     public int CreateTexture(ReadOnlySpan<byte> rgba, int width, int height)
     {
+        // 크기가 양수가 아닌 경우는 엔진이 같은 오류로 설명하므로 여기서는 길이 부족만 막는다.
+        if (width > 0 && height > 0 && rgba.Length < (long)width * height * 4)
+            throw new ArgumentException($"rgba has {rgba.Length} bytes but a {width}x{height} texture needs {(long)width * height * 4}", nameof(rgba));
         fixed (byte* p = rgba)
             return CheckId(Native.gge_texture_create(Handle, p, width, height));
     }
@@ -65,6 +69,11 @@ public sealed unsafe class EngineRenderer : IDisposable
     public int CreateSkinnedMesh(ReadOnlySpan<float> vertices, ReadOnlySpan<uint> joints, ReadOnlySpan<float> weights,
                                  ReadOnlySpan<uint> indices)
     {
+        int vertexCount = vertices.Length / 8;
+        if (joints.Length < (long)vertexCount * 4)
+            throw new ArgumentException($"joints has {joints.Length} entries but {vertexCount} vertices need {(long)vertexCount * 4}", nameof(joints));
+        if (weights.Length < (long)vertexCount * 4)
+            throw new ArgumentException($"weights has {weights.Length} entries but {vertexCount} vertices need {(long)vertexCount * 4}", nameof(weights));
         fixed (float* v = vertices)
         fixed (uint* j = joints)
         fixed (float* w = weights)
@@ -74,6 +83,11 @@ public sealed unsafe class EngineRenderer : IDisposable
 
     public int CreateSkeleton(SkeletonData skeleton)
     {
+        int bones = skeleton.BoneCount;
+        RequireBoneArray(skeleton.InverseBind, bones, 16, nameof(skeleton.InverseBind));
+        RequireBoneArray(skeleton.RestTranslation, bones, 3, nameof(skeleton.RestTranslation));
+        RequireBoneArray(skeleton.RestRotation, bones, 4, nameof(skeleton.RestRotation));
+        RequireBoneArray(skeleton.RestScale, bones, 3, nameof(skeleton.RestScale));
         fixed (int* parents = skeleton.Parents)
         fixed (float* inverseBind = skeleton.InverseBind)
         fixed (float* translation = skeleton.RestTranslation)
@@ -82,8 +96,20 @@ public sealed unsafe class EngineRenderer : IDisposable
             return CheckId(Native.gge_skeleton_create(Handle, skeleton.BoneCount, parents, inverseBind, translation, rotation, scale));
     }
 
+    private static void RequireBoneArray(float[] array, int bones, int perBone, string name)
+    {
+        if (array.Length < (long)bones * perBone)
+            throw new ArgumentException($"{name} has {array.Length} floats but {bones} bones need {(long)bones * perBone}", name);
+    }
+
     public int CreateClip(ClipData clip)
     {
+        foreach (ClipChannelData c in clip.Channels)  // 값 배열은 키 수 x (회전 4 / 이동·스케일 3)개여야 한다. 네이티브는 길이를 모른다.
+        {
+            long needed = (long)c.Times.Length * (c.Path == ChannelPath.Rotation ? 4 : 3);
+            if (c.Values.Length < needed)
+                throw new ArgumentException($"clip '{clip.Name}': channel for bone {c.Bone} has {c.Values.Length} values but {c.Times.Length} keys need {needed}", nameof(clip));
+        }
         var channels = new NativeClipChannel[clip.Channels.Count];
         var pins = new List<GCHandle>();
         try

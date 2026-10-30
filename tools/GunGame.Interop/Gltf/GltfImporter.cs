@@ -16,6 +16,8 @@ public sealed class GltfException(string message, Exception? inner = null) : Exc
 public static class GltfImporter
 {
     private const int MaxBones = 64;
+    // bufferView가 없는 접근자는 0으로 채운 값을 만드는데, 버퍼 길이로 개수가 제한되지 않아 악성 파일이 거대한 할당을 일으킬 수 있다.
+    private const int MaxZeroFilledAccessorCount = 1 << 24;
 
     public static ImportedModel Import(string path)
     {
@@ -154,7 +156,12 @@ public static class GltfImporter
                     }
                     else
                     {
-                        string full = Path.GetFullPath(Path.Combine(_baseDir, Uri.UnescapeDataString(value)));
+                        // glTF의 외부 버퍼 uri는 상대 경로여야 한다. 절대 경로/UNC(\host\share)/드라이브·스킴(':')은
+                        // 파일을 열기 전에 거부한다(UNC를 열면 SMB 연결과 NTLM 인증이 일어날 수 있다).
+                        string relative = Uri.UnescapeDataString(value);
+                        if (Path.IsPathRooted(relative) || relative.Contains(':'))
+                            throw new GltfException($"external buffer uri must be a relative path: '{value}'");
+                        string full = Path.GetFullPath(Path.Combine(_baseDir, relative));
                         _buffers.Add(File.ReadAllBytes(full));
                     }
                 }
@@ -173,6 +180,8 @@ public static class GltfImporter
             if (a.TryGetProperty("sparse", out _))
                 throw new GltfException("sparse accessors are not supported");
             int count = a.GetProperty("count").GetInt32();
+            if (count < 0)
+                throw new GltfException($"accessor {index} has a negative count");
             int componentType = a.GetProperty("componentType").GetInt32();
             int components = a.GetProperty("type").GetString() switch
             {
@@ -186,9 +195,15 @@ public static class GltfImporter
             };
             bool normalized = a.TryGetProperty("normalized", out JsonElement n) && n.GetBoolean();
             int accessorOffset = a.TryGetProperty("byteOffset", out JsonElement ao) ? ao.GetInt32() : 0;
+            if (accessorOffset < 0)  // 규격은 0 이상만 허용한다. 음수면 자기 bufferView 앞쪽의 다른 데이터를 읽게 된다.
+                throw new GltfException($"accessor {index} has a negative byteOffset");
 
             if (!a.TryGetProperty("bufferView", out JsonElement viewIndex))
+            {
+                if (count > MaxZeroFilledAccessorCount)
+                    throw new GltfException($"accessor {index} has no bufferView and its count {count} exceeds the supported maximum of {MaxZeroFilledAccessorCount}");
                 return new AccessorInfo(count, components, componentType, normalized, null, 0, 0, componentSize);
+            }
 
             JsonElement view = _root.GetProperty("bufferViews")[viewIndex.GetInt32()];
             byte[] data = _buffers[view.GetProperty("buffer").GetInt32()]!;
@@ -463,6 +478,18 @@ public static class GltfImporter
                 throw new GltfException("primitive indices are invalid");
             normal ??= GenerateNormals(position, tri);
 
+            // 노드 변환을 정점에 구워 넣는다(스킨 메시는 변환을 쓰지 않는다). 법선은 비균등 스케일에서 표면에 수직을 유지하도록
+            // 역전치 행렬로 변환하고, 행렬식이 음수인(거울 반전) 노드는 삼각형 감김 방향이 뒤집히므로 인덱스 순서를 바꿔 준다.
+            Matrix4x4 normalMatrix = world;
+            bool mirrored = false;
+            if (!skinned)
+            {
+                if (Matrix4x4.Invert(world, out Matrix4x4 inverse))
+                    normalMatrix = Matrix4x4.Transpose(inverse);
+                // else: 특이 행렬(스케일 0 등)은 역행렬이 없어 변환된 법선이 의미가 없으므로 원래 행렬로 근사한다.
+                mirrored = world.GetDeterminant() < 0;
+            }
+
             uint baseVertex = (uint)(vertices.Count / 8);
             for (int v = 0; v < count; v++)
             {
@@ -471,11 +498,16 @@ public static class GltfImporter
                 if (!skinned)
                 {
                     p = Vector3.Transform(p, world);
-                    n = Vector3.Normalize(Vector3.TransformNormal(n, world));
+                    n = Vector3.Normalize(Vector3.TransformNormal(n, normalMatrix));
                 }
                 vertices.AddRange([p.X, p.Y, p.Z, n.X, n.Y, n.Z, uv?[v * 2] ?? 0, uv?[v * 2 + 1] ?? 0]);
             }
-            indices.AddRange(tri.Select(i => i + baseVertex));
+            for (int t = 0; t < tri.Length; t += 3)
+            {
+                indices.Add(tri[t] + baseVertex);
+                indices.Add(tri[t + (mirrored ? 2 : 1)] + baseVertex);
+                indices.Add(tri[t + (mirrored ? 1 : 2)] + baseVertex);
+            }
 
             if (!skinned)
                 return;

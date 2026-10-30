@@ -45,6 +45,7 @@ public partial class MainWindow : Window
             ApplyRetro();
             _sync = new SceneSync(_renderer);
             _sync.Changed += OnSceneChanged;
+            _sync.PoseChanged += Redraw;  // 애니메이션 틱은 다시 그리기만 한다(상태 표시줄/클립 목록은 건드리지 않는다)
             Inspector.ClipNamesProvider = _sync.GetClipNames;
             _sync.Attach(_document);
         }
@@ -130,7 +131,7 @@ public partial class MainWindow : Window
             UpdateTitle();
             StatusText.Text = "Saved " + path;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SceneFormatException)
         {
             StatusText.Text = "Save failed: " + ex.Message;
         }

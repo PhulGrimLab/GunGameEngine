@@ -242,3 +242,141 @@ public class GltfImporterTests
         }
     }
 }
+
+public class GltfImporterRobustnessTests
+{
+    // 빌더가 쓴 .gltf를 JSON으로 열어 일부를 악성/비정상 값으로 바꾼다.
+    private static string WritePatched(TestAssets assets, GltfBuilder builder, string name, Action<System.Text.Json.Nodes.JsonNode> patch)
+    {
+        builder.Glb = false;
+        string path = builder.Write(assets.Directory, name);
+        var doc = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))!;
+        patch(doc);
+        File.WriteAllText(path, doc.ToJsonString());
+        return path;
+    }
+
+    [Theory]
+    [InlineData(2_000_000_000)]  // count * 성분 수가 int를 넘는다(OverflowException)
+    [InlineData(-1)]
+    public void Accessor_WithoutBufferViewAndAbsurdCount_IsRejected(int count)
+    {
+        using var assets = new TestAssets();
+        string path = WritePatched(assets, new GltfBuilder(), "hugecount", doc =>
+        {
+            var uv = doc["accessors"]!.AsArray().First(a => a!["type"]!.GetValue<string>() == "VEC2")!;
+            uv.AsObject().Remove("bufferView");   // 버퍼 길이로 상한이 정해지지 않는 "0으로 채운" 접근자
+            uv["count"] = count;
+        });
+        Assert.Throws<GltfException>(() => GltfImporter.Import(path));
+    }
+
+    [Fact]
+    public void Accessor_WithoutBufferView_BeyondTheCap_IsRejectedBeforeAllocating()
+    {
+        // 위치/법선/UV 접근자를 모두 "bufferView 없음 + 1600만 개 초과"로 일관되게 바꿔 개수 불일치 검사를 통과시킨다.
+        // 상한이 없으면 수 GB를 0으로 채워 만들기 시작하므로(OutOfMemory 위험) 파일을 열기 전에 거부해야 한다.
+        // 주의: 상한 도입 전 코드로는 이 테스트를 돌리지 않았다(대용량 할당이 일어난다).
+        using var assets = new TestAssets();
+        string path = WritePatched(assets, new GltfBuilder(), "bigzero", doc =>
+        {
+            foreach (var accessor in doc["accessors"]!.AsArray())
+            {
+                string type = accessor!["type"]!.GetValue<string>();
+                if (type is "VEC3" or "VEC2" && accessor["componentType"]!.GetValue<int>() == 5126)
+                {
+                    accessor.AsObject().Remove("bufferView");
+                    accessor["count"] = (1 << 24) + 1;
+                }
+            }
+        });
+        var ex = Assert.Throws<GltfException>(() => GltfImporter.Import(path));
+        Assert.Contains("count", ex.Message);
+    }
+
+    [Fact]
+    public void Accessor_NegativeByteOffset_IsRejected()
+    {
+        // 접근자 오프셋이 음수면 자기 bufferView 앞쪽(다른 데이터)을 읽는다. glTF 규격은 0 이상만 허용한다.
+        using var assets = new TestAssets();
+        string path = WritePatched(assets, new GltfBuilder(), "negoffset", doc =>
+        {
+            var views = doc["bufferViews"]!.AsArray();
+            var accessor = doc["accessors"]!.AsArray().First(a =>
+                a!["bufferView"] is { } v && (views[v.GetValue<int>()]!["byteOffset"]?.GetValue<int>() ?? 0) >= 4)!;
+            accessor["byteOffset"] = -4;
+        });
+        Assert.Throws<GltfException>(() => GltfImporter.Import(path));
+    }
+
+    [Theory]
+    [InlineData(false)]  // 로컬 절대 경로
+    [InlineData(true)]   // UNC(\host\share): 열면 SMB 연결과 NTLM 인증이 일어날 수 있다 — 파일을 열기 전에 거부해야 한다
+    public void ExternalBufferUri_ThatIsAbsoluteOrNetwork_IsRejected(bool unc)
+    {
+        using var assets = new TestAssets();
+        string path = WritePatched(assets, new GltfBuilder { ExternalBin = true }, "absuri", doc =>
+        {
+            string bin = Path.GetFullPath(Path.Combine(assets.Directory, doc["buffers"]![0]!["uri"]!.GetValue<string>()));
+            doc["buffers"]![0]!["uri"] = unc ? "\\\\127.0.0.1\\nonexistent-share\\x.bin" : bin;
+        });
+        var ex = Assert.Throws<GltfException>(() => GltfImporter.Import(path));
+        Assert.Contains("relative", ex.Message);
+    }
+
+    private static ImportedModel TubeWithMeshNodeScale(TestAssets assets, string name, float x, float y, float z)
+    {
+        string path = WritePatched(assets, new GltfBuilder { Skinned = false, Tube = true }, name, doc =>
+        {
+            var nodes = doc["nodes"]!.AsArray();
+            nodes[nodes.Count - 1]!["scale"] = new System.Text.Json.Nodes.JsonArray(x, y, z);
+        });
+        return GltfImporter.Import(path);
+    }
+
+    [Fact]
+    public void NonUniformScale_UsesInverseTransposeForNormals()
+    {
+        using var assets = new TestAssets();
+        ImportedModel plain = TubeWithMeshNodeScale(assets, "plain", 1, 1, 1);
+        ImportedModel scaled = TubeWithMeshNodeScale(assets, "scaled", 2, 1, 1);
+        for (int v = 0; v < plain.Vertices.Length / 8; v++)
+        {
+            float nx = plain.Vertices[v * 8 + 3], nz = plain.Vertices[v * 8 + 5];
+            // 위치는 x가 2배. 올바른 법선은 (nx/2, 0, nz)의 정규화(표면에 수직을 유지). 법선에 스케일을 그대로 곱하면 (2nx, 0, nz)가 된다.
+            float len = MathF.Sqrt(nx * nx / 4 + nz * nz);
+            Assert.Equal(2 * plain.Vertices[v * 8], scaled.Vertices[v * 8], 4);
+            Assert.Equal(nx / 2 / len, scaled.Vertices[v * 8 + 3], 4);
+            Assert.Equal(nz / len, scaled.Vertices[v * 8 + 5], 4);
+        }
+    }
+
+    private static (int Total, int Outward) CountOutwardTriangles(ImportedModel m)
+    {
+        int total = 0, outward = 0;
+        for (int t = 0; t < m.Indices.Length; t += 3)
+        {
+            (int a, int b, int c) = ((int)m.Indices[t], (int)m.Indices[t + 1], (int)m.Indices[t + 2]);
+            var pa = new System.Numerics.Vector3(m.Vertices[a * 8], m.Vertices[a * 8 + 1], m.Vertices[a * 8 + 2]);
+            var pb = new System.Numerics.Vector3(m.Vertices[b * 8], m.Vertices[b * 8 + 1], m.Vertices[b * 8 + 2]);
+            var pc = new System.Numerics.Vector3(m.Vertices[c * 8], m.Vertices[c * 8 + 1], m.Vertices[c * 8 + 2]);
+            var n = new System.Numerics.Vector3(m.Vertices[a * 8 + 3], m.Vertices[a * 8 + 4], m.Vertices[a * 8 + 5]);
+            var geometric = System.Numerics.Vector3.Cross(pb - pa, pc - pa);
+            total++;
+            if (System.Numerics.Vector3.Dot(geometric, n) > 0)
+                outward++;
+        }
+        return (total, outward);
+    }
+
+    [Fact]
+    public void MirroredNode_KeepsTriangleWindingConsistentWithNormals()
+    {
+        // 음의 스케일(거울 반전)은 행렬식이 음수라 감김 방향이 뒤집힌다. 삼각형 순서를 바꿔 앞면(CCW)이 유지되어야 한다.
+        using var assets = new TestAssets();
+        (int total, int outward) = CountOutwardTriangles(TubeWithMeshNodeScale(assets, "unmirrored", 1, 1, 1));
+        Assert.Equal(total, outward);  // 기준: 원본은 모든 삼각형이 법선 쪽을 향한다
+        (total, outward) = CountOutwardTriangles(TubeWithMeshNodeScale(assets, "mirrored", -1, 1, 1));
+        Assert.Equal(total, outward);
+    }
+}

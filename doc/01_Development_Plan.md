@@ -50,15 +50,32 @@ SIGNALIS 스타일(PS1풍 저해상도 3D, 고정 카메라, 3인칭 탐험/전�
 - 엔진: `gge_mesh/texture/skeleton/clip_destroy`. 오브젝트가 쓰는 중이면 실패(사용 중인 오브젝트 ID를 오류에 담는다). ID는 재사용되지 않는다. 오브젝트 파괴/교체가 먼저다.
 - `SceneSync`는 경로별 캐시에 로드 시점의 파일 수정 시각/크기를 함께 저장한다. `Rebuild`(씬 열기, 구조 변경) 때 오브젝트를 모두 없앤 직후 파일이 바뀌거나 사라진 캐시를 해제하고 다시 읽는다. 메시 캐시가 버려지면 재생 상태(`AnimationPlayer`)도 비운다(해제된 클립 ID를 들고 있으면 엔진 오류). glTF 외부 `.bin` 등 부속 파일은 추적하지 않는다. 속성 변경(Update) 경로는 캐시를 그대로 쓴다.
 
-## 리뷰에서 남은 개선 후보 (미수정)
-서브에이전트가 코드를 읽고 보고한 항목 중 **직접 재현/검증하지 않은 것**이다. 수정 전에 각각 재현부터 한다. (확인되어 수정한 것: glTF 노드 순환/다중 부모로 인한 무한 루프.)
-- `LoadMesh`/`LoadTexture`가 `UnauthorizedAccessException`/`NotSupportedException` 등을 잡지 않고, `OnNodePropertyChanged`/`Rebuild` 중 엔진 예외가 UI로 새며, `DispatcherUnhandledException` 처리가 없다.
-- 씬 JSON의 `null` 노드, 경로의 NUL/드라이브 형식 오류가 `SceneFormatException`으로 변환되지 않는다. `Save`가 제자리 쓰기라 쓰기 실패 시 기존 파일이 손상될 수 있고, 계층이 약 31단계를 넘으면 직렬화가 `JsonException`을 던진다.
-- `EngineRenderer`의 공개 메서드가 배열 길이를 검증하지 않는다(`CreateTexture`, 스켈레톤/클립 배열 등).
-- glTF: `bufferView`가 없는 accessor의 `count` 상한, 음수 `byteOffset` 검사, 외부 버퍼 URI의 UNC/절대 경로 차단(NTLM 유출 가능성), 법선 변환(역전치)과 음의 행렬식 감김 뒤집기, 클립 시간 검증.
-- `AnimationPlayer`: `dt*Speed` 오버플로로 시간이 NaN이 될 수 있다.
-- `InspectorPanel.Commit`이 모든 칸을 다시 읽어 반올림된 값을 되써서 편집하지 않아도 씬이 변경된다.
-- 애니메이션 틱(30Hz)마다 `Changed`가 상태 표시줄과 클립 목록 갱신까지 일으킨다.
+## 코드 리뷰 후속 처리 (2026-10-30)
+서브에이전트가 코드를 읽고 보고한 항목을 하나씩 재현(테스트가 실패하는 것을 확인)한 뒤 고쳤다.
+
+| 항목 | 재현 | 처리 |
+|---|---|---|
+| glTF 노드 순환/자기 자식/다중 부모로 임포터 무한 루프 | 재현(정지) | 거부 + 조상 탐색 가드 |
+| `SceneSync`가 폴더/권한 거부 경로에서 예외 누출 | 재현 | 오류 목록으로 보고 |
+| 씬 JSON의 `null` 노드 -> `NullReferenceException` | 재현 | `SceneFormatException` |
+| 경로의 NUL 문자 -> `ArgumentException` | 재현 | `SceneFormatException` |
+| 계층 약 31단계 이상에서 저장 `JsonException`(한도 64가 무의미) | 재현 | JSON 깊이 한도 조정 + 64단계 초과는 저장/로드 모두 형식 오류 |
+| `EngineRenderer`가 짧은 배열을 네이티브로 넘김(과다 읽기) | 재현 | `ArgumentException`(텍스처, 스키닝 메시, 스켈레톤, 클립) |
+| glTF 외부 버퍼 URI의 절대 경로/UNC(실제로 SMB 연결 시도) | 재현 | 파일을 열기 전에 거부 |
+| glTF 음수 accessor `byteOffset` | 재현 | 거부 |
+| glTF 비균등 스케일 법선 오류 | 재현(0.894 대 0.447) | 역전치 행렬 |
+| glTF 거울 반전(음의 행렬식) 노드의 감김 뒤집힘 | 재현(삼각형 192개 전부) | 인덱스 순서 교환 |
+| `AnimationPlayer` 속도 NaN/무한대, `dt*Speed` 오버플로 -> 시간 NaN 고착 | 재현 | 해당 프레임 진행 무시 |
+| 인스펙터 포커스 이동만으로 값이 반올림되어 되써짐 + 변경 알림 | 재현 | 편집한 칸만 반영 |
+| 애니메이션 틱(30Hz)마다 상태 표시줄/클립 목록 갱신 | 재현 | `PoseChanged` 분리(다시 그리기만) |
+| 깊은 씬 저장 시 `SceneFormatException`이 UI로 누출(직렬화 변경 후 발생) | 재현 | `Save failed`로 표시 |
+| `Save` 비원자성 | **재현 불가**(잠긴 파일은 열기 단계에서 실패해 잘림 없음) | 하드닝으로만 적용(임시 파일 + 교체) |
+| bufferView 없는 accessor의 거대한 `count` | 과다 개수는 이미 `GltfException`(overflow 변환). OOM 경로는 **수정 전 재현 안 함**(대용량 할당 위험) | 상한(1600만) 추가, 수정 후 테스트 |
+| 경로 `C:a:b`의 `NotSupportedException` | **재현 불가**(예외 없음) | 조치 없음 |
+| 클립 시간 검증 누락 / `duration`이 최댓값이 아님 | 해당 없음(네이티브가 거부, `duration`은 이미 채널 간 최댓값) | 조치 없음 |
+| 뷰포트 stride 불일치 | 해당 없음(엔진이 `Width*4`로 촘촘히 채움) | 조치 없음 |
+| 엔진/IO 예외가 `Rebuild`/속성 핸들러로 새는 일반 경우, `DispatcherUnhandledException` 부재 | **재현 불가**(현실적인 유발 입력을 못 찾음) | 조치 없음(추측성 방어 코드 미추가) |
+- 알려진 잔여: `LoadGltf`가 중간에 실패하면(예: 클립 생성 거부) 이미 만든 메시/스켈레톤이 엔진에 남는다(누수, 기능 영향 없음).
 
 ## 에셋/씬 포맷
 - **메시**: `.obj`(원본) → `.ggm`(엔진 바이너리, `GGM1` + 정점 수 + 인덱스 수 + float[8]*N + uint32*M). 로더는 크기·인덱스 범위를 검증한다.

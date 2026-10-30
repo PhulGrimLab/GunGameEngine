@@ -395,3 +395,130 @@ public class SceneSyncReloadTests
         Assert.Equal(["bend"], sync.GetClipNames(node));
     }
 }
+
+public class SceneSerializerRobustnessTests
+{
+    private static SceneFormatException LoadFails(TestAssets assets, string json)
+    {
+        string path = assets.Path_("hostile.scene.json");
+        File.WriteAllText(path, json);
+        return Assert.Throws<SceneFormatException>(() => SceneSerializer.Load(path));
+    }
+
+    [Fact]
+    public void Load_NullNodes_AreFormatErrors()
+    {
+        using var assets = new TestAssets();
+        LoadFails(assets, "{\"version\":1,\"nodes\":[null]}");
+        LoadFails(assets, "{\"version\":1,\"nodes\":[{\"name\":\"a\",\"children\":[null]}]}");
+    }
+
+    [Fact]
+    public void Load_PathWithNulCharacter_IsAFormatError()
+    {
+        // JSON 이스케이프 \u0000으로 문자열 안에 NUL이 들어간 유효한 JSON. Path.GetFullPath가 ArgumentException을 던지던 경로.
+        using var assets = new TestAssets();
+        SceneFormatException ex = LoadFails(assets, "{\"version\":1,\"nodes\":[{\"name\":\"a\",\"mesh\":\"a\\u0000b.obj\"}]}");
+        Assert.Contains("path", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static SceneDocument Chain(int levels)
+    {
+        var doc = new SceneDocument();
+        SceneNode? parent = null;
+        for (int i = 0; i < levels; i++)
+        {
+            var node = new SceneNode { Name = "n" + i };
+            doc.Add(node, parent);
+            parent = node;
+        }
+        return doc;
+    }
+
+    [Fact]
+    public void DeepHierarchy_UpToTheLimit_RoundTrips()
+    {
+        using var assets = new TestAssets();
+        string path = assets.Path_("deep.scene.json");
+        SceneSerializer.Save(Chain(64), path);  // 이전에는 JSON 깊이 제한(64)에 걸려 약 31단계에서 JsonException
+        SceneDocument loaded = SceneSerializer.Load(path);
+        int depth = 0;
+        for (SceneNode? n = loaded.Roots.Single(); n is not null; n = n.Children.SingleOrDefault())
+            depth++;
+        Assert.Equal(64, depth);
+    }
+
+    [Fact]
+    public void DeepHierarchy_BeyondTheLimit_IsAFormatErrorOnBothSides()
+    {
+        using var assets = new TestAssets();
+        string path = assets.Path_("toodeep.scene.json");
+        Assert.Throws<SceneFormatException>(() => SceneSerializer.Save(Chain(65), path));
+        Assert.False(File.Exists(path));  // 거부한 저장은 파일을 만들지 않는다
+
+        // 한도를 넘은 파일을 읽을 때도 JSON 라이브러리의 깊이 오류가 아니라 같은 형식 오류로 알려야 한다.
+        string json = string.Concat(Enumerable.Repeat("{\"children\":[", 70)) + "{}" + string.Concat(Enumerable.Repeat("]}", 70));
+        LoadFails(assets, "{\"version\":1,\"nodes\":[" + json + "]}");
+    }
+
+    [Fact]
+    public void Save_ReplacesAtomicallyAndLeavesNoTempFile()
+    {
+        using var assets = new TestAssets();
+        string path = assets.Path_("atomic.scene.json");
+        File.WriteAllText(path, "previous content");
+        SceneSerializer.Save(Chain(2), path);
+        Assert.Equal(2, SceneSerializer.Load(path).Roots.Count + SceneSerializer.Load(path).Roots[0].Children.Count);
+        Assert.Empty(Directory.GetFiles(assets.Directory, "*.tmp"));
+
+        // 다른 프로세스가 파일을 잡고 있어 교체에 실패하면 기존 내용이 그대로 남고 임시 파일도 남지 않는다.
+        string before = File.ReadAllText(path);
+        using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            Assert.ThrowsAny<IOException>(() => SceneSerializer.Save(Chain(5), path));
+        Assert.Equal(before, File.ReadAllText(path));
+        Assert.Empty(Directory.GetFiles(assets.Directory, "*.tmp"));
+    }
+}
+
+public class SceneSyncLoadFailureTests
+{
+    [Theory]
+    [InlineData("model.glb")]   // glTF 임포터가 File.ReadAllBytes로 읽다가 UnauthorizedAccessException
+    [InlineData("model.obj")]
+    [InlineData("tex.bmp")]
+    public void PathThatIsADirectory_IsReportedAsAnErrorNotThrown(string name)
+    {
+        using var assets = new TestAssets();
+        string dir = assets.Path_(name);
+        Directory.CreateDirectory(dir);
+        var doc = new SceneDocument();
+        doc.Add(name.EndsWith(".bmp")
+            ? new SceneNode { Name = "n", MeshPath = assets.WriteCubeObj(), TexturePath = dir }
+            : new SceneNode { Name = "n", MeshPath = dir });
+
+        using var r = new EngineRenderer(96, 72, useWarp: true);
+        using var sync = new SceneSync(r);
+        sync.Attach(doc);  // 던지지 않고 Errors에 남겨야 한다
+
+        Assert.Contains(sync.Errors, e => e.Contains(name));
+    }
+
+    [Theory]
+    [InlineData("broken.gltf", "{ not json")]
+    [InlineData("empty.glb", "")]
+    [InlineData("junk.glb", "this is not a glb file at all")]
+    public void CorruptModelFile_IsReportedAsAnErrorNotThrown(string name, string content)
+    {
+        using var assets = new TestAssets();
+        string path = assets.Path_(name);
+        File.WriteAllText(path, content);
+        var doc = new SceneDocument();
+        doc.Add(new SceneNode { Name = "n", MeshPath = path });
+
+        using var r = new EngineRenderer(96, 72, useWarp: true);
+        using var sync = new SceneSync(r);
+        sync.Attach(doc);
+
+        Assert.Contains(sync.Errors, e => e.Contains(name));
+    }
+}

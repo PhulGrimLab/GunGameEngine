@@ -49,15 +49,17 @@ public class SceneAnimationTests
     }
 
     [Fact]
-    public void Tick_AdvancesPlayingNodeAndRaisesChanged()
+    public void Tick_AdvancesPlayingNodeAndRaisesPoseChangedOnly()
     {
         using var f = new Fixture();
         byte[] atStart = f.Frame();
-        int changed = 0;
-        f.Sync.Changed += () => changed++;
+        int poseChanged = 0, changed = 0;
+        f.Sync.PoseChanged += () => poseChanged++;
+        f.Sync.Changed += () => changed++;  // 구조/속성 변경용 이벤트: 애니메이션 틱마다 오면 상태 표시줄·목록이 매 프레임 갱신된다
 
         f.Sync.Tick(0.5f);
-        Assert.Equal(1, changed);
+        Assert.Equal(1, poseChanged);
+        Assert.Equal(0, changed);
         Assert.Equal(0.5f, f.Sync.GetAnimationTime(f.Node)!.Value, 4);
         Assert.NotEqual(atStart, f.Frame());
     }
@@ -68,7 +70,7 @@ public class SceneAnimationTests
         using var paused = new Fixture(playing: false);
         byte[] before = paused.Frame();
         int changed = 0;
-        paused.Sync.Changed += () => changed++;
+        paused.Sync.PoseChanged += () => changed++;
         paused.Sync.Tick(0.5f);
         Assert.Equal(0, changed);
         Assert.Equal(before, paused.Frame());

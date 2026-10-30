@@ -78,6 +78,8 @@ public sealed class AnimationPlayer
             return;
 
         float delta = dt * Speed;
+        if (!float.IsFinite(delta))
+            return;  // Speed가 NaN/무한대이거나 곱이 float 범위를 넘었다: 이 프레임의 진행은 무시한다(시간이 NaN으로 굳으면 복구되지 않는다)
         _currentTime = Wrap(_currentTime + delta, current.Duration);
         if (_from is { } from)
         {

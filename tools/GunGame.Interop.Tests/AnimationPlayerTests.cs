@@ -128,4 +128,39 @@ public class AnimationPlayerTests
         Assert.Throws<ArgumentOutOfRangeException>(() => player.Play(Walk, -1));
         Assert.Throws<ArgumentOutOfRangeException>(() => player.Seek(float.PositiveInfinity));
     }
+
+    [Theory]
+    [InlineData(float.NaN, 0.1f)]
+    [InlineData(float.PositiveInfinity, 0.1f)]
+    [InlineData(3e38f, 3f)]   // 속도와 dt는 모두 유한하지만 곱이 float 범위를 넘어 무한대가 된다
+    public void NonFiniteStep_DoesNotPoisonThePlaybackTime(float speed, float dt)
+    {
+        var player = new AnimationPlayer { Speed = 1f };
+        player.Play(Walk);
+        player.Update(0.5f);
+        float before = player.Time;
+
+        player.Speed = speed;
+        player.Update(dt);  // 이 프레임의 진행은 무시된다
+        Assert.True(float.IsFinite(player.Time));
+        Assert.Equal(before, player.Time);
+
+        player.Speed = 1f;  // 정상 속도로 돌아오면 계속 재생된다(시간이 NaN으로 굳지 않는다)
+        player.Update(0.25f);
+        Assert.Equal(before + 0.25f, player.Time, 4);
+        Assert.True(float.IsFinite(player.Pose.TimeA));
+    }
+
+    [Fact]
+    public void NonFiniteStep_AlsoLeavesTheFadeSourceFinite()
+    {
+        var player = new AnimationPlayer();
+        player.Play(Walk);
+        player.Update(0.5f);
+        player.Play(Idle, fadeSeconds: 1f);
+        player.Speed = float.NaN;
+        player.Update(0.1f);
+        PoseRequest pose = player.Pose;
+        Assert.True(float.IsFinite(pose.TimeA) && float.IsFinite(pose.TimeB) && float.IsFinite(pose.Blend));
+    }
 }

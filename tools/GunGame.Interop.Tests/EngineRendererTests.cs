@@ -175,3 +175,55 @@ public class EngineRendererTests
         Assert.Throws<ObjectDisposedException>(() => r.Render());
     }
 }
+
+public class EngineRendererArgumentTests
+{
+    // 네이티브 쪽은 배열 길이를 알 수 없으므로 짧은 배열을 그대로 넘기면 pinned 배열 뒤쪽 메모리를 읽는다.
+    // 래퍼가 ArgumentException으로 막아야 한다. (과다 읽기가 작은 크기만 쓴다.)
+    [Fact]
+    public void CreateTexture_ShortBuffer_IsRejected()
+    {
+        using var r = new EngineRenderer(16, 16, useWarp: true);
+        Assert.Throws<ArgumentException>(() => r.CreateTexture(new byte[16], 8, 8));  // 8x8x4 = 256바이트가 필요
+        Assert.True(r.CreateTexture(new byte[256], 8, 8) > 0);
+        Assert.Throws<EngineException>(() => r.CreateTexture(new byte[16], 0, 8));    // 크기 자체의 오류는 기존처럼 엔진이 설명한다
+    }
+
+    [Fact]
+    public void CreateSkinnedMesh_ShortJointsOrWeights_AreRejected()
+    {
+        using var r = new EngineRenderer(16, 16, useWarp: true);
+        float[] vertices = new float[3 * 8];
+        uint[] indices = [0, 1, 2];
+        Assert.Throws<ArgumentException>(() => r.CreateSkinnedMesh(vertices, new uint[4], new float[12], indices));
+        Assert.Throws<ArgumentException>(() => r.CreateSkinnedMesh(vertices, new uint[12], new float[4], indices));
+        Assert.True(r.CreateSkinnedMesh(vertices, new uint[12], new float[12], indices) > 0);
+    }
+
+    [Fact]
+    public void CreateSkeleton_ShortArrays_AreRejected()
+    {
+        using var r = new EngineRenderer(16, 16, useWarp: true);
+        SkeletonData Make(int ibm = 48, int t = 9, int rot = 12, int s = 9)
+        {
+            var q = new float[rot];
+            for (int i = 3; i < rot; i += 4) q[i] = 1;
+            return new SkeletonData([-1, 0, 1], new float[ibm], new float[t], q, Enumerable.Repeat(1f, s).ToArray());
+        }
+        Assert.Throws<ArgumentException>(() => r.CreateSkeleton(Make(ibm: 16)));
+        Assert.Throws<ArgumentException>(() => r.CreateSkeleton(Make(t: 3)));
+        Assert.Throws<ArgumentException>(() => r.CreateSkeleton(Make(rot: 4)));
+        Assert.Throws<ArgumentException>(() => r.CreateSkeleton(Make(s: 3)));
+    }
+
+    [Fact]
+    public void CreateClip_ValuesShorterThanKeys_AreRejected()
+    {
+        using var r = new EngineRenderer(16, 16, useWarp: true);
+        float[] times = [0f, 1f];
+        var shortRotation = new ClipData("c", 1f, [new ClipChannelData(0, ChannelPath.Rotation, times, new float[4])]);   // 키 2개 x 4
+        var shortTranslation = new ClipData("c", 1f, [new ClipChannelData(0, ChannelPath.Translation, times, new float[3])]);  // 키 2개 x 3
+        Assert.Throws<ArgumentException>(() => r.CreateClip(shortRotation));
+        Assert.Throws<ArgumentException>(() => r.CreateClip(shortTranslation));
+    }
+}

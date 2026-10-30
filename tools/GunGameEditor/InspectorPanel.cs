@@ -137,7 +137,7 @@ public sealed class InspectorPanel : StackPanel
         _node.Rotation = Read(_rotation, _node.Rotation, DegreesPerRadian);
         _node.Scale = Read(_scale, _node.Scale, 1f);
         _node.Color = Read(_color, _node.Color, 1f);
-        _node.AnimationSpeed = Parse(_speed.Text, _node.AnimationSpeed);
+        _node.AnimationSpeed = Edited(_speed.Text, _node.AnimationSpeed, 1f);
         Refresh();  // 잘못 입력한 값은 이전 값으로 되돌린다
     }
 
@@ -151,12 +151,21 @@ public sealed class InspectorPanel : StackPanel
     }
 
     private static Vec3 Read(TextBox[] boxes, Vec3 fallback, float scale) => new(
-        Parse(boxes[0].Text, fallback.X * scale) / scale,
-        Parse(boxes[1].Text, fallback.Y * scale) / scale,
-        Parse(boxes[2].Text, fallback.Z * scale) / scale);
+        Edited(boxes[0].Text, fallback.X, scale),
+        Edited(boxes[1].Text, fallback.Y, scale),
+        Edited(boxes[2].Text, fallback.Z, scale));
 
-    private static float Parse(string text, float fallback) =>
-        float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out float v) && float.IsFinite(v) ? v : fallback;
+    /// <summary>칸의 텍스트를 값으로 읽는다. 칸이 보여 준 값 그대로(= 편집하지 않음)이면 원래 값을 정밀도 그대로 돌려준다.
+    /// 칸은 소수 4자리로 반올림해 보여 주므로 그대로 다시 읽으면 포커스만 옮겨도 값이 조금씩 깎이고 씬이 수정된 것으로 표시된다.
+    /// 숫자가 아니거나 유한하지 않은 입력은 이전 값으로 되돌린다.</summary>
+    private static float Edited(string text, float current, float scale)
+    {
+        if (text == Format(current * scale))
+            return current;
+        return float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out float v) && float.IsFinite(v)
+            ? v / scale
+            : current;
+    }
 
     private static string Format(float v) => MathF.Round(v, 4).ToString("0.####", CultureInfo.InvariantCulture);
 

@@ -14,12 +14,16 @@ public static class SceneSerializer
 {
     public const int CurrentVersion = 1;
     private const int MaxDepth = 64;
+    // 노드 한 단계마다 JSON 깊이가 2(객체 + children 배열) 늘고, 최상위 객체와 nodes 배열이 4를 더한다.
+    // System.Text.Json 기본 한도(64)면 약 31단계에서 저장/로드가 실패해 MaxDepth(64단계)가 의미가 없어진다.
+    private const int JsonMaxDepth = 2 * MaxDepth + 8;
 
     private static readonly JsonSerializerOptions Options = new()
     {
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        MaxDepth = JsonMaxDepth,
     };
 
     private sealed class SceneFile
@@ -43,12 +47,33 @@ public static class SceneSerializer
         public List<NodeDto>? Children { get; set; }
     }
 
+    /// <summary>씬을 저장한다. 임시 파일에 먼저 쓰고 교체하므로 쓰는 도중 실패해도 기존 파일이 남는다.
+    /// 계층이 한도(64단계)를 넘으면 파일을 건드리지 않고 SceneFormatException을 던진다.</summary>
     public static void Save(SceneDocument document, string path)
     {
+        if (document.Roots.Any(root => DepthOf(root) > MaxDepth))
+            throw new SceneFormatException("scene hierarchy is too deep");
         string baseDir = Path.GetDirectoryName(Path.GetFullPath(path))!;
         var file = new SceneFile { Version = CurrentVersion, Nodes = document.Roots.Select(n => ToDto(n, baseDir)).ToList() };
-        File.WriteAllText(path, JsonSerializer.Serialize(file, Options));
+        string json = JsonSerializer.Serialize(file, Options);
+
+        string temp = $"{path}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            File.WriteAllText(temp, json);
+            if (File.Exists(path))
+                File.Replace(temp, path, null);  // 같은 폴더 안이라 같은 볼륨: 대상이 잠겨 있으면 IOException, 기존 파일은 그대로
+            else
+                File.Move(temp, path);
+        }
+        catch
+        {
+            try { File.Delete(temp); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* 지우지 못해도 원래 오류를 우선한다 */ }
+            throw;
+        }
     }
+
+    private static int DepthOf(SceneNode node) => 1 + (node.Children.Count == 0 ? 0 : node.Children.Max(DepthOf));
 
     public static SceneDocument Load(string path)
     {
@@ -69,7 +94,7 @@ public static class SceneSerializer
             throw new SceneFormatException($"unsupported scene version {file.Version} (expected {CurrentVersion})");
 
         var document = new SceneDocument();
-        foreach (NodeDto dto in file.Nodes)
+        foreach (NodeDto? dto in file.Nodes)
             document.Add(FromDto(dto, baseDir, depth: 1), null);
         return document;
     }
@@ -89,8 +114,10 @@ public static class SceneSerializer
         Children = node.Children.Count == 0 ? null : node.Children.Select(c => ToDto(c, baseDir)).ToList(),
     };
 
-    private static SceneNode FromDto(NodeDto dto, string baseDir, int depth)
+    private static SceneNode FromDto(NodeDto? dto, string baseDir, int depth)
     {
+        if (dto is null)
+            throw new SceneFormatException("scene contains a null node");
         if (depth > MaxDepth)
             throw new SceneFormatException("scene hierarchy is too deep");
 
@@ -109,7 +136,7 @@ public static class SceneSerializer
         if (dto.Speed is { } speed)
             node.AnimationSpeed = float.IsFinite(speed) ? speed : throw new SceneFormatException("'speed' must be a finite number");
 
-        foreach (NodeDto childDto in dto.Children ?? [])
+        foreach (NodeDto? childDto in dto.Children ?? [])
         {
             SceneNode child = FromDto(childDto, baseDir, depth + 1);
             node.Children.Add(child);
@@ -130,6 +157,18 @@ public static class SceneSerializer
     private static string? ToRelative(string? path, string baseDir) =>
         string.IsNullOrEmpty(path) ? null : Path.GetRelativePath(baseDir, path).Replace('\\', '/');
 
-    private static string? ToAbsolute(string? path, string baseDir) =>
-        string.IsNullOrEmpty(path) ? null : Path.GetFullPath(Path.Combine(baseDir, path));
+    private static string? ToAbsolute(string? path, string baseDir)
+    {
+        if (string.IsNullOrEmpty(path))
+            return null;
+        try
+        {
+            return Path.GetFullPath(Path.Combine(baseDir, path));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            // 경로 문자열이 잘못된 경우(예: 문자열 안의 NUL). 파일 형식 오류로 알려 열기 실패 메시지가 되게 한다.
+            throw new SceneFormatException($"scene file contains an invalid path: '{path}'", ex);
+        }
+    }
 }

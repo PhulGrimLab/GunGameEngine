@@ -51,8 +51,11 @@ public sealed class SceneSync : IDisposable
     /// <summary>로드는 됐지만 일부가 무시된 항목(예: 지원하지 않는 glTF 기능).</summary>
     public IReadOnlyList<string> Warnings => _warnings;
 
-    /// <summary>엔진 오브젝트가 갱신되어 다시 그려야 할 때 발생한다.</summary>
+    /// <summary>구조/속성/로드 결과가 바뀌어 엔진 오브젝트가 갱신되었을 때 발생한다(상태 표시와 목록도 갱신해야 한다).</summary>
     public event Action? Changed;
+
+    /// <summary>Tick이 재생 중인 포즈만 진행시켰을 때 발생한다. 다시 그리기만 하면 된다(30Hz로 오므로 무거운 갱신을 붙이지 않는다).</summary>
+    public event Action? PoseChanged;
 
     public void Attach(SceneDocument document)
     {
@@ -108,7 +111,7 @@ public sealed class SceneSync : IDisposable
             any = true;
         }
         if (any)
-            Changed?.Invoke();
+            PoseChanged?.Invoke();
     }
 
     private void Create(SceneNode node, int parentObjectId)
@@ -150,7 +153,7 @@ public sealed class SceneSync : IDisposable
             _meshStamps[path] = StampOf(path);
             return _meshes[path] = mesh;
         }
-        catch (Exception ex) when (ex is EngineException or GltfException or IOException)
+        catch (Exception ex) when (ex is EngineException or GltfException or IOException or UnauthorizedAccessException or NotSupportedException)  // 폴더/권한 거부/지원하지 않는 경로 형식도 오류 목록으로
         {
             _errors.Add($"{path}: {ex.Message}");
             return null;

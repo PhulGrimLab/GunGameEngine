@@ -579,3 +579,75 @@ public sealed class SceneFileInputTests(UiHost host) : UiTestBase(host)
         Assert.Empty(s.Window.SceneErrors);
     });
 }
+
+/// <summary>리뷰에서 지적된 에디터 동작의 재현/회귀: 인스펙터 반올림 되쓰기, 틱마다 상태/클립 목록 갱신, 저장 실패 처리.</summary>
+public sealed class EditorReviewRegressionTests(UiHost host) : UiTestBase(host)
+{
+    [Fact]
+    public void InspectorFocusLoss_DoesNotRewriteUneditedFields() => Ui(s =>
+    {
+        s.Click("Add Group");
+        SceneNode node = s.Selected!;
+        node.Position = new Vec3(0.12345678f, 2, 0);  // 칸에는 소수 4자리로 반올림되어 보인다
+        node.Rotation = new Vec3(0.5f, 0, 0);          // 칸에는 도 단위(28.6479)로 보인다
+        int changes = 0;
+        node.PropertyChanged += (_, _) => changes++;
+
+        s.TypeBlur(s.Box(EditorSession.NameBox), node.Name);  // 아무것도 고치지 않고 포커스만 잃는다
+
+        Assert.Equal(0.12345678f, node.Position.X);
+        Assert.Equal(0.5f, node.Rotation.X);
+        Assert.Equal(0, changes);  // 편집이 없으면 값도, 변경 알림도 없어야 한다(씬이 "수정됨"이 되지 않는다)
+
+        s.TypeEnter(s.Box(EditorSession.PositionBox + 1), "7");  // Y만 고치면 Y만 바뀐다
+        Assert.Equal(7f, node.Position.Y);
+        Assert.Equal(0.12345678f, node.Position.X);
+        Assert.Equal(0.5f, node.Rotation.X);
+    });
+
+    [Fact]
+    public void AnimationTick_DoesNotOverwriteStatusOrRebuildClipList() => Ui(s =>
+    {
+        s.Window.AddMesh(EditorSession.Sample("tentacle.glb"));
+        SceneNode animated = s.Selected!;
+        animated.AnimationClip = s.Window.Inspector.ClipNamesProvider(animated).First();
+        animated.AnimationPlaying = true;
+
+        s.Click("Add Group");  // 읽을 수 없는 메시를 가진 노드: 동기화 오류가 남는다
+        s.Selected!.MeshPath = Path.Combine(Path.GetTempPath(), "gge_missing_" + Guid.NewGuid().ToString("N") + ".obj");
+        s.Pump();
+        Assert.StartsWith("Load problem", s.Status);
+
+        s.Window.StatusText.Text = "Saved scene.json (status set by an earlier user action)";  // 이후 사용자 동작이 남긴 메시지
+        int providerCalls = 0;
+        var original = s.Window.Inspector.ClipNamesProvider;
+        s.Window.Inspector.ClipNamesProvider = n => { providerCalls++; return original(n); };
+
+        for (int i = 0; i < 5; i++)
+            s.Window.AdvanceAnimation(0.033f);  // 30Hz 애니메이션 틱
+
+        Assert.Equal("Saved scene.json (status set by an earlier user action)", s.Status);
+        Assert.Equal(0, providerCalls);
+    });
+
+    [Fact]
+    public void SavingATooDeepScene_ReportsFailureInsteadOfThrowing() => Ui(s =>
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "gge_ui_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string path = Path.Combine(dir, "deep.scene.json");
+            File.WriteAllText(path, "{\"version\":1,\"nodes\":[]}");
+            Assert.True(s.Window.OpenScenePath(path));  // 저장 경로를 갖게 한다(파일 대화상자 없이 Save 버튼이 바로 저장)
+            for (int i = 0; i < 70; i++)
+                s.Click("Add Group");  // 선택된 노드의 자식으로 계속 추가되어 70단계 체인이 된다
+
+            s.Click("Save");
+
+            Assert.StartsWith("Save failed", s.Status);
+            Assert.Equal("{\"version\":1,\"nodes\":[]}", File.ReadAllText(path));  // 기존 파일은 그대로
+        }
+        finally { Directory.Delete(dir, true); }
+    });
+}
