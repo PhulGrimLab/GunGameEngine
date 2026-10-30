@@ -32,6 +32,7 @@ public partial class MainWindow : Window
     private GameplayOverlay? _overlay;
     private PlaySession? _play;
     private readonly List<string> _playLog = [];
+    private bool _rebuildingGameplayList;
 
     public MainWindow()
     {
@@ -51,6 +52,9 @@ public partial class MainWindow : Window
             _sync.Changed += OnSceneChanged;
             _sync.PoseChanged += Redraw;  // 애니메이션 틱은 다시 그리기만 한다(상태 표시줄/클립 목록은 건드리지 않는다)
             Inspector.ClipNamesProvider = _sync.GetClipNames;
+            GameplayInspectorPanel.ViewCameraProvider = () => (_camera.Eye, _camera.Target, FovY);
+            GameplayInspectorPanel.Changed += OnGameplayEdited;
+            GameplayInspectorPanel.Rejected += reason => StatusText.Text = "Rejected: " + reason;
             _sync.Attach(_document);
         }
         catch (Exception ex)
@@ -156,7 +160,9 @@ public partial class MainWindow : Window
         _scenePath = path;
         Hierarchy.ItemsSource = document.Roots;
         Inspector.Show(null);
+        GameplayInspectorPanel.Show(null);
         _sync?.Attach(document);
+        RefreshGameplayList();
         UpdateOverlay();
         UpdateTitle();
         if (path is not null && _sync?.Errors.Count == 0)
@@ -222,7 +228,13 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnSelectionChanged(object sender, RoutedPropertyChangedEventArgs<object> e) => Inspector.Show(Selected);
+    private void OnSelectionChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
+    {
+        if (Selected is not null)
+            GameplayList.SelectedItem = null;  // 한 번에 하나의 인스펙터만 보인다(노드 또는 게임플레이 항목)
+        Inspector.Show(Selected);
+        ShowActiveInspector();
+    }
 
     private void SelectNode(SceneNode node)
     {
@@ -268,6 +280,8 @@ public partial class MainWindow : Window
     {
         _dragStart = e.GetPosition(null);
         _dragNode = NodeAt(e.OriginalSource);
+        if (_dragNode is not null)
+            GameplayList.SelectedItem = null;  // 이미 선택된 노드를 다시 눌러도 노드 인스펙터로 돌아온다
     }
 
     private void OnTreeMouseMove(object sender, MouseEventArgs e)
@@ -302,6 +316,120 @@ public partial class MainWindow : Window
         {
             StatusText.Text = "Move failed: " + ex.Message;
         }
+    }
+
+    // ---- 게임플레이 편집 ----
+    internal GameplayItem? SelectedGameplayItem => GameplayList.SelectedItem as GameplayItem;
+
+    /// <summary>게임플레이 목록을 문서의 현재 데이터로 다시 채운다. keep이 목록에 있으면 그 항목을 다시 선택한다.
+    /// reshowInspector가 false면 인스펙터는 그대로 둔다(편집 중인 입력 칸을 날리지 않으려고, 값 편집 직후에 쓴다).</summary>
+    private void RefreshGameplayList(object? keep = null, bool reshowInspector = true)
+    {
+        GameplayData data = _document.Gameplay;
+        var items = new List<GameplayItem>();
+        items.AddRange(data.Rooms.Select(r => new GameplayItem(GameplayKind.Room, r)));
+        items.AddRange(data.Colliders.Select(c => new GameplayItem(GameplayKind.Collider, c)));
+        items.AddRange(data.Triggers.Select(t => new GameplayItem(GameplayKind.Trigger, t)));
+        if (data.Player is { } player)
+            items.Add(new GameplayItem(GameplayKind.Player, player));
+
+        _rebuildingGameplayList = true;  // 다시 채우는 동안의 선택 해제 이벤트는 무시한다(인스펙터 입력 칸을 날리지 않게)
+        GameplayList.ItemsSource = items;
+        GameplayList.SelectedItem = keep is null ? null : items.FirstOrDefault(i => ReferenceEquals(i.Def, keep));
+        _rebuildingGameplayList = false;
+        if (reshowInspector)
+        {
+            GameplayInspectorPanel.Show(SelectedGameplayItem);
+            ShowActiveInspector();
+        }
+    }
+
+    private void OnGameplaySelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_rebuildingGameplayList)
+            return;
+        GameplayInspectorPanel.Show(SelectedGameplayItem);
+        ShowActiveInspector();
+    }
+
+    /// <summary>게임플레이 항목이 선택되어 있으면 그 인스펙터를, 아니면 노드 인스펙터를 보인다.</summary>
+    private void ShowActiveInspector()
+    {
+        bool gameplay = SelectedGameplayItem is not null;
+        GameplayInspectorPanel.Visibility = gameplay ? Visibility.Visible : Visibility.Collapsed;
+        Inspector.Visibility = gameplay ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>인스펙터에서 값이 바뀌었다: 목록 이름과 오버레이를 갱신한다.</summary>
+    private void OnGameplayEdited()
+    {
+        RefreshGameplayList(SelectedGameplayItem?.Def, reshowInspector: false);
+        UpdateOverlay();
+    }
+
+    private void OnAddRoom(object sender, RoutedEventArgs e) =>
+        AddGameplayItem(GameplayKind.Room, GameplayEditing.AddRoom(_document.Gameplay, _camera.Eye, _camera.Target, FovY));
+
+    private void OnAddCollider(object sender, RoutedEventArgs e) =>
+        AddGameplayItem(GameplayKind.Collider, GameplayEditing.AddCollider(_document.Gameplay, _camera.Target.X, _camera.Target.Z));
+
+    private void OnAddTrigger(object sender, RoutedEventArgs e) =>
+        AddGameplayItem(GameplayKind.Trigger, GameplayEditing.AddTrigger(_document.Gameplay, _camera.Target.X, _camera.Target.Z));
+
+    /// <summary>"Set Player": 계층에서 고른 루트 노드를 플레이어로 지정하고 스폰을 그 위치로 둔다.</summary>
+    private void OnSetPlayer(object sender, RoutedEventArgs e)
+    {
+        if (Selected is not { } node)
+        {
+            StatusText.Text = "Select a root node in the hierarchy first";
+            return;
+        }
+        try
+        {
+            GameplayEditing.SetPlayer(_document.Gameplay, node);
+        }
+        catch (InvalidOperationException ex)
+        {
+            StatusText.Text = "Set player failed: " + ex.Message;
+            return;
+        }
+        AddGameplayItem(GameplayKind.Player, _document.Gameplay.Player!);
+    }
+
+    /// <summary>방금 만든(또는 지정한) 항목을 목록에서 고르고, 오버레이를 켜서 바로 보이게 한다.</summary>
+    private void AddGameplayItem(GameplayKind kind, object def)
+    {
+        RefreshGameplayList(def);
+        GameplayCheck.IsChecked = true;
+        UpdateOverlay();
+        StatusText.Text = $"Added {kind}: edit values in the inspector";
+    }
+
+    private void OnDeleteGameplayItem(object sender, RoutedEventArgs e)
+    {
+        if (SelectedGameplayItem is not { } item)
+        {
+            StatusText.Text = "Select a gameplay item to delete";
+            return;
+        }
+        GameplayData data = _document.Gameplay;
+        switch (item.Kind)
+        {
+            case GameplayKind.Room:
+                data.Rooms.Remove((RoomDef)item.Def);
+                break;
+            case GameplayKind.Collider:
+                data.Colliders.Remove((ColliderDef)item.Def);
+                break;
+            case GameplayKind.Trigger:
+                data.Triggers.Remove((TriggerDef)item.Def);
+                break;
+            default:
+                data.Player = null;
+                break;
+        }
+        RefreshGameplayList();
+        UpdateOverlay();
     }
 
     // ---- 게임플레이 오버레이 ----
@@ -422,11 +550,19 @@ public partial class MainWindow : Window
     {
         FileBar.IsEnabled = enabled;
         NodeBar.IsEnabled = enabled;
+        GameplayBar.IsEnabled = enabled;
         Hierarchy.IsEnabled = enabled;
+        GameplayList.IsEnabled = enabled;
         if (enabled)
+        {
             Inspector.Show(Selected);  // 선택 상태에 맞게 인스펙터 활성 여부를 되돌린다
+            GameplayInspectorPanel.IsEnabled = SelectedGameplayItem is not null;
+        }
         else
+        {
             Inspector.IsEnabled = false;
+            GameplayInspectorPanel.IsEnabled = false;
+        }
     }
 
     // ---- 렌더 ----

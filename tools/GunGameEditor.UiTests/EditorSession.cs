@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.IO;
 using System.Reflection;
 using System.Windows;
@@ -68,6 +68,31 @@ public sealed class EditorSession : IDisposable
         }
     }
 
+    // ---- 게임플레이 편집 ----
+    public ListBox GameplayList => Window.GameplayList;
+    public GameplayInspector GameplayPanel => Window.GameplayInspectorPanel;
+    public GameplayItem? SelectedGameplay => Window.SelectedGameplayItem;
+
+    /// <summary>게임플레이 목록에 보이는 글자들.</summary>
+    public List<string> GameplayLabels() => GameplayList.Items.Cast<GameplayItem>().Select(i => i.Display).ToList();
+
+    /// <summary>게임플레이 목록에서 항목을 클릭해 선택한다.</summary>
+    public void SelectGameplay(string label)
+    {
+        GameplayItem item = GameplayList.Items.Cast<GameplayItem>().First(i => i.Display == label);
+        GameplayList.ScrollIntoView(item);  // 항목 컨테이너는 레이아웃 후에 만들어진다
+        Pump();
+        // UI Automation의 항목 피어는 목록 데이터를 통째로 바꾼 뒤에 낡은 항목을 들고 있어 쓸 수 없다. 클릭이 하는 일(항목 선택)을 직접 한다.
+        ((ListBoxItem)GameplayList.ItemContainerGenerator.ContainerFromItem(item)).IsSelected = true;
+        Pump();
+    }
+
+    /// <summary>게임플레이 인스펙터의 칸을 라벨(AutomationProperties.Name)로 찾는다.</summary>
+    public TextBox Field(string label) =>
+        Find<TextBox>(GameplayPanel, b => System.Windows.Automation.AutomationProperties.GetName(b) == label);
+
+    public Button PanelButton(string label) => Find<Button>(GameplayPanel, b => b.Content as string == label);
+
     public T Find<T>(DependencyObject root, Func<T, bool>? match = null) where T : DependencyObject =>
         FindAll(root, match).FirstOrDefault() ?? throw new InvalidOperationException($"{typeof(T).Name} not found");
 
@@ -104,6 +129,18 @@ public sealed class EditorSession : IDisposable
     }
 
     public void Click(string label) => Click(ButtonByLabel(label));
+
+    /// <summary>계층 트리의 노드를 실제 마우스 클릭처럼 누른다(PreviewMouseDown 라우티드 이벤트). 이미 선택된 노드를 다시 누르는 경우도 포함한다.</summary>
+    public void ClickNode(SceneNode node)
+    {
+        TreeViewItem item = ItemOf(node);
+        item.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left)
+        {
+            RoutedEvent = Mouse.PreviewMouseDownEvent,  // 클래스 핸들러가 이를 PreviewMouseLeftButtonDown으로 바꿔 올린다(실제 입력과 같은 경로)
+            Source = item,
+        });
+        Select(node);
+    }
 
     /// <summary>
     /// 체크박스를 클릭한다. UI Automation의 Toggle 패턴은 IsChecked만 바꾸고 Click 이벤트를 내지 않아
