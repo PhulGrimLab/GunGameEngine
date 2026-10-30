@@ -11,6 +11,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="GunGameEditor.UiTests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\GunGame.Interop\GunGame.Interop.csproj" />
   </ItemGroup>
 
