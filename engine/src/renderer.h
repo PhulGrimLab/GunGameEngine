@@ -59,6 +59,13 @@ public:
     int CreateSkeleton(Skeleton skeleton);
     int CreateClip(Clip clip);
 
+    // 리소스 해제. 알 수 없는 ID이거나 어떤 오브젝트가 아직 쓰고 있으면 예외(쓰는 오브젝트를 먼저 destroy/교체해야 한다).
+    // ID는 해제 후에도 재사용되지 않는다. GPU 메모리는 해제 즉시 놓는다(오브젝트가 참조하지 않으므로 그릴 일이 없다).
+    void DestroyMesh(int id);
+    void DestroyTexture(int id);
+    void DestroySkeleton(int id);
+    void DestroyClip(int id);
+
     int CreateObject(int mesh, int texture, int parent);
     void DestroyObject(int id);  // 자손까지 함께 제거
     void SetObjectParent(int id, int parent);

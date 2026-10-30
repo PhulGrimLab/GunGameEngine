@@ -285,7 +285,17 @@ public static class GltfImporter
             {
                 if (n.TryGetProperty("children", out JsonElement children))
                     foreach (JsonElement child in children.EnumerateArray())
-                        _nodes[child.GetInt32()].Parent = index;
+                    {
+                        int childIndex = child.GetInt32();
+                        if (childIndex < 0 || childIndex >= _nodes.Count)
+                            throw new GltfException($"node {index} lists child {childIndex}, which does not exist");
+                        // glTF 규격: 노드는 부모가 최대 하나이고 자기 자신의 자손이 될 수 없다. 어기면 조상 탐색이 끝나지 않을 수 있다.
+                        if (childIndex == index)
+                            throw new GltfException($"node {index} is its own child");
+                        if (_nodes[childIndex].Parent >= 0)
+                            throw new GltfException($"node {childIndex} has more than one parent");
+                        _nodes[childIndex].Parent = index;
+                    }
                 index++;
             }
         }
@@ -335,8 +345,13 @@ public static class GltfImporter
             for (int i = 0; i < count; i++)
             {
                 originalParent[i] = -1;
+                int guard = 0;
                 for (int n = _nodes[jointNodes[i]].Parent; n >= 0; n = _nodes[n].Parent)
+                {
+                    if (++guard > _nodes.Count)  // 조인트 위쪽에 순환(A->B->A)이 있으면 영원히 돌지 않도록 World()와 같은 가드를 둔다
+                        throw new GltfException("node hierarchy contains a cycle");
                     if (jointOfNode.TryGetValue(n, out int parentJoint)) { originalParent[i] = parentJoint; break; }
+                }
             }
 
             // 부모가 항상 앞에 오도록 깊이 우선으로 재정렬한다. order[new] = old, remap[old] = new

@@ -9,6 +9,7 @@
 #include <string>
 
 #include "error.h"
+#include "texture_loader.h"
 
 namespace gge {
 
@@ -98,8 +99,6 @@ struct GpuVertex {
     float weights[4];
 };
 static_assert(sizeof(GpuVertex) == 64);
-
-constexpr int kMaxTextureSize = 4096;
 
 void Check(HRESULT hr, const char* what)
 {
@@ -324,6 +323,62 @@ int Renderer::CreateTexture(const uint8_t* rgba, int width, int height)
     int id = nextTexture_++;
     textures_[id] = MakeTexture(rgba, width, height);
     return id;
+}
+
+// objects_ 중 predicate를 만족하는 첫 오브젝트의 ID(없으면 0). 해제 대상이 쓰이고 있는지 찾는 데 쓴다.
+template <class Pred>
+static int FirstObjectWhere(const std::map<int, Object>& objects, Pred pred)
+{
+    for (const auto& [id, object] : objects) {
+        if (pred(object)) {
+            return id;
+        }
+    }
+    return 0;
+}
+
+void Renderer::DestroyMesh(int id)
+{
+    if (!meshes_.count(id)) {
+        throw std::runtime_error("unknown mesh id " + std::to_string(id));
+    }
+    if (int user = FirstObjectWhere(objects_, [id](const Object& o) { return o.mesh == id; })) {
+        throw std::runtime_error("mesh " + std::to_string(id) + " is in use by object " + std::to_string(user));
+    }
+    meshes_.erase(id);
+}
+
+void Renderer::DestroyTexture(int id)
+{
+    if (!textures_.count(id)) {
+        throw std::runtime_error("unknown texture id " + std::to_string(id));
+    }
+    if (int user = FirstObjectWhere(objects_, [id](const Object& o) { return o.texture == id; })) {
+        throw std::runtime_error("texture " + std::to_string(id) + " is in use by object " + std::to_string(user));
+    }
+    textures_.erase(id);
+}
+
+void Renderer::DestroySkeleton(int id)
+{
+    if (!skeletons_.count(id)) {
+        throw std::runtime_error("unknown skeleton id " + std::to_string(id));
+    }
+    if (int user = FirstObjectWhere(objects_, [id](const Object& o) { return o.skeleton == id; })) {
+        throw std::runtime_error("skeleton " + std::to_string(id) + " is in use by object " + std::to_string(user));
+    }
+    skeletons_.erase(id);
+}
+
+void Renderer::DestroyClip(int id)
+{
+    if (!clips_.count(id)) {
+        throw std::runtime_error("unknown clip id " + std::to_string(id));
+    }
+    if (int user = FirstObjectWhere(objects_, [id](const Object& o) { return o.clipA == id || o.clipB == id; })) {
+        throw std::runtime_error("clip " + std::to_string(id) + " is in use by object " + std::to_string(user));
+    }
+    clips_.erase(id);
 }
 
 void Renderer::RequireMesh(int id) const

@@ -71,6 +71,14 @@ GGE_API int gge_object_set_pose(GgeRenderer* r, int object_id, int clip_a, float
 // 본별 모델 공간 전역 행렬(float[16], 행 벡터 규약)을 out에 쓰고 본 수를 반환한다. 용량이 부족하거나 실패하면 0.
 GGE_API int gge_object_get_pose(GgeRenderer* r, int object_id, float* out_matrices, int bone_capacity);
 
+// ---- 리소스 해제 ----
+// 알 수 없는 ID이거나 어떤 오브젝트가 아직 쓰고 있으면 실패한다(gge_last_error에 사용 중인 오브젝트 ID). 쓰는 오브젝트를
+// 먼저 destroy하거나 다른 리소스로 바꾼 뒤 호출한다. 해제한 ID는 재사용되지 않는다.
+GGE_API int gge_mesh_destroy(GgeRenderer* r, int mesh_id);
+GGE_API int gge_texture_destroy(GgeRenderer* r, int texture_id);
+GGE_API int gge_skeleton_destroy(GgeRenderer* r, int skeleton_id);
+GGE_API int gge_clip_destroy(GgeRenderer* r, int clip_id);
+
 // ---- 오브젝트(씬 그래프) ----
 // mesh_id 0이면 그리지 않는 그룹 노드, texture_id 0이면 흰색, parent_id 0이면 루트.
 GGE_API int gge_object_create(GgeRenderer* r, int mesh_id, int texture_id, int parent_id);

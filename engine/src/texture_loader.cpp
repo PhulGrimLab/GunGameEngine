@@ -24,12 +24,30 @@ void Check(HRESULT hr, const char* what)
     }
 }
 
+// CoInitializeEx를 한 번 호출하고, 성공했을 때만 소멸자에서 짝을 맞춰 CoUninitialize한다.
+// 이미 다른 아파트 모델로 초기화돼 있으면 RPC_E_CHANGED_MODE(실패)가 오지만 WIC는 그대로 쓸 수 있고, 이때는 짝을 맞출 필요가 없다.
+// WIC 객체(ComPtr)보다 먼저 만들어 나중에 소멸되게 해야 한다(CoUninitialize 이후에 COM 객체를 놓지 않도록).
+class ComScope {
+public:
+    ComScope() : _initialized(SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) {}
+    ~ComScope()
+    {
+        if (_initialized) {
+            CoUninitialize();
+        }
+    }
+    ComScope(const ComScope&) = delete;
+    ComScope& operator=(const ComScope&) = delete;
+
+private:
+    bool _initialized;
+};
+
 }  // namespace
 
 ImageData LoadImageFile(const std::string& pathUtf8)
 {
-    // 이미 다른 아파트 모델로 초기화돼 있으면 RPC_E_CHANGED_MODE가 반환되지만 WIC는 그대로 사용할 수 있다.
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    ComScope com;
 
     ComPtr<IWICImagingFactory> factory;
     Check(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory)),
@@ -52,6 +70,13 @@ ImageData LoadImageFile(const std::string& pathUtf8)
 
     UINT width = 0, height = 0;
     Check(converter->GetSize(&width, &height), "WIC GetSize");
+
+    // 비정상적으로 큰 이미지는 픽셀 버퍼를 할당하기 전에 거부한다(렌더러도 같은 한도로 거부한다).
+    if (width == 0 || height == 0 || width > static_cast<UINT>(kMaxTextureSize) ||
+        height > static_cast<UINT>(kMaxTextureSize)) {
+        throw std::runtime_error("image too large or empty (" + std::to_string(width) + "x" + std::to_string(height) +
+                                 ", max " + std::to_string(kMaxTextureSize) + "): " + pathUtf8);
+    }
 
     ImageData image;
     image.width = static_cast<int>(width);

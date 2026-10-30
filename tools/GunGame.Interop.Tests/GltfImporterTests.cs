@@ -201,4 +201,44 @@ public class GltfImporterTests
         Assert.Throws<GltfException>(() => Import(new GltfBuilder { TruncateBuffer = true }, assets, "shortbuf"));
         Assert.Throws<FileNotFoundException>(() => GltfImporter.Import(assets.Path_("missing.glb")));
     }
+
+    // Task.Wait는 작업이 예외로 끝나면 그 예외를 다시 던지므로, 끝났는지만 기다리는 대기 핸들을 쓴다.
+    private static bool Finishes(Task task) => ((IAsyncResult)task).AsyncWaitHandle.WaitOne(TimeSpan.FromSeconds(10));
+
+    [Fact]
+    public void Import_NodeCycleOutsideJoints_IsRejectedInsteadOfHanging()
+    {
+        // 악성 파일: Armature(0)와 메시 노드가 서로의 부모(각 노드의 부모는 정확히 하나)라 조상 탐색이 영원히 돈다.
+        // 이전에는 ReadSkin의 부모 탐색에 순환 가드가 없어 UI 스레드가 멈췄다. 정지하면 시간 초과로 실패하게 한다.
+        using var assets = new TestAssets();
+        var builder = new GltfBuilder { Glb = false };
+        string path = builder.Write(assets.Directory, "cycle");
+        var doc = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))!;
+        var nodes = doc["nodes"]!.AsArray();
+        int meshNode = nodes.Count - 1;
+        nodes[0]!["children"] = new System.Text.Json.Nodes.JsonArray(1, meshNode);
+        nodes[meshNode]!["children"] = new System.Text.Json.Nodes.JsonArray(0);
+        File.WriteAllText(path, doc.ToJsonString());
+
+        var import = Task.Run(() => GltfImporter.Import(path));
+        Assert.True(Finishes(import), "importer did not terminate (infinite loop on a node cycle)");
+        Assert.IsType<GltfException>(import.Exception!.InnerException);
+    }
+
+    [Fact]
+    public void Import_SelfChildAndMultipleParents_AreRejected()
+    {
+        using var assets = new TestAssets();
+        foreach ((string name, int[] children0) in new[] { ("self", new[] { 0, 1 }), ("multi", new[] { 1, 2 }) })
+        {
+            string path = new GltfBuilder { Glb = false }.Write(assets.Directory, name);
+            var doc = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))!;
+            // self: 노드 0이 자기 자신을 자식으로. multi: 노드 2가 노드 0과 노드 1 양쪽의 자식이 된다.
+            doc["nodes"]![0]!["children"] = new System.Text.Json.Nodes.JsonArray(children0.Select(c => (System.Text.Json.Nodes.JsonNode)c).ToArray());
+            File.WriteAllText(path, doc.ToJsonString());
+            var import = Task.Run(() => GltfImporter.Import(path));
+            Assert.True(Finishes(import), $"{name}: importer did not terminate");
+            Assert.IsType<GltfException>(import.Exception!.InnerException);
+        }
+    }
 }

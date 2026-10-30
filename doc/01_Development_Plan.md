@@ -46,6 +46,20 @@ SIGNALIS 스타일(PS1풍 저해상도 3D, 고정 카메라, 3인칭 탐험/전�
 - **카메라 컷**: 입력을 누른 채 방이 바뀌면 방향 기준은 입력을 시작한 방 카메라를 유지한다(컷 직후 캐릭터가 되돌아가는 것 방지). 입력을 놓거나, 컷 직후 입력 방향에서 60도 넘게 꺾으면 현재 방 기준으로 갱신한다. 입력이 끊기지 않는 채 장면이 바뀌는 텔레포트/컷신에는 `gge_world_reset_input_frame`을 호출한다. 탱크 컨트롤 모드와 캐릭터 회전(facing)은 아직 없다.
 - 한계: 회전 상자/캡슐 높이/동적 충돌체/방 폴리곤을 벽으로 쓰는 것은 아직 없다. 충돌체는 월드 상태(활성 방)와 무관하게 전역이다.
 
+## 리소스 수명
+- 엔진: `gge_mesh/texture/skeleton/clip_destroy`. 오브젝트가 쓰는 중이면 실패(사용 중인 오브젝트 ID를 오류에 담는다). ID는 재사용되지 않는다. 오브젝트 파괴/교체가 먼저다.
+- `SceneSync`는 경로별 캐시에 로드 시점의 파일 수정 시각/크기를 함께 저장한다. `Rebuild`(씬 열기, 구조 변경) 때 오브젝트를 모두 없앤 직후 파일이 바뀌거나 사라진 캐시를 해제하고 다시 읽는다. 메시 캐시가 버려지면 재생 상태(`AnimationPlayer`)도 비운다(해제된 클립 ID를 들고 있으면 엔진 오류). glTF 외부 `.bin` 등 부속 파일은 추적하지 않는다. 속성 변경(Update) 경로는 캐시를 그대로 쓴다.
+
+## 리뷰에서 남은 개선 후보 (미수정)
+서브에이전트가 코드를 읽고 보고한 항목 중 **직접 재현/검증하지 않은 것**이다. 수정 전에 각각 재현부터 한다. (확인되어 수정한 것: glTF 노드 순환/다중 부모로 인한 무한 루프.)
+- `LoadMesh`/`LoadTexture`가 `UnauthorizedAccessException`/`NotSupportedException` 등을 잡지 않고, `OnNodePropertyChanged`/`Rebuild` 중 엔진 예외가 UI로 새며, `DispatcherUnhandledException` 처리가 없다.
+- 씬 JSON의 `null` 노드, 경로의 NUL/드라이브 형식 오류가 `SceneFormatException`으로 변환되지 않는다. `Save`가 제자리 쓰기라 쓰기 실패 시 기존 파일이 손상될 수 있고, 계층이 약 31단계를 넘으면 직렬화가 `JsonException`을 던진다.
+- `EngineRenderer`의 공개 메서드가 배열 길이를 검증하지 않는다(`CreateTexture`, 스켈레톤/클립 배열 등).
+- glTF: `bufferView`가 없는 accessor의 `count` 상한, 음수 `byteOffset` 검사, 외부 버퍼 URI의 UNC/절대 경로 차단(NTLM 유출 가능성), 법선 변환(역전치)과 음의 행렬식 감김 뒤집기, 클립 시간 검증.
+- `AnimationPlayer`: `dt*Speed` 오버플로로 시간이 NaN이 될 수 있다.
+- `InspectorPanel.Commit`이 모든 칸을 다시 읽어 반올림된 값을 되써서 편집하지 않아도 씬이 변경된다.
+- 애니메이션 틱(30Hz)마다 `Changed`가 상태 표시줄과 클립 목록 갱신까지 일으킨다.
+
 ## 에셋/씬 포맷
 - **메시**: `.obj`(원본) → `.ggm`(엔진 바이너리, `GGM1` + 정점 수 + 인덱스 수 + float[8]*N + uint32*M). 로더는 크기·인덱스 범위를 검증한다.
 - **스키닝 메시/애니메이션 원본**: `.glb`/`.gltf`(Blender 등에서 내보내기). 에디터가 로드할 때 임포트해 엔진 리소스로 만든다(바이너리 굽기는 런타임 씬 로더 결정과 함께 정한다). 샘플은 `GGE_WRITE_SAMPLES=<폴더>`로 `SampleAssetTests`를 실행해 다시 만든다.

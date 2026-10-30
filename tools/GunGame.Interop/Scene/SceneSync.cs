@@ -20,6 +20,9 @@ public sealed class SceneSync : IDisposable
         public List<string> ClipNames = [];
     }
 
+    /// <summary>로드 시점의 파일 상태. 다시 Rebuild할 때 달라졌으면 캐시를 버리고 다시 읽는다.</summary>
+    private readonly record struct FileStamp(DateTime LastWriteUtc, long Length);
+
     private sealed class Entry
     {
         public int ObjectId;
@@ -31,6 +34,8 @@ public sealed class SceneSync : IDisposable
     private readonly EngineRenderer _engine;
     private readonly Dictionary<string, LoadedMesh> _meshes = [];
     private readonly Dictionary<string, int> _textures = [];
+    private readonly Dictionary<string, FileStamp?> _meshStamps = [];
+    private readonly Dictionary<string, FileStamp?> _textureStamps = [];
     private readonly Dictionary<SceneNode, Entry> _entries = [];
     private readonly Dictionary<SceneNode, AnimationPlayer> _players = [];
     private readonly List<int> _rootObjects = [];
@@ -77,6 +82,10 @@ public sealed class SceneSync : IDisposable
             _engine.DestroyObject(id);
         _rootObjects.Clear();
         _entries.Clear();
+
+        // 모든 오브젝트가 없어진 지금이 파일이 바뀐 캐시 리소스를 안전하게 해제하고 다시 읽을 수 있는 시점이다.
+        if (PurgeStaleResources())
+            _players.Clear();  // 해제된 클립 ID를 들고 있는 재생 상태를 버린다(다시 Play될 때 새 클립으로 시작)
 
         if (_document is not null)
             foreach (SceneNode root in _document.Roots)
@@ -138,6 +147,7 @@ public sealed class SceneSync : IDisposable
                 ".ggm" => new LoadedMesh { MeshId = _engine.LoadMeshGgm(path) },
                 _ => new LoadedMesh { MeshId = _engine.LoadMeshObj(path) },
             };
+            _meshStamps[path] = StampOf(path);
             return _meshes[path] = mesh;
         }
         catch (Exception ex) when (ex is EngineException or GltfException or IOException)
@@ -176,13 +186,72 @@ public sealed class SceneSync : IDisposable
             return cached;
         try
         {
-            return _textures[path] = _engine.LoadTexture(path);
+            int id = _engine.LoadTexture(path);
+            _textureStamps[path] = StampOf(path);
+            return _textures[path] = id;
         }
         catch (EngineException ex)
         {
             _errors.Add($"{path}: {ex.Message}");
             return 0;
         }
+    }
+
+    // ---- 캐시 무효화 ----
+    private static FileStamp? StampOf(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            return info.Exists ? new FileStamp(info.LastWriteTimeUtc, info.Length) : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            return null;  // 상태를 못 읽으면 "알 수 없음"으로 두고, 다음 비교에서도 같으면 바뀌지 않은 것으로 본다
+        }
+    }
+
+    /// <summary>로드 이후 파일이 바뀌었거나 사라진 메시/텍스처 캐시를 해제한다. 메시 캐시를 버렸으면 true.
+    /// 호출 시점에는 엔진 오브젝트가 모두 없어져 있어야 한다(쓰는 오브젝트가 있으면 해제가 거부되고, 그 사실을 Errors에 남긴다).
+    /// glTF의 외부 .bin 같은 부속 파일은 추적하지 않는다(주 파일의 시각/크기만 본다).</summary>
+    private bool PurgeStaleResources()
+    {
+        bool anyMesh = false;
+        foreach (string path in _meshes.Keys.Where(p => !_meshStamps.TryGetValue(p, out FileStamp? s) || s != StampOf(p)).ToList())
+        {
+            LoadedMesh mesh = _meshes[path];
+            // 해제에 실패해도 캐시에서는 뺀다: 이미 일부가 해제됐을 수 있어 남겨 두면 해제된 ID를 가리키게 된다(누수가 낫다).
+            _meshes.Remove(path);
+            _meshStamps.Remove(path);
+            anyMesh = true;
+            try
+            {
+                foreach (ClipRef clip in mesh.Clips.Values)
+                    _engine.DestroyClip(clip.Id);
+                if (mesh.SkeletonId > 0)
+                    _engine.DestroySkeleton(mesh.SkeletonId);
+                _engine.DestroyMesh(mesh.MeshId);
+            }
+            catch (EngineException ex)
+            {
+                _errors.Add($"{path}: could not release the previous version ({ex.Message})");
+            }
+        }
+        foreach (string path in _textures.Keys.Where(p => !_textureStamps.TryGetValue(p, out FileStamp? s) || s != StampOf(p)).ToList())
+        {
+            int id = _textures[path];
+            _textures.Remove(path);
+            _textureStamps.Remove(path);
+            try
+            {
+                _engine.DestroyTexture(id);
+            }
+            catch (EngineException ex)
+            {
+                _errors.Add($"{path}: could not release the previous version ({ex.Message})");
+            }
+        }
+        return anyMesh;
     }
 
     // ---- 노드 상태 적용 ----

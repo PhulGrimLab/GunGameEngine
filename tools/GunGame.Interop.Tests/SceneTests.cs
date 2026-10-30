@@ -294,3 +294,104 @@ public class SceneSyncTests
         Assert.Equal(RenderScene(flat), RenderScene(doc));
     }
 }
+
+public class SceneSyncReloadTests
+{
+    private const string BigQuadObj = "v -3 -3 0\nv 3 -3 0\nv 3 3 0\nv -3 3 0\nf 1 2 3 4\n";
+
+    // 같은 시각의 덮어쓰기를 변경으로 인식하지 못하는 일이 없도록 수정 시각을 확실히 앞으로 민다.
+    private static void Touch(string path) => File.SetLastWriteTimeUtc(path, File.GetLastWriteTimeUtc(path).AddSeconds(10));
+
+    private static SceneDocument OneNode(string meshPath, string? texturePath = null)
+    {
+        var doc = new SceneDocument();
+        doc.Add(new SceneNode { Name = "n", MeshPath = meshPath, TexturePath = texturePath, Color = new Vec3(0.9f, 0.6f, 0.3f) });
+        return doc;
+    }
+
+    private static byte[] Frame(EngineRenderer r)
+    {
+        r.SetCamera(new Vec3(6, 5, 9), new Vec3(0, 0, 0), 0.8f);
+        r.Render();
+        return r.Pixels.ToArray();
+    }
+
+    private static byte[] FreshFrame(string meshPath, string? texturePath = null)
+    {
+        using var r = new EngineRenderer(96, 72, useWarp: true);
+        using var sync = new SceneSync(r);
+        sync.Attach(OneNode(meshPath, texturePath));
+        return Frame(r);
+    }
+
+    [Fact]
+    public void EditedMeshFile_IsReloadedOnRebuild()
+    {
+        using var assets = new TestAssets();
+        string path = assets.WriteCubeObj("model.obj");
+        using var r = new EngineRenderer(96, 72, useWarp: true);
+        using var sync = new SceneSync(r);
+        sync.Attach(OneNode(path));
+        byte[] before = Frame(r);
+
+        sync.Rebuild();  // 파일이 그대로면 같은 화면
+        Assert.Equal(before, Frame(r));
+
+        File.WriteAllText(path, BigQuadObj);  // 에디터 밖에서 파일을 다시 내보낸 상황
+        Touch(path);
+        sync.Rebuild();
+        byte[] after = Frame(r);
+        Assert.NotEqual(before, after);
+        Assert.Equal(FreshFrame(path), after);  // 새로 시작한 에디터와 같은 화면
+        Assert.Empty(sync.Errors);
+    }
+
+    [Fact]
+    public void EditedTextureFile_IsReloadedOnRebuild()
+    {
+        using var assets = new TestAssets();
+        string mesh = assets.WriteCubeObj();
+        string texture = assets.WriteQuadTextureBmp();
+        using var r = new EngineRenderer(96, 72, useWarp: true);
+        using var sync = new SceneSync(r);
+        sync.Attach(OneNode(mesh, texture));
+        byte[] before = Frame(r);
+
+        byte[] bytes = File.ReadAllBytes(texture);
+        for (int i = 54; i < bytes.Length; i++)  // 픽셀 영역의 색을 반전
+            bytes[i] = (byte)(255 - bytes[i]);
+        File.WriteAllBytes(texture, bytes);
+        Touch(texture);
+        sync.Rebuild();
+        byte[] after = Frame(r);
+        Assert.NotEqual(before, after);
+        Assert.Equal(FreshFrame(mesh, texture), after);
+        Assert.Empty(sync.Errors);
+    }
+
+    [Fact]
+    public void ReloadWhileAnimationPlays_DropsStaleClipsAndKeepsWorking()
+    {
+        using var assets = new TestAssets();
+        string rig = new GltfBuilder().Write(assets.Directory, "rig");
+        var doc = new SceneDocument();
+        var node = new SceneNode { Name = "rig", MeshPath = rig, AnimationClip = "bend", AnimationPlaying = true };
+        doc.Add(node);
+        using var r = new EngineRenderer(96, 72, useWarp: true);
+        using var sync = new SceneSync(r);
+        sync.Attach(doc);
+        sync.Tick(0.3f);
+
+        var changed = new GltfBuilder();
+        changed.Animations.Clear();
+        changed.Animations.Add(("bend", 0f, MathF.PI));  // 같은 이름의 클립이지만 다른 내용
+        changed.Write(assets.Directory, "rig");
+        Touch(rig);
+        sync.Rebuild();  // 해제된 이전 클립 ID가 재생 상태에 남아 있으면 여기나 다음 Tick에서 엔진 오류가 난다
+        sync.Tick(0.3f);
+        r.Render();
+
+        Assert.Empty(sync.Errors);
+        Assert.Equal(["bend"], sync.GetClipNames(node));
+    }
+}

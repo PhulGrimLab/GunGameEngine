@@ -49,6 +49,15 @@ public sealed unsafe class EngineRenderer : IDisposable
 
     public int LoadTexture(string path) => CheckId(Native.gge_texture_load(Handle, path));
 
+    // ---- 리소스 해제: 어떤 오브젝트가 아직 쓰고 있으면 EngineException(먼저 오브젝트를 없애거나 바꾼다). 해제한 ID는 재사용되지 않는다. ----
+    public void DestroyMesh(int meshId) => Check(Native.gge_mesh_destroy(Handle, meshId));
+
+    public void DestroyTexture(int textureId) => Check(Native.gge_texture_destroy(Handle, textureId));
+
+    public void DestroySkeleton(int skeletonId) => Check(Native.gge_skeleton_destroy(Handle, skeletonId));
+
+    public void DestroyClip(int clipId) => Check(Native.gge_clip_destroy(Handle, clipId));
+
     // ---- 스켈레탈 애니메이션 ----
     /// <param name="vertices">정점당 float 8개</param>
     /// <param name="joints">정점당 uint 4개(본 인덱스)</param>
@@ -227,6 +236,18 @@ public sealed unsafe class EngineRenderer : IDisposable
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern void gge_renderer_destroy(nint renderer);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_mesh_destroy(nint renderer, int meshId);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_texture_destroy(nint renderer, int textureId);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_skeleton_destroy(nint renderer, int skeletonId);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_clip_destroy(nint renderer, int clipId);
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern int gge_mesh_create(nint renderer, float* vertices, int vertexCount, uint* indices, int indexCount);

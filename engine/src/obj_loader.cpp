@@ -33,6 +33,21 @@ int ResolveIndex(int index, size_t count, const char* what)
     return resolved;
 }
 
+// 면 줄의 인덱스 토큰을 정수로 바꾼다. 숫자가 아니거나 범위를 넘으면 stoi의 불투명한 메시지 대신 OBJ 오류로 설명한다.
+int ParseIndex(const std::string& token, const char* what)
+{
+    try {
+        size_t used = 0;
+        int value = std::stoi(token, &used);
+        if (used != token.size()) {
+            throw std::invalid_argument("trailing characters");
+        }
+        return value;
+    } catch (const std::logic_error&) {  // invalid_argument, out_of_range
+        throw std::runtime_error(std::string("OBJ ") + what + " index is not a valid number: '" + token + "'");
+    }
+}
+
 struct FaceVertex {
     int position;
     int uv;  // -1이면 없음
@@ -53,19 +68,28 @@ MeshData ParseObj(const std::string& text)
         std::string tag;
         tokens >> tag;
         if (tag == "v") {
-            XMFLOAT3 p;
-            tokens >> p.x >> p.y >> p.z;
+            XMFLOAT3 p{0, 0, 0};
+            if (!(tokens >> p.x >> p.y >> p.z)) {
+                // 좌표가 모자라거나 숫자가 아니면 읽히지 않은 성분이 남으므로 거부한다(선택적 w는 무시한다).
+                throw std::runtime_error("OBJ vertex needs 3 numeric coordinates: '" + line + "'");
+            }
             positions.push_back(p);
         } else if (tag == "vt") {
             XMFLOAT2 t{0, 0};
-            tokens >> t.x >> t.y;
+            if (!(tokens >> t.x)) {
+                throw std::runtime_error("OBJ texcoord needs a numeric u: '" + line + "'");
+            }
+            // v는 선택 성분(생략하면 0)이다. 값이 더 남아 있는데 숫자가 아니면 거부한다.
+            if (!(tokens >> t.y) && !tokens.eof()) {
+                throw std::runtime_error("OBJ texcoord has a non-numeric v: '" + line + "'");
+            }
             uvs.push_back({t.x, 1.0f - t.y});
         } else if (tag == "f") {
             std::vector<FaceVertex> face;
             std::string item;
             while (tokens >> item) {
                 size_t firstSlash = item.find('/');
-                int positionIndex = std::stoi(item.substr(0, firstSlash));
+                int positionIndex = ParseIndex(item.substr(0, firstSlash), "face");
                 FaceVertex fv{ResolveIndex(positionIndex, positions.size(), "face"), -1};
                 if (firstSlash != std::string::npos) {
                     size_t secondSlash = item.find('/', firstSlash + 1);
@@ -73,7 +97,7 @@ MeshData ParseObj(const std::string& text)
                                                                           ? std::string::npos
                                                                           : secondSlash - firstSlash - 1);
                     if (!uvToken.empty())
-                        fv.uv = ResolveIndex(std::stoi(uvToken), uvs.size(), "texcoord");
+                        fv.uv = ResolveIndex(ParseIndex(uvToken, "texcoord"), uvs.size(), "texcoord");
                 }
                 face.push_back(fv);
             }

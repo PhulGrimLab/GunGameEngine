@@ -157,6 +157,26 @@ GGE_API int gge_clip_create(GgeRenderer* r, float duration, int channel_count, c
     });
 }
 
+GGE_API int gge_mesh_destroy(GgeRenderer* r, int mesh_id)
+{
+    return Guard([&] { r->impl.DestroyMesh(mesh_id); return 1; });
+}
+
+GGE_API int gge_texture_destroy(GgeRenderer* r, int texture_id)
+{
+    return Guard([&] { r->impl.DestroyTexture(texture_id); return 1; });
+}
+
+GGE_API int gge_skeleton_destroy(GgeRenderer* r, int skeleton_id)
+{
+    return Guard([&] { r->impl.DestroySkeleton(skeleton_id); return 1; });
+}
+
+GGE_API int gge_clip_destroy(GgeRenderer* r, int clip_id)
+{
+    return Guard([&] { r->impl.DestroyClip(clip_id); return 1; });
+}
+
 GGE_API int gge_object_set_skeleton(GgeRenderer* r, int object_id, int skeleton_id)
 {
     return Guard([&] { r->impl.SetObjectSkeleton(object_id, skeleton_id); return 1; });

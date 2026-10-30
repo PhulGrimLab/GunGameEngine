@@ -567,6 +567,68 @@ void Test_TextureLoadFromBmp()
     gge_renderer_destroy(r);
 }
 
+// ---- 로더 견고성 (리뷰에서 확인된 결함의 재현) ----
+void Test_ObjRejectsMalformedVertexLines()
+{
+    fs::path dir = TempDir();
+    GgeRenderer* r = NewRenderer();
+    // 좌표가 모자란 v 줄은 초기화되지 않은 값이 정점이 되면 안 된다: 오류로 거부해야 한다.
+    fs::path shortVertex = dir / "short_vertex.obj";
+    WriteText(shortVertex, "v 1.0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
+    CHECK(gge_mesh_load_obj(r, shortVertex.string().c_str()) == 0);
+    CHECK(std::string(gge_last_error()).find("vertex") != std::string::npos);
+
+    fs::path textVertex = dir / "text_vertex.obj";
+    WriteText(textVertex, "v 0 abc 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
+    CHECK(gge_mesh_load_obj(r, textVertex.string().c_str()) == 0);
+
+    fs::path badTexcoord = dir / "bad_vt.obj";
+    WriteText(badTexcoord, "v 0 0 0\nv 1 0 0\nv 0 1 0\nvt abc\nf 1/1 2/1 3/1\n");
+    CHECK(gge_mesh_load_obj(r, badTexcoord.string().c_str()) == 0);
+
+    // v 좌표가 없는 vt(vt u)는 OBJ 규격상 유효하다. 선택 성분(v, w)은 생략 가능하다.
+    fs::path uOnly = dir / "vt_u_only.obj";
+    WriteText(uOnly, "v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0.5\nf 1/1 2/1 3/1\n");
+    CHECK(gge_mesh_load_obj(r, uOnly.string().c_str()) > 0);
+
+    // 숫자가 아닌 면 인덱스는 불투명한 stoi 메시지가 아니라 OBJ 오류로 설명되어야 한다.
+    fs::path badFace = dir / "bad_face.obj";
+    WriteText(badFace, "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 x 3\n");
+    CHECK(gge_mesh_load_obj(r, badFace.string().c_str()) == 0);
+    CHECK(std::string(gge_last_error()).find("OBJ") != std::string::npos);
+    gge_renderer_destroy(r);
+}
+
+void Test_HugeImageIsRejectedBeforeDecoding()
+{
+    // 유효한 1비트 8192x8192 BMP(파일은 약 8MB지만 RGBA로 풀면 약 268MB). 한도(4096)를 넘으므로 픽셀 버퍼를
+    // 할당하기 전에 크기만 보고 거부해야 한다. (이전에는 전부 디코딩한 뒤에야 렌더러가 거부했다.)
+    constexpr uint32_t kSide = 8192, kRowBytes = ((kSide + 31) / 32) * 4, kPixelBytes = kRowBytes * kSide;
+    constexpr uint32_t kPixelOffset = 14 + 40 + 8;  // 파일 헤더 + 정보 헤더 + 팔레트 2개
+    std::vector<uint8_t> header(kPixelOffset, 0);
+    auto put32 = [&](size_t at, uint32_t v) { std::memcpy(&header[at], &v, 4); };
+    header[0] = 'B'; header[1] = 'M';
+    put32(2, kPixelOffset + kPixelBytes); put32(10, kPixelOffset); put32(14, 40);
+    put32(18, kSide); put32(22, kSide);
+    header[26] = 1; header[28] = 1;  // 평면 1, 1비트/픽셀
+    put32(34, kPixelBytes); put32(46, 2);
+    header[58] = header[59] = header[60] = 255;  // 팔레트[1] = 흰색 (팔레트[0]은 검정)
+    fs::path bmp = TempDir() / "huge.bmp";
+    {
+        std::ofstream f(bmp, std::ios::binary);
+        f.write(reinterpret_cast<const char*>(header.data()), static_cast<std::streamsize>(header.size()));
+        std::vector<char> zeros(kRowBytes, 0);
+        for (uint32_t row = 0; row < kSide; ++row) {
+            f.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
+        }
+    }
+    GgeRenderer* r = NewRenderer();
+    CHECK(gge_texture_load(r, bmp.string().c_str()) == 0);
+    CHECK(std::string(gge_last_error()).find("too large") != std::string::npos);
+    gge_renderer_destroy(r);
+    fs::remove(bmp);  // 8MB짜리 임시 파일은 남기지 않는다
+}
+
 void Test_AffineMatchesPerspectiveWhenFacingCamera()
 {
     // 카메라와 정면인 평면은 원근 보정 여부와 무관하게 UV가 선형이므로 결과가 같아야 한다.
@@ -1789,6 +1851,57 @@ void Test_WorldMatrixCacheTracksChangesBetweenFrames()
     }
 }
 
+// ---- 리소스 해제 ----
+void Test_ResourceDestroyRespectsUsageAndIds()
+{
+    GgeRenderer* r = NewRenderer();
+    CHECK(gge_mesh_destroy(r, 99) == 0);  // 알 수 없는 ID와 0은 실패
+    CHECK(gge_mesh_destroy(r, 0) == 0);
+    CHECK(gge_texture_destroy(r, 99) == 0);
+    CHECK(gge_skeleton_destroy(r, 99) == 0);
+    CHECK(gge_clip_destroy(r, 99) == 0);
+
+    // 메시: 오브젝트가 쓰는 동안은 거부하고(렌더는 그대로 동작), 오브젝트를 없앤 뒤에는 해제된다.
+    int mesh = CubeMesh(r);
+    int obj = gge_object_create(r, mesh, 0, 0);
+    gge_renderer_set_camera(r, 0, 0, 6, 0, 0, 0, 0.8f);
+    Image before = Render(r);
+    CHECK(gge_mesh_destroy(r, mesh) == 0);
+    CHECK(std::strstr(gge_last_error(), "in use by object") != nullptr);
+    CHECK(Render(r).bgra == before.bgra);
+    CHECK(gge_object_destroy(r, obj) == 1);
+    CHECK(gge_mesh_destroy(r, mesh) == 1);
+    CHECK(gge_mesh_destroy(r, mesh) == 0);          // 이중 해제
+    CHECK(gge_object_create(r, mesh, 0, 0) == 0);    // 해제된 ID는 더 못 쓴다
+    int mesh2 = CubeMesh(r);
+    CHECK(mesh2 > mesh);                             // ID는 재사용되지 않는다
+
+    // 텍스처: 오브젝트가 다른 텍스처로 바꾸면 해제할 수 있다.
+    int tex = gge_texture_create(r, kQuadTexture, 2, 2);
+    int obj2 = gge_object_create(r, mesh2, tex, 0);
+    CHECK(gge_texture_destroy(r, tex) == 0);
+    CHECK(gge_object_set_texture(r, obj2, 0) == 1);
+    CHECK(gge_texture_destroy(r, tex) == 1);
+    CHECK(gge_object_set_texture(r, obj2, tex) == 0);  // 해제된 텍스처는 지정할 수 없다
+
+    // 스켈레톤/클립: 오브젝트가 스켈레톤을 쓰거나 클립으로 포즈를 잡고 있는 동안은 거부한다.
+    int skinnedMesh = SkinnedTube(r);
+    int skeleton = ChainSkeleton(r);
+    int clip = CreateClip(r, 1.0f, {ZRotation(1, 0, 1)});
+    int obj3 = gge_object_create(r, skinnedMesh, 0, 0);
+    CHECK(gge_object_set_skeleton(r, obj3, skeleton) == 1);
+    CHECK(gge_object_set_pose(r, obj3, clip, 0.5f, 0, 0, 0) == 1);
+    CHECK(gge_skeleton_destroy(r, skeleton) == 0);
+    CHECK(gge_clip_destroy(r, clip) == 0);
+    CHECK(gge_object_set_skeleton(r, obj3, 0) == 1);
+    CHECK(gge_skeleton_destroy(r, skeleton) == 1);
+    CHECK(gge_clip_destroy(r, clip) == 0);             // 클립은 아직 포즈에 쓰인다
+    CHECK(gge_object_set_pose(r, obj3, 0, 0, 0, 0, 0) == 1);
+    CHECK(gge_clip_destroy(r, clip) == 1);
+    CHECK(gge_object_set_pose(r, obj3, clip, 0, 0, 0, 0) == 0);  // 해제된 클립은 지정할 수 없다
+    gge_renderer_destroy(r);
+}
+
 }  // namespace
 
 int main()
@@ -1814,6 +1927,8 @@ int main()
         {"TextureIsUprightAndPointSampled", Test_TextureIsUprightAndPointSampled},
         {"ObjUvIsUpright", Test_ObjUvIsUpright},
         {"TextureLoadFromBmp", Test_TextureLoadFromBmp},
+        {"ObjRejectsMalformedVertexLines", Test_ObjRejectsMalformedVertexLines},
+        {"HugeImageIsRejectedBeforeDecoding", Test_HugeImageIsRejectedBeforeDecoding},
         {"AffineMatchesPerspectiveWhenFacingCamera", Test_AffineMatchesPerspectiveWhenFacingCamera},
         {"AffineDistortsReceedingPlane", Test_AffineDistortsReceedingPlane},
         {"GoldenFloorAffine", Test_GoldenFloorAffine},
@@ -1855,6 +1970,7 @@ int main()
         {"ResetInputFrameDropsStaleLatch", Test_ResetInputFrameDropsStaleLatch},
         {"InputMoveThroughCollisionPerCamera", Test_InputMoveThroughCollisionPerCamera},
         {"WorldMatrixCacheTracksChangesBetweenFrames", Test_WorldMatrixCacheTracksChangesBetweenFrames},
+        {"ResourceDestroyRespectsUsageAndIds", Test_ResourceDestroyRespectsUsageAndIds},
     };
     for (const Case& c : cases) {
         int before = g_failures;
