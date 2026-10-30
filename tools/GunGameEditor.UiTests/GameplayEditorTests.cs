@@ -205,6 +205,33 @@ public sealed class GameplayEditorTests(UiHost host) : UiTestBase(host)
     });
 
     [Fact]
+    public void PlayerNodeAndSpawnFields_ValidateInput_AndRenameUpdatesTheList() => WithHeroScene((s, _) =>
+    {
+        s.Click("Add Room");  // 플레이 시작은 방이 있어야 노드 검사까지 간다
+        s.Select(s.Roots.Single());
+        s.Click("Set Player");
+        var player = (PlayerDef)s.SelectedGameplay!.Def;
+
+        s.TypeEnter(s.Field("Spawn (x, z)"), "7");  // 숫자 1개
+        Assert.StartsWith("Rejected: Spawn", s.Status);
+        s.TypeEnter(s.Field("Spawn (x, z)"), "a, b");
+        Assert.StartsWith("Rejected: Spawn", s.Status);
+        Assert.Equal(new Vec2(1, 2), player.Spawn);
+        Assert.Equal("1, 2", s.Field("Spawn (x, z)").Text);
+
+        s.TypeEnter(s.Field("Node"), "  ");
+        Assert.Equal("Rejected: node name is empty", s.Status);
+        Assert.Equal("Hero", player.Node);
+        s.TypeEnter(s.Field("Node"), " Other ");
+        Assert.Equal("Other", player.Node);  // 앞뒤 공백은 지운다
+        Assert.Equal(["Room: Room", "Player: Other"], s.GameplayLabels());
+
+        s.Click("Play");  // 없는 노드는 플레이 시작에서 사유와 함께 거부된다
+        Assert.False(s.Window.IsPlaying);
+        Assert.Contains("'Other' was not found", s.Status);
+    });
+
+    [Fact]
     public void SetPlayer_RejectsChildNode() => WithHeroScene((s, _) =>
     {
         s.Select(s.Roots.Single());

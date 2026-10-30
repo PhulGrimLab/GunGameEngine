@@ -537,11 +537,18 @@ public partial class MainWindow : Window
     }
 
     /// <summary>WASD/방향키를 입력 축으로 읽는다(오른쪽+, 화면 위쪽+). 키 상태는 창이 활성일 때만 갱신된다.</summary>
-    private static (float X, float Y) ReadPlayInput()
+    private static (float X, float Y) ReadPlayInput() => PlayInputFromKeys(Keyboard.IsKeyDown);
+
+    /// <summary>
+    /// 키 상태 조회 함수로 입력 축을 만든다: D/오른쪽 = X+, A/왼쪽 = X-, W/위 = Y+, S/아래 = Y-.
+    /// 반대 키를 같이 누르면 상쇄되어 0이다. 대각선은 (±1, ±1)로 두고 길이 제한은 엔진이 한다.
+    /// 키 상태(OS 입력)와 분리해 두어 매핑을 자동 테스트할 수 있다.
+    /// </summary>
+    internal static (float X, float Y) PlayInputFromKeys(Func<Key, bool> isDown)
     {
-        static float Axis(Key positive, Key positiveAlt, Key negative, Key negativeAlt) =>
-            (Keyboard.IsKeyDown(positive) || Keyboard.IsKeyDown(positiveAlt) ? 1f : 0f) -
-            (Keyboard.IsKeyDown(negative) || Keyboard.IsKeyDown(negativeAlt) ? 1f : 0f);
+        float Axis(Key positive, Key positiveAlt, Key negative, Key negativeAlt) =>
+            (isDown(positive) || isDown(positiveAlt) ? 1f : 0f) -
+            (isDown(negative) || isDown(negativeAlt) ? 1f : 0f);
         return (Axis(Key.D, Key.Right, Key.A, Key.Left), Axis(Key.W, Key.Up, Key.S, Key.Down));
     }
 

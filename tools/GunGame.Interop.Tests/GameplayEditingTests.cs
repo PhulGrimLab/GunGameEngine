@@ -104,6 +104,7 @@ public class GameplayEditingTests
     [InlineData("")]                      // 비어 있음
     [InlineData("0 0, 4 0")]              // 꼭짓점 2개
     [InlineData("0 0, 4 0, 4")]           // 숫자 개수가 홀수
+    [InlineData("0 0, 4 0, 4 4, 0")]      // 숫자 7개: 꼭짓점 3개 이상이지만 홀수
     [InlineData("0 0, 4 0, 4 x")]         // 숫자가 아님
     [InlineData("0 0, 4 0, 4 NaN")]       // 유한하지 않음
     [InlineData("0 0, 4 0, 4 Infinity")]
@@ -133,6 +134,14 @@ public class GameplayEditingTests
         Assert.True(GameplayEditing.TryParseNumbers("1, 2.5 -3", out float[] three));
         Assert.Equal([1f, 2.5f, -3f], three);
         Assert.False(GameplayEditing.TryParseNumbers("1, abc", out _));
+    }
+
+    [Fact]
+    public void OddLengthArrays_AreHandledWithoutThrowing_IgnoringTheDanglingValue()
+    {
+        // 손으로 만든 데이터가 홀수 길이여도 편집 화면이 죽지 않아야 한다(짝이 없는 마지막 값은 무시).
+        Assert.Equal("1, 2", GameplayEditing.FormatPolygon([1, 2, 3]));
+        Assert.Equal([2f, 3f, 0f], GameplayEditing.Translate([1f, 2f, 3f], 1, 1));
     }
 
     [Fact]

@@ -54,7 +54,8 @@ public sealed class PlayModeTests(UiHost host) : UiTestBase(host)
 
         s.Click("Play");
         Assert.True(s.Window.IsPlaying);
-        Assert.StartsWith("Playing", s.Status);
+        // 실제 30Hz 타이머가 Pump 중에 첫 Step을 돌릴 수 있다(스폰이 StartPad 안이라 Enter가 상태 표시줄을 덮는다): 둘 중 하나면 정상.
+        Assert.True(s.Status.StartsWith("Playing") || s.Window.PlayLog.Count > 0, s.Status);
         s.ButtonByLabel("Stop");
         Assert.False(s.ButtonByLabel("Add Group").IsEnabled);  // 편집은 잠긴다
         Assert.False(s.ButtonByLabel("Open Scene...").IsEnabled);
@@ -184,4 +185,37 @@ public sealed class PlayModeTests(UiHost host) : UiTestBase(host)
         Assert.Equal(yaw, s.Window.Camera.Yaw);
         Assert.Equal(playing, s.ViewportPixels());
     });
+}
+
+/// <summary>키 매핑(OS 키 상태를 읽는 부분만 분리한 순수 함수). 창이 필요 없다.</summary>
+public class PlayKeyMappingTests
+{
+    private static (float X, float Y) Map(params System.Windows.Input.Key[] down) =>
+        MainWindow.PlayInputFromKeys(down.Contains);
+
+    [Theory]
+    [InlineData(System.Windows.Input.Key.D, 1, 0)]
+    [InlineData(System.Windows.Input.Key.Right, 1, 0)]
+    [InlineData(System.Windows.Input.Key.A, -1, 0)]
+    [InlineData(System.Windows.Input.Key.Left, -1, 0)]
+    [InlineData(System.Windows.Input.Key.W, 0, 1)]
+    [InlineData(System.Windows.Input.Key.Up, 0, 1)]
+    [InlineData(System.Windows.Input.Key.S, 0, -1)]
+    [InlineData(System.Windows.Input.Key.Down, 0, -1)]
+    public void EachKeyMapsToOneAxisDirection(System.Windows.Input.Key key, float x, float y) =>
+        Assert.Equal((x, y), Map(key));
+
+    [Fact]
+    public void NoKeys_IsZero_OppositeKeysCancel_AndAltKeysDoNotDoubleCount()
+    {
+        Assert.Equal((0f, 0f), Map());
+        Assert.Equal((0f, 0f), Map(System.Windows.Input.Key.A, System.Windows.Input.Key.D));
+        Assert.Equal((0f, 0f), Map(System.Windows.Input.Key.Up, System.Windows.Input.Key.S));
+        Assert.Equal((1f, 0f), Map(System.Windows.Input.Key.D, System.Windows.Input.Key.Right));  // 같은 방향 두 키는 1
+        Assert.Equal((0f, 0f), Map(System.Windows.Input.Key.A, System.Windows.Input.Key.Right));  // 서로 다른 계열 반대 키도 상쇄
+    }
+
+    [Fact]
+    public void Diagonal_KeepsBothAxes_AndIgnoresUnrelatedKeys() =>
+        Assert.Equal((1f, -1f), Map(System.Windows.Input.Key.D, System.Windows.Input.Key.S, System.Windows.Input.Key.Space, System.Windows.Input.Key.Q));
 }
