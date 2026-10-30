@@ -282,4 +282,23 @@ GGE_API int gge_world_get_room_camera(const GgeWorld* w, int room_id, float* eye
     });
 }
 
+GGE_API int gge_world_add_box_collider(GgeWorld* w, float min_x, float min_z, float max_x, float max_z)
+{
+    return Guard([&] { return w->impl.AddBoxCollider(min_x, min_z, max_x, max_z); });
+}
+
+GGE_API int gge_world_move_circle(const GgeWorld* w, float x, float z, float dx, float dz, float radius,
+                                  float* out_xz)
+{
+    return Guard([&] {
+        if (!out_xz) {
+            throw std::runtime_error("null output argument");
+        }
+        gge::Vec2 result = w->impl.MoveCircle(x, z, dx, dz, radius);
+        out_xz[0] = result.x;
+        out_xz[1] = result.z;
+        return 1;
+    });
+}
+
 GGE_API const char* gge_last_error(void) { return gge::LastError().c_str(); }

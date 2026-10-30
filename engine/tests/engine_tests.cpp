@@ -1421,6 +1421,159 @@ void Test_RoomCameraRoundTripAndDrivesRender()
     gge_world_destroy(w);
 }
 
+// ---- 6단계: 충돌 (원형 이동체 vs 정적 AABB) ----
+struct P2 { float x, z; };
+
+P2 Move(GgeWorld* w, float x, float z, float dx, float dz, float radius)
+{
+    float out[2] = {-999.0f, -999.0f};
+    CHECK(gge_world_move_circle(w, x, z, dx, dz, radius, out) == 1);
+    return {out[0], out[1]};
+}
+
+// 원 중심에서 상자까지의 거리(중심이 상자 안이면 0).
+float DistanceToBox(P2 c, float minX, float minZ, float maxX, float maxZ)
+{
+    float nx = std::fmin(std::fmax(c.x, minX), maxX), nz = std::fmin(std::fmax(c.z, minZ), maxZ);
+    return std::hypot(c.x - nx, c.z - nz);
+}
+
+constexpr float kTol = 1e-3f;  // 밀어내기 여유(skin)와 부동소수 오차를 흡수하는 허용치
+
+void Test_ColliderAndMoveRejectBadInput()
+{
+    GgeWorld* w = gge_world_create();
+    CHECK(gge_world_add_box_collider(w, 0, 0, 1, 1) == 1);
+    CHECK(gge_world_add_box_collider(w, 1, 0, 1, 1) == 0);  // 폭 0
+    CHECK(gge_world_add_box_collider(w, 2, 0, 1, 1) == 0);  // min > max
+    CHECK(gge_world_add_box_collider(w, 0, 0, std::nanf(""), 1) == 0);
+    CHECK(gge_world_add_box_collider(w, 0, 0, INFINITY, 1) == 0);
+    CHECK(gge_world_add_box_collider(w, 5, 5, 6, 6) == 2);  // 실패한 호출이 ID를 소모하지 않았다
+
+    float out[2];
+    CHECK(gge_world_move_circle(w, 0, 0, 1, 0, 0.0f, out) == 0);
+    CHECK(gge_world_move_circle(w, 0, 0, 1, 0, -1.0f, out) == 0);
+    CHECK(gge_world_move_circle(w, std::nanf(""), 0, 1, 0, 0.5f, out) == 0);
+    CHECK(gge_world_move_circle(w, 0, 0, 1, INFINITY, 0.5f, out) == 0);
+    CHECK(gge_world_move_circle(w, 0, 0, 1, 0, 0.5f, nullptr) == 0);
+    CHECK(gge_world_move_circle(w, 0, 0, 1e9f, 0, 0.5f, out) == 0);  // 이동량 과다는 멈추지 않고 거부
+    CHECK(std::strstr(gge_last_error(), "too large") != nullptr);
+    CHECK(gge_world_move_circle(w, 0, 0, 100, 0, 0.5f, out) == 1);   // 한도 안의 큰 이동은 허용
+    gge_world_destroy(w);
+}
+
+void Test_FreeMovementIsUnchanged()
+{
+    GgeWorld* w = gge_world_create();
+    gge_world_add_box_collider(w, 10, 10, 11, 11);
+    P2 p = Move(w, 0, 0, 1.5f, -2.0f, 0.5f);
+    CHECK(std::fabs(p.x - 1.5f) < 1e-5f && std::fabs(p.z + 2.0f) < 1e-5f);
+    P2 stay = Move(w, 3, 4, 0, 0, 0.5f);  // 이동량 0
+    CHECK(stay.x == 3.0f && stay.z == 4.0f);
+    gge_world_destroy(w);
+
+    GgeWorld* empty = gge_world_create();  // 장애물이 없어도 동작
+    P2 q = Move(empty, 1, 1, 2, 3, 0.5f);
+    CHECK(std::fabs(q.x - 3.0f) < 1e-5f && std::fabs(q.z - 4.0f) < 1e-5f);
+    gge_world_destroy(empty);
+}
+
+void Test_WallStopsHeadOnAndSlidesAlongSurface()
+{
+    GgeWorld* w = gge_world_create();
+    gge_world_add_box_collider(w, 2, -5, 3, 5);  // x=2 면이 벽, 원 반지름 0.5 → 중심은 x<=1.5
+    P2 head = Move(w, 0, 0, 5, 0, 0.5f);
+    CHECK(std::fabs(head.x - 1.5f) < kTol && std::fabs(head.z) < kTol);
+
+    P2 slide = Move(w, 0, 0, 3, 2, 0.5f);  // 대각선: 벽 쪽 성분은 막히고 나란한 성분(z +2)은 그대로 남는다
+    CHECK(std::fabs(slide.x - 1.5f) < kTol && std::fabs(slide.z - 2.0f) < kTol);
+
+    P2 away = Move(w, 1.5f, 0, -2, 0, 0.5f);  // 벽에 붙은 채 반대로 가면 막히지 않는다
+    CHECK(std::fabs(away.x + 0.5f) < kTol);
+    gge_world_destroy(w);
+}
+
+void Test_CornerDoesNotPenetrate()
+{
+    GgeWorld* w = gge_world_create();
+    gge_world_add_box_collider(w, 0, 0, 2, 2);
+    // 바깥 모서리(0,0)를 향해 정확히 대각선으로: 모서리에서 반지름만큼 떨어진 곳에서 멈춘다.
+    P2 p = Move(w, -3, -3, 3, 3, 0.5f);
+    CHECK(DistanceToBox(p, 0, 0, 2, 2) >= 0.5f - kTol);
+    CHECK(std::fabs(p.x - p.z) < kTol);
+    CHECK(p.x < 0 && p.x > -0.6f);
+    // 모서리를 비스듬히 스치면 모서리를 돌아 미끄러진다(반대편으로 넘어가진 않는다).
+    P2 q = Move(w, -1, -0.2f, 4, 0.0f, 0.5f);
+    CHECK(DistanceToBox(q, 0, 0, 2, 2) >= 0.5f - kTol);
+    gge_world_destroy(w);
+}
+
+void Test_FastMoveDoesNotTunnelThroughThinWall()
+{
+    GgeWorld* w = gge_world_create();
+    gge_world_add_box_collider(w, 5, -5, 5.01f, 5);  // 두께 0.01
+    P2 p = Move(w, 0, 0, 20, 0, 0.25f);               // 한 번에 벽 너머까지
+    CHECK(p.x <= 5.0f - 0.25f + kTol);
+    gge_world_destroy(w);
+}
+
+void Test_OverlappingStartIsPushedOut()
+{
+    GgeWorld* w = gge_world_create();
+    gge_world_add_box_collider(w, 0, 0, 4, 4);
+    P2 inside = Move(w, 1, 2, 0, 0, 0.5f);  // 중심이 상자 안: 가장 가까운 면(minX)으로 나간다
+    CHECK(std::fabs(inside.x + 0.5f) < kTol && std::fabs(inside.z - 2.0f) < kTol);
+    P2 partial = Move(w, 4.2f, 2, 0, 0, 0.5f);  // 걸쳐 있음: maxX 면 밖으로
+    CHECK(std::fabs(partial.x - 4.5f) < kTol && std::fabs(partial.z - 2.0f) < kTol);
+    gge_world_destroy(w);
+}
+
+void Test_NarrowGapBlocksOnlyWhenSmallerThanDiameter()
+{
+    // z in [2,3]에 놓인 벽에 x 방향 틈이 하나 있다. 반지름 0.5(지름 1.0)인 원이 +z로 지나가려 한다.
+    auto gapResult = [](float halfGap) {
+        GgeWorld* w = gge_world_create();
+        gge_world_add_box_collider(w, -5, 2, -halfGap, 3);
+        gge_world_add_box_collider(w, halfGap, 2, 5, 3);
+        P2 p = Move(w, 0, 0, 0, 6, 0.5f);
+        gge_world_destroy(w);
+        return p;
+    };
+    P2 narrow = gapResult(0.3f);  // 틈 0.6 < 지름 1.0: 통과 못 함. 두 모서리 (±0.3, 2)에 동시에 접하는 z = 2 - 0.4 = 1.6에서 끼인다.
+    CHECK(narrow.z <= 1.6f + 1e-2f);
+    CHECK(DistanceToBox(narrow, -5, 2, -0.3f, 3) >= 0.5f - kTol);
+    CHECK(DistanceToBox(narrow, 0.3f, 2, 5, 3) >= 0.5f - kTol);
+    P2 wide = gapResult(0.7f);    // 틈 1.4 > 지름 1.0: 통과
+    CHECK(std::fabs(wide.z - 6.0f) < kTol && std::fabs(wide.x) < kTol);
+}
+
+void Test_RandomWalkNeverPenetratesAndStaysInArena()
+{
+    GgeWorld* w = gge_world_create();
+    struct B { float x0, z0, x1, z1; };
+    std::vector<B> boxes = {
+        {-12, -12, 12, -10}, {-12, 10, 12, 12}, {-12, -12, -10, 12}, {10, -12, 12, 12},  // 둘레 벽(안쪽 면 ±10)
+        {-6, -6, -4, -4}, {4, -6, 6, -4}, {-6, 4, -4, 6}, {4, 4, 6, 6}, {-1, -1, 1, 1},  // 기둥(서로 지름보다 넓게 이격)
+    };
+    for (const B& b : boxes) CHECK(gge_world_add_box_collider(w, b.x0, b.z0, b.x1, b.z1) > 0);
+
+    const float radius = 0.4f;
+    uint32_t seed = 12345;
+    auto rnd = [&]() {  // [-1, 1) 결정적 난수
+        seed = seed * 1664525u + 1013904223u;
+        return static_cast<float>(seed >> 8) / static_cast<float>(1 << 23) - 1.0f;
+    };
+    P2 pos = {-8.0f, 0.0f};
+    float worstClearance = 1e9f;
+    for (int i = 0; i < 3000; ++i) {
+        pos = Move(w, pos.x, pos.z, rnd() * 2.5f, rnd() * 2.5f, radius);  // 반지름보다 훨씬 큰 이동 포함
+        for (const B& b : boxes) worstClearance = std::fmin(worstClearance, DistanceToBox(pos, b.x0, b.z0, b.x1, b.z1));
+        CHECK(std::fabs(pos.x) < 10.0f && std::fabs(pos.z) < 10.0f);
+    }
+    CHECK(worstClearance >= radius - kTol);
+    gge_world_destroy(w);
+}
+
 }  // namespace
 
 int main()
@@ -1472,6 +1625,14 @@ int main()
         {"FindRoomHandlesConcaveAndBoundary", Test_FindRoomHandlesConcaveAndBoundary},
         {"ActiveRoomSwitchesAndKeepsHysteresis", Test_ActiveRoomSwitchesAndKeepsHysteresis},
         {"RoomCameraRoundTripAndDrivesRender", Test_RoomCameraRoundTripAndDrivesRender},
+        {"ColliderAndMoveRejectBadInput", Test_ColliderAndMoveRejectBadInput},
+        {"FreeMovementIsUnchanged", Test_FreeMovementIsUnchanged},
+        {"WallStopsHeadOnAndSlidesAlongSurface", Test_WallStopsHeadOnAndSlidesAlongSurface},
+        {"CornerDoesNotPenetrate", Test_CornerDoesNotPenetrate},
+        {"FastMoveDoesNotTunnelThroughThinWall", Test_FastMoveDoesNotTunnelThroughThinWall},
+        {"OverlappingStartIsPushedOut", Test_OverlappingStartIsPushedOut},
+        {"NarrowGapBlocksOnlyWhenSmallerThanDiameter", Test_NarrowGapBlocksOnlyWhenSmallerThanDiameter},
+        {"RandomWalkNeverPenetratesAndStaysInArena", Test_RandomWalkNeverPenetratesAndStaysInArena},
     };
     for (const Case& c : cases) {
         int before = g_failures;

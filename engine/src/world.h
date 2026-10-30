@@ -1,6 +1,8 @@
 #pragma once
 #include <vector>
 
+#include "collision.h"
+
 namespace gge {
 
 // 방에 배정된 고정 카메라. 값은 gge_renderer_set_camera에 그대로 넘길 수 있다.
@@ -11,7 +13,7 @@ struct RoomCamera {
 };
 
 // 게임플레이 월드. 렌더러와 독립이라 D3D 없이 검증할 수 있다.
-// 지금은 고정 카메라 방만 가지며, 이후 충돌과 트리거가 같은 월드에 더해진다.
+// 지금은 고정 카메라 방과 정적 충돌체(AABB)를 가지며, 이후 입력/트리거가 같은 월드에 더해진다.
 //
 // 방: 바닥(XZ 평면) 위 단순 다각형 영역 하나에 고정 카메라 하나가 대응한다. Y(높이)는 보지 않는다.
 // Owner: GgeWorld(capi.cpp)가 소유한다. 스레드 안전하지 않으며 호출자가 한 스레드에서 사용한다.
@@ -34,6 +36,14 @@ public:
 
     int ActiveRoom() const { return _activeRoom; }
 
+    // 정적 장애물(XZ 평면의 축 정렬 사각형)을 추가하고 ID(>0)를 반환한다.
+    // 값이 유한하지 않거나 min >= max이면 예외를 던진다.
+    int AddBoxCollider(float minX, float minZ, float maxX, float maxZ);
+
+    // 반지름 radius인 원형 이동체를 (x,z)에서 (dx,dz)만큼 움직인 최종 위치를 반환한다(벽 슬라이딩 포함, collision.h 참고).
+    // radius <= 0, 유한하지 않은 값, 한 번의 이동량이 radius 대비 너무 크면(kMaxMoveSteps 초과) 예외를 던진다.
+    Vec2 MoveCircle(float x, float z, float dx, float dz, float radius) const;
+
     // 방 카메라. 알 수 없는 ID면 예외를 던진다.
     const RoomCamera& GetRoomCamera(int roomId) const;
 
@@ -45,6 +55,7 @@ private:
 
     const Room& RoomById(int roomId) const;
 
+    std::vector<Box> _boxes;  // 인덱스 + 1 == 콜라이더 ID
     std::vector<Room> _rooms;  // 인덱스 + 1 == 방 ID
     int _activeRoom = 0;
 };

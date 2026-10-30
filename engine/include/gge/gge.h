@@ -125,5 +125,15 @@ GGE_API int gge_world_get_active_room(const GgeWorld* w);
 GGE_API int gge_world_get_room_camera(const GgeWorld* w, int room_id, float* eye, float* target,
                                       float* fov_y_radians);
 
+// 정적 장애물: 바닥(XZ 평면) 위 축 정렬 사각형. min < max이고 유한해야 한다. 성공하면 ID(>0)를 반환한다.
+GGE_API int gge_world_add_box_collider(GgeWorld* w, float min_x, float min_z, float max_x, float max_z);
+
+// 반지름 radius인 원형 이동체를 (x,z)에서 (dx,dz)만큼 움직이고, 장애물에 막히면 벽을 따라 미끄러진 최종 위치를
+// out_xz(float[2])에 쓴다. 이동은 작은 걸음으로 나뉘어 얇은 벽을 통과하지 않는다. 시작 위치가 장애물과 겹쳐 있으면
+// 밖으로 밀려난다. radius <= 0, 비유한 값, radius 대비 지나치게 큰 이동량(radius/2의 1024배 초과)은 실패한다.
+// 월드 상태(활성 방 등)는 바뀌지 않는다.
+GGE_API int gge_world_move_circle(const GgeWorld* w, float x, float z, float dx, float dz, float radius,
+                                  float* out_xz);
+
 // 마지막 오류 메시지(UTF-8). 스레드별로 유지된다.
 GGE_API const char* gge_last_error(void);

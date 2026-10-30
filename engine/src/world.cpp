@@ -12,6 +12,8 @@ constexpr int kMinPolygonVertices = 3;
 constexpr double kPi = 3.14159265358979323846;
 // 경계 위 판정과 퇴화(면적 0, 한 직선 위) 판정에 쓰는 허용 오차. 월드 단위(미터급 좌표)에 맞춘 값.
 constexpr double kEpsilon = 1e-6;
+// 한 번의 MoveCircle이 허용하는 최대 걸음 수 환산 이동량(radius/2 걸음 기준). 초과하면 거부한다.
+constexpr float kMaxMoveSteps = 1024.0f;
 
 struct Pt {
     double x, z;
@@ -134,6 +136,37 @@ int World::AddRoom(const float* xz, int vertexCount, const RoomCamera& camera)
     room.camera = camera;
     _rooms.push_back(std::move(room));
     return static_cast<int>(_rooms.size());
+}
+
+int World::AddBoxCollider(float minX, float minZ, float maxX, float maxZ)
+{
+    for (float v : {minX, minZ, maxX, maxZ}) {
+        if (!std::isfinite(v)) {
+            throw std::runtime_error("box collider has a non-finite coordinate");
+        }
+    }
+    if (!(minX < maxX && minZ < maxZ)) {
+        throw std::runtime_error("box collider needs min < max on both axes");
+    }
+    _boxes.push_back({minX, minZ, maxX, maxZ});
+    return static_cast<int>(_boxes.size());
+}
+
+Vec2 World::MoveCircle(float x, float z, float dx, float dz, float radius) const
+{
+    for (float v : {x, z, dx, dz, radius}) {
+        if (!std::isfinite(v)) {
+            throw std::runtime_error("move has a non-finite argument");
+        }
+    }
+    if (!(radius > 0.0f)) {
+        throw std::runtime_error("move radius must be positive");
+    }
+    // 걸음 수가 이동량에 비례하므로, 비정상적으로 큰 이동(예: 단위 실수)이 프레임을 멈추지 않게 거부한다.
+    if (std::sqrt(dx * dx + dz * dz) > kMaxMoveSteps * radius * 0.5f) {
+        throw std::runtime_error("move distance is too large for the given radius");
+    }
+    return gge::MoveCircle(_boxes, {x, z}, {dx, dz}, radius);
 }
 
 int World::FindRoom(float x, float z) const
