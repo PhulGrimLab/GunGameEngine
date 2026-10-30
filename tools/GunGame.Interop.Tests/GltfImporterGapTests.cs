@@ -314,4 +314,56 @@ public class GltfImporterGapTests
             Assert.Equal(1f, model.Vertices[v * 8 + 5], 5);
         }
     }
+    [Fact]
+    public void GeneratedNormals_OfATube_PointAwayFromTheAxisAtEveryVertex()
+    {
+        // 정점마다 서로 다른 방향의 법선이 나와야 하므로(띠처럼 한 방향이 아님) 성분 인덱스/외적 부호 오류가 드러난다.
+        using var assets = new TestAssets();
+        ImportedModel model = GltfImporter.Import(new GltfBuilder { Skinned = false, IncludeNormals = false, Tube = true }.Write(assets.Directory, "tube_no_normals"));
+
+        const int sides = 8, rings = 13;
+        Assert.Equal(sides * rings * 8, model.Vertices.Length);
+        for (int k = 0; k < rings; k++)
+            for (int j = 0; j < sides; j++)
+            {
+                int v = k * sides + j;
+                float angle = 2 * MathF.PI * j / sides;
+                // 사각형을 대각선으로 쪼갠 삼각형의 면적 가중 평균이라 정확히 방사형은 아니다: 방향이 거의 같으면 된다(코사인 > 0.98).
+                float nx = model.Vertices[v * 8 + 3], ny = model.Vertices[v * 8 + 4], nz = model.Vertices[v * 8 + 5];
+                Assert.Equal(1f, MathF.Sqrt(nx * nx + ny * ny + nz * nz), 3);
+                Assert.True(nx * MathF.Cos(angle) + nz * MathF.Sin(angle) > 0.98f, $"vertex {v}: normal ({nx}, {ny}, {nz}) does not point away from the axis");
+            }
+    }
+
+    [Fact]
+    public void EmptySkinsArray_MeansNoSkin()
+    {
+        using var assets = new TestAssets();
+        string path = Patched(assets, new GltfBuilder { Skinned = false }, "empty_skins", d => d["skins"] = new JsonArray());
+        ImportedModel model = GltfImporter.Import(path);
+
+        Assert.Null(model.Skeleton);
+        Assert.Equal(12, model.Indices.Length);
+    }
+
+    [Fact]
+    public void UnusedJointSlot_WithZeroWeight_MayHoldAnyJointNumber()
+    {
+        // 가중치 0인 슬롯의 조인트 번호는 쓰이지 않으므로 범위를 벗어나도 거부하지 않는다(실제 파일에 흔하다). 쓰이는 슬롯은 위에서 거부 검사됨.
+        using var assets = new TestAssets();
+        string path = Patched(assets, new GltfBuilder(), "unused_slot", d =>
+        {
+            JsonNode accessor = Attribute(d, "JOINTS_0");
+            JsonNode view = ViewOf(d, accessor);
+            string uri = d["buffers"]![0]!["uri"]!.GetValue<string>();
+            byte[] bin = Convert.FromBase64String(uri[(uri.IndexOf(',') + 1)..]);
+            int slot3OfVertex0 = (view["byteOffset"]?.GetValue<int>() ?? 0) + (accessor["byteOffset"]?.GetValue<int>() ?? 0) + 3;
+            bin[slot3OfVertex0] = 200;  // 조인트는 3개뿐이다
+            d["buffers"]![0]!["uri"] = "data:application/octet-stream;base64," + Convert.ToBase64String(bin);
+        });
+
+        ImportedModel model = GltfImporter.Import(path);
+        Assert.Equal(0u, model.Joints![3]);  // 가중치 0인 슬롯은 조인트 0으로 정규화된다
+        Assert.Equal(0f, model.Weights![3]);
+    }
 }
