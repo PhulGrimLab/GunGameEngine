@@ -12,12 +12,34 @@
 namespace gge {
 
 constexpr int kVertexFloats = 8;  // position(3) + normal(3) + uv(2)
+constexpr int kMaxPointLights = 8;
 
 struct RetroSettings {
     bool vertexSnap = false;  // 클립 공간 정점을 렌더 타깃 픽셀 격자에 스냅
     int colorBits = 8;        // 채널당 비트 수. 8이면 양자화 없음
     bool dither = false;      // 4x4 오더드 디더 (colorBits < 8일 때만 의미 있음)
     bool affineTexture = false;  // 원근 보정 없이 화면 공간에서 UV 보간 (PS1 텍스처 왜곡)
+};
+
+// 조명 규약: 최종 밝기 = 앰비언트 + 방향광색 * max(0, N.-L) + 점광원 합. 점광원 i는 색 * max(0, N.l) * a^2,
+// a = saturate(1 - 거리/범위)이다. 기본값(앰비언트 0.25, 방향광색 0.75)은 조명 API가 생기기 전의 고정 조명 0.25 + 0.75 * N.-L과 같다.
+struct LightingSettings {
+    DirectX::XMFLOAT3 ambient{0.25f, 0.25f, 0.25f};
+    DirectX::XMFLOAT3 direction{-0.4f, -1.0f, -0.6f};  // 빛이 나아가는 방향(정규화해서 보관)
+    DirectX::XMFLOAT3 color{0.75f, 0.75f, 0.75f};
+};
+
+struct PointLight {
+    DirectX::XMFLOAT3 position{0, 0, 0};
+    DirectX::XMFLOAT3 color{1, 1, 1};
+    float range = 1;
+};
+
+// 평면 투영 그림자: 방향광을 y = planeY 평면에 투영한 모양을 opacity만큼 어둡게 칠한다(겹쳐도 한 번만).
+struct ShadowSettings {
+    bool enabled = false;
+    float planeY = 0;
+    float opacity = 0.5f;
 };
 
 struct Object {
@@ -28,6 +50,8 @@ struct Object {
     DirectX::XMFLOAT3 rotation{0, 0, 0};  // (pitch X, yaw Y, roll Z) 라디안
     DirectX::XMFLOAT3 scale{1, 1, 1};
     DirectX::XMFLOAT3 color{0.8f, 0.8f, 0.8f};
+    float alpha = 1;            // 1 = 불투명, 0 = 그리지 않음, 그 사이 = 알파 블렌딩(뒤에서 앞으로 정렬해 그린다)
+    bool castsShadow = false;   // ShadowSettings가 켜져 있을 때 바닥 평면에 그림자를 드리운다
 
     // 스켈레탈 애니메이션 (skeleton이 0이면 정점을 바인드 포즈 그대로 그린다)
     int skeleton = 0;
@@ -66,6 +90,16 @@ public:
     void DestroySkeleton(int id);
     void DestroyClip(int id);
 
+    // 조명. 색 성분은 유한하고 0 이상이어야 한다(1을 넘는 과노출 허용). 잘못된 값은 예외.
+    void SetAmbient(DirectX::XMFLOAT3 color);
+    void SetDirectionalLight(DirectX::XMFLOAT3 direction, DirectX::XMFLOAT3 color);  // direction은 0이 아닌 유한 벡터
+    // 점광원은 최대 kMaxPointLights개. 범위는 0보다 커야 한다. ID는 1부터, 해제 후 재사용하지 않는다.
+    int CreatePointLight(DirectX::XMFLOAT3 position, DirectX::XMFLOAT3 color, float range);
+    void SetPointLight(int id, DirectX::XMFLOAT3 position, DirectX::XMFLOAT3 color, float range);
+    void DestroyPointLight(int id);
+    // planeY 유한, opacity 0..1. 그림자는 방향광이 아래를 향할 때(y 성분 < 0)만 그려진다.
+    void SetShadow(bool enabled, float planeY, float opacity);
+
     int CreateObject(int mesh, int texture, int parent);
     void DestroyObject(int id);  // 자손까지 함께 제거
     void SetObjectParent(int id, int parent);
@@ -73,6 +107,8 @@ public:
     void SetObjectTexture(int id, int texture);
     void SetObjectTransform(int id, DirectX::XMFLOAT3 position, DirectX::XMFLOAT3 rotation, DirectX::XMFLOAT3 scale);
     void SetObjectColor(int id, DirectX::XMFLOAT3 color);
+    void SetObjectAlpha(int id, float alpha);  // 유한한 0..1
+    void SetObjectCastsShadow(int id, bool casts);
 
     // 스키닝된 메시의 최대 조인트 인덱스가 스켈레톤 본 수보다 작아야 한다. skeleton 0이면 해제.
     void SetObjectSkeleton(int id, int skeleton);
@@ -111,8 +147,15 @@ private:
     DirectX::XMMATRIX CachedWorldMatrix(const Object& o) const;
     ComPtr<ID3D11ShaderResourceView> MakeTexture(const uint8_t* rgba, int width, int height);
 
+    // Render 보조: 오브젝트 하나를 그린다. shadowPass면 그림자 투영 셰이더 경로를 쓴다.
+    void DrawObject(const Object& object, const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& proj, bool shadowPass);
+
     int width_;
     int height_;
+    LightingSettings lighting_;
+    ShadowSettings shadow_;
+    std::map<int, PointLight> pointLights_;
+    int nextPointLight_ = 1;
     DirectX::XMFLOAT3 eye_{0, 0, 5};
     DirectX::XMFLOAT3 target_{0, 0, 0};
     float fovY_ = 1.0f;
@@ -139,7 +182,11 @@ private:
     ComPtr<ID3D11Buffer> constants_;
     ComPtr<ID3D11Buffer> bones_;
     ComPtr<ID3D11RasterizerState> rasterizer_;
+    ComPtr<ID3D11RasterizerState> shadowRasterizer_;  // 평면으로 눌린 도형은 감김 방향이 제각각이라 컬링하지 않는다
     ComPtr<ID3D11DepthStencilState> depthState_;
+    ComPtr<ID3D11DepthStencilState> blendDepthState_;   // 깊이 검사만, 쓰기 없음(반투명)
+    ComPtr<ID3D11DepthStencilState> shadowDepthState_;  // 깊이 검사 + 스텐실로 픽셀당 한 번만 칠한다
+    ComPtr<ID3D11BlendState> alphaBlend_;
     ComPtr<ID3D11SamplerState> sampler_;
     ComPtr<ID3D11ShaderResourceView> whiteTexture_;
 };

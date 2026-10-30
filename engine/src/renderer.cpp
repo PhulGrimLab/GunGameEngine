@@ -17,6 +17,11 @@ using namespace DirectX;
 
 namespace {
 
+// 그림자 도형을 바닥 평면보다 살짝 띄워 깊이 충돌(z-fighting)을 막는다.
+constexpr float kShadowLift = 0.005f;
+// 방향광이 이보다 수평에 가까우면(y 성분이 작으면) 투영이 무한히 길어지므로 그림자를 그리지 않는다.
+constexpr float kMinShadowLightDown = 1e-3f;
+
 const char kShader[] = R"(
 cbuffer Frame : register(b0) {
     float4x4 viewProj;
@@ -27,6 +32,12 @@ cbuffer Frame : register(b0) {
     float4 retro;   // x: vertex snap, y: color levels (0 = off), z: dither, w: affine texture
     float4 screen;  // xy: render target size in pixels
     float4 skin;    // x: skinning enabled
+    float4 ambient;
+    float4 lightColor;
+    float4 shadow;  // x: shadow pass, y: plane y (already lifted), z: opacity
+    float4 lightMisc;  // x: point light count
+    float4 pointPos[8];    // xyz: position, w: range
+    float4 pointColor[8];
 };
 cbuffer Bones : register(b1) {
     float4x4 bones[64];
@@ -41,6 +52,7 @@ struct VSIn {
 struct VSOut {
     float4 pos : SV_POSITION;
     float3 nrm : NORMAL;
+    float3 worldPos : TEXCOORD2;
     float2 uvPerspective : TEXCOORD0;
     noperspective float2 uvAffine : TEXCOORD1;
 };
@@ -54,7 +66,14 @@ VSOut vs(VSIn i) {
         position = mul(m, float4(i.pos, 1)).xyz;
         normal = mul(m, float4(i.nrm, 0)).xyz;
     }
-    float4 p = mul(viewProj, mul(world, float4(position, 1)));
+    float3 wp = mul(world, float4(position, 1)).xyz;
+    if (shadow.x > 0.5) {
+        // 방향광을 따라 바닥 평면으로 투영한다(lightDir.y < 0은 CPU가 보장).
+        float t = (shadow.y - wp.y) / lightDir.y;
+        wp = float3(wp.x + lightDir.x * t, shadow.y, wp.z + lightDir.z * t);
+    }
+    o.worldPos = wp;
+    float4 p = mul(viewProj, float4(wp, 1));
     if (retro.x > 0.5 && p.w > 0) {
         float2 grid = screen.xy * 0.5;
         p.xy = round(p.xy / p.w * grid) / grid * p.w;
@@ -66,16 +85,31 @@ VSOut vs(VSIn i) {
     return o;
 }
 float4 ps(VSOut i) : SV_Target {
-    float d = saturate(dot(normalize(i.nrm), -lightDir.xyz));
+    if (shadow.x > 0.5)
+        return float4(0, 0, 0, shadow.z);
+    float3 n = normalize(i.nrm);
+    float d = saturate(dot(n, -lightDir.xyz));
+    float3 lit = ambient.rgb + lightColor.rgb * d;
+    for (int k = 0; k < 8; ++k) {
+        if (k >= (int)lightMisc.x)
+            break;
+        float3 toLight = pointPos[k].xyz - i.worldPos;
+        float dist = max(length(toLight), 1e-4);
+        float a = saturate(1.0 - dist / pointPos[k].w);
+        lit += pointColor[k].rgb * saturate(dot(n, toLight / dist)) * a * a;
+    }
     float2 uv = retro.w > 0.5 ? i.uvAffine : i.uvPerspective;
-    float3 c = color.rgb * tex.Sample(samp, uv).rgb * (0.25 + 0.75 * d);
+    float4 texel = tex.Sample(samp, uv);
+    if (texel.a < 0.5)
+        discard;  // 컷아웃: 텍스처 알파가 절반 미만인 텍셀은 그리지 않는다
+    float3 c = color.rgb * texel.rgb * lit;
     if (retro.y > 0) {
         static const float bayer[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
         uint2 px = (uint2)i.pos.xy & 3;
         float t = (bayer[px.y * 4 + px.x] + 0.5) / 16.0 - 0.5;
         c = saturate(floor(c * retro.y + t * retro.z + 0.5) / retro.y);
     }
-    return float4(c, 1);
+    return float4(c, color.a);
 }
 )";
 
@@ -88,7 +122,14 @@ struct Constants {
     XMFLOAT4 retro;
     XMFLOAT4 screen;
     XMFLOAT4 skin;
+    XMFLOAT4 ambient;
+    XMFLOAT4 lightColor;
+    XMFLOAT4 shadow;
+    XMFLOAT4 lightMisc;
+    XMFLOAT4 pointPos[kMaxPointLights];
+    XMFLOAT4 pointColor[kMaxPointLights];
 };
+static_assert(sizeof(Constants) % 16 == 0);
 
 // GPU 정점: pos(3) nrm(3) uv(2) joints(4, uint) weights(4). 정적 메시도 같은 레이아웃(joint 0, weight 1)을 쓴다.
 struct GpuVertex {
@@ -150,7 +191,7 @@ Renderer::Renderer(int width, int height, bool useWarp) : width_(width), height_
 
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.CPUAccessFlags = 0;
-    desc.Format = DXGI_FORMAT_D32_FLOAT;
+    desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;  // 스텐실은 그림자가 같은 픽셀을 두 번 칠하지 않게 하는 데 쓴다
     desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
     ComPtr<ID3D11Texture2D> depth;
     Check(device_->CreateTexture2D(&desc, nullptr, &depth), "CreateTexture2D(depth)");
@@ -195,6 +236,29 @@ Renderer::Renderer(int width, int height, bool useWarp) : width_(width), height_
     ds.DepthFunc = D3D11_COMPARISON_LESS;
     Check(device_->CreateDepthStencilState(&ds, &depthState_), "CreateDepthStencilState");
 
+    ds.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+    Check(device_->CreateDepthStencilState(&ds, &blendDepthState_), "CreateDepthStencilState(blend)");
+
+    ds.StencilEnable = TRUE;
+    ds.StencilReadMask = ds.StencilWriteMask = 0xFF;
+    ds.FrontFace = {D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_INCR_SAT, D3D11_COMPARISON_EQUAL};
+    ds.BackFace = ds.FrontFace;
+    Check(device_->CreateDepthStencilState(&ds, &shadowDepthState_), "CreateDepthStencilState(shadow)");
+
+    rs.CullMode = D3D11_CULL_NONE;
+    Check(device_->CreateRasterizerState(&rs, &shadowRasterizer_), "CreateRasterizerState(shadow)");
+
+    D3D11_BLEND_DESC bs{};
+    bs.RenderTarget[0].BlendEnable = TRUE;
+    bs.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    bs.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    bs.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    bs.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ZERO;  // 렌더 타깃의 알파는 항상 1로 둔다
+    bs.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
+    bs.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    bs.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    Check(device_->CreateBlendState(&bs, &alphaBlend_), "CreateBlendState");
+
     D3D11_SAMPLER_DESC sd{};
     sd.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;  // PS1은 텍스처 필터링이 없다
     sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
@@ -205,6 +269,9 @@ Renderer::Renderer(int width, int height, bool useWarp) : width_(width), height_
     whiteTexture_ = MakeTexture(white, 1, 1);
 
     pixels_.assign(static_cast<size_t>(width) * height * 4, 0);
+
+    // 기본 방향광 벡터도 SetDirectionalLight처럼 정규화해 보관한다(셰이더는 정규화된 방향을 가정한다).
+    XMStoreFloat3(&lighting_.direction, XMVector3Normalize(XMLoadFloat3(&lighting_.direction)));
 }
 
 Renderer::ComPtr<ID3D11ShaderResourceView> Renderer::MakeTexture(const uint8_t* rgba, int width, int height)
@@ -535,6 +602,92 @@ void Renderer::SetObjectTransform(int id, XMFLOAT3 position, XMFLOAT3 rotation, 
 
 void Renderer::SetObjectColor(int id, XMFLOAT3 color) { Get(id).color = color; }
 
+void Renderer::SetObjectAlpha(int id, float alpha)
+{
+    if (!std::isfinite(alpha) || alpha < 0 || alpha > 1)
+        throw std::runtime_error("alpha must be a finite number in 0..1");
+    Get(id).alpha = alpha;
+}
+
+void Renderer::SetObjectCastsShadow(int id, bool casts) { Get(id).castsShadow = casts; }
+
+namespace {
+
+void RequireColor(const XMFLOAT3& c, const char* what)
+{
+    if (!std::isfinite(c.x) || !std::isfinite(c.y) || !std::isfinite(c.z) || c.x < 0 || c.y < 0 || c.z < 0)
+        throw std::runtime_error(std::string(what) + " color must be finite and non-negative");
+}
+
+void RequireFinite(const XMFLOAT3& v, const char* what)
+{
+    if (!std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z))
+        throw std::runtime_error(std::string(what) + " must be finite");
+}
+
+void RequireRange(float range)
+{
+    if (!std::isfinite(range) || range <= 0)
+        throw std::runtime_error("point light range must be a finite number greater than 0");
+}
+
+}  // namespace
+
+void Renderer::SetAmbient(XMFLOAT3 color)
+{
+    RequireColor(color, "ambient");
+    lighting_.ambient = color;
+}
+
+void Renderer::SetDirectionalLight(XMFLOAT3 direction, XMFLOAT3 color)
+{
+    RequireFinite(direction, "light direction");
+    RequireColor(color, "directional light");
+    XMVECTOR d = XMLoadFloat3(&direction);
+    if (XMVectorGetX(XMVector3LengthSq(d)) <= 0)
+        throw std::runtime_error("light direction must not be zero");
+    XMStoreFloat3(&lighting_.direction, XMVector3Normalize(d));
+    lighting_.color = color;
+}
+
+int Renderer::CreatePointLight(XMFLOAT3 position, XMFLOAT3 color, float range)
+{
+    RequireFinite(position, "point light position");
+    RequireColor(color, "point light");
+    RequireRange(range);
+    if (static_cast<int>(pointLights_.size()) >= kMaxPointLights)
+        throw std::runtime_error("too many point lights (max " + std::to_string(kMaxPointLights) + ")");
+    int id = nextPointLight_++;
+    pointLights_[id] = {position, color, range};
+    return id;
+}
+
+void Renderer::SetPointLight(int id, XMFLOAT3 position, XMFLOAT3 color, float range)
+{
+    auto it = pointLights_.find(id);
+    if (it == pointLights_.end())
+        throw std::runtime_error("unknown point light id " + std::to_string(id));
+    RequireFinite(position, "point light position");
+    RequireColor(color, "point light");
+    RequireRange(range);
+    it->second = {position, color, range};
+}
+
+void Renderer::DestroyPointLight(int id)
+{
+    if (pointLights_.erase(id) == 0)
+        throw std::runtime_error("unknown point light id " + std::to_string(id));
+}
+
+void Renderer::SetShadow(bool enabled, float planeY, float opacity)
+{
+    if (!std::isfinite(planeY))
+        throw std::runtime_error("shadow plane height must be finite");
+    if (!std::isfinite(opacity) || opacity < 0 || opacity > 1)
+        throw std::runtime_error("shadow opacity must be a finite number in 0..1");
+    shadow_ = {enabled, planeY, opacity};
+}
+
 XMMATRIX Renderer::LocalMatrix(const Object& o) const
 {
     return XMMatrixScaling(o.scale.x, o.scale.y, o.scale.z) *
@@ -556,6 +709,52 @@ XMMATRIX Renderer::CachedWorldMatrix(const Object& o) const
     return world;
 }
 
+void Renderer::DrawObject(const Object& object, const XMMATRIX& view, const XMMATRIX& proj, bool shadowPass)
+{
+    const GpuMesh& mesh = meshes_.at(object.mesh);
+    XMMATRIX world = CachedWorldMatrix(object);
+
+    Constants c{};
+    // HLSL은 cbuffer 행렬을 열 우선으로 읽으므로, 행 벡터용 XM 행렬을 그대로 올리면 mul(M, v)가 올바른 전치가 된다.
+    XMStoreFloat4x4(&c.viewProj, view * proj);
+    XMStoreFloat4x4(&c.world, world);
+    XMStoreFloat4x4(&c.normalMatrix, XMMatrixTranspose(XMMatrixInverse(nullptr, world)));
+    c.lightDir = {lighting_.direction.x, lighting_.direction.y, lighting_.direction.z, 0};
+    c.color = {object.color.x, object.color.y, object.color.z, object.alpha};
+    c.retro = {retro_.vertexSnap ? 1.0f : 0.0f,
+               retro_.colorBits >= 8 ? 0.0f : static_cast<float>((1 << retro_.colorBits) - 1),
+               retro_.dither ? 1.0f : 0.0f, retro_.affineTexture ? 1.0f : 0.0f};
+    c.screen = {static_cast<float>(width_), static_cast<float>(height_), 0, 0};
+    c.ambient = {lighting_.ambient.x, lighting_.ambient.y, lighting_.ambient.z, 0};
+    c.lightColor = {lighting_.color.x, lighting_.color.y, lighting_.color.z, 0};
+    c.shadow = {shadowPass ? 1.0f : 0.0f, shadow_.planeY + kShadowLift, shadow_.opacity, 0};
+    c.lightMisc = {static_cast<float>(pointLights_.size()), 0, 0, 0};
+    int slot = 0;
+    for (const auto& [lightId, light] : pointLights_) {
+        c.pointPos[slot] = {light.position.x, light.position.y, light.position.z, light.range};
+        c.pointColor[slot] = {light.color.x, light.color.y, light.color.z, 0};
+        ++slot;
+    }
+
+    const bool skinning = object.skeleton != 0 && mesh.skinned;
+    c.skin = {skinning ? 1.0f : 0.0f, 0, 0, 0};
+    if (skinning) {
+        const Skeleton& skeleton = skeletons_.at(object.skeleton);
+        std::vector<XMFLOAT4X4> skin = ComputeSkinMatrices(skeleton, Pose(object));
+        skin.resize(kMaxBones);
+        context_->UpdateSubresource(bones_.Get(), 0, nullptr, skin.data(), 0, 0);
+    }
+    context_->UpdateSubresource(constants_.Get(), 0, nullptr, &c, 0, 0);
+
+    ID3D11ShaderResourceView* srv = object.texture ? textures_.at(object.texture).Get() : whiteTexture_.Get();
+    context_->PSSetShaderResources(0, 1, &srv);
+
+    UINT stride = sizeof(GpuVertex), offset = 0;
+    context_->IASetVertexBuffers(0, 1, mesh.vertices.GetAddressOf(), &stride, &offset);
+    context_->IASetIndexBuffer(mesh.indices.Get(), DXGI_FORMAT_R32_UINT, 0);
+    context_->DrawIndexed(mesh.indexCount, 0, 0);
+}
+
 void Renderer::Render()
 {
     ++renderStamp_;  // 이전 렌더의 월드 행렬 캐시를 모두 무효화한다
@@ -566,7 +765,7 @@ void Renderer::Render()
             clear[i] = std::floor(clear[i] * levels + 0.5f) / levels;
     }
     context_->ClearRenderTargetView(rtv_.Get(), clear);
-    context_->ClearDepthStencilView(dsv_.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
+    context_->ClearDepthStencilView(dsv_.Get(), D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
 
     XMMATRIX view = XMMatrixLookAtRH(XMLoadFloat3(&eye_), XMLoadFloat3(&target_), XMVectorSet(0, 1, 0, 0));
     XMMATRIX proj = XMMatrixPerspectiveFovRH(fovY_, static_cast<float>(width_) / height_, 0.1f, 100.0f);
@@ -575,6 +774,7 @@ void Renderer::Render()
     ID3D11RenderTargetView* rtv = rtv_.Get();
     context_->OMSetRenderTargets(1, &rtv, dsv_.Get());
     context_->OMSetDepthStencilState(depthState_.Get(), 0);
+    context_->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
     context_->RSSetState(rasterizer_.Get());
     context_->RSSetViewports(1, &vp);
     context_->IASetInputLayout(layout_.Get());
@@ -586,42 +786,39 @@ void Renderer::Render()
     context_->PSSetConstantBuffers(0, 1, constants_.GetAddressOf());
     context_->PSSetSamplers(0, 1, sampler_.GetAddressOf());
 
+    // 1) 불투명: 깊이 쓰기. 2) 그림자: 바닥 평면에 투영, 스텐실로 한 번만. 3) 반투명: 먼 것부터, 깊이 쓰기 없음.
+    // 그림자를 반투명보다 먼저 그리므로 반투명 물체가 그림자 위에 올바르게 섞인다.
+    std::vector<std::pair<float, const Object*>> translucent;
     for (const auto& [id, object] : objects_) {
-        if (object.mesh == 0)
+        if (object.mesh == 0 || object.alpha <= 0)
             continue;
-        const GpuMesh& mesh = meshes_.at(object.mesh);
-        XMMATRIX world = CachedWorldMatrix(object);
-
-        Constants c;
-        // HLSL은 cbuffer 행렬을 열 우선으로 읽으므로, 행 벡터용 XM 행렬을 그대로 올리면 mul(M, v)가 올바른 전치가 된다.
-        XMStoreFloat4x4(&c.viewProj, view * proj);
-        XMStoreFloat4x4(&c.world, world);
-        XMStoreFloat4x4(&c.normalMatrix, XMMatrixTranspose(XMMatrixInverse(nullptr, world)));
-        XMStoreFloat4(&c.lightDir, XMVector3Normalize(XMVectorSet(-0.4f, -1.0f, -0.6f, 0)));
-        c.color = {object.color.x, object.color.y, object.color.z, 1};
-        c.retro = {retro_.vertexSnap ? 1.0f : 0.0f,
-                   retro_.colorBits >= 8 ? 0.0f : static_cast<float>((1 << retro_.colorBits) - 1),
-                   retro_.dither ? 1.0f : 0.0f, retro_.affineTexture ? 1.0f : 0.0f};
-        c.screen = {static_cast<float>(width_), static_cast<float>(height_), 0, 0};
-
-        const bool skinning = object.skeleton != 0 && mesh.skinned;
-        c.skin = {skinning ? 1.0f : 0.0f, 0, 0, 0};
-        if (skinning) {
-            const Skeleton& skeleton = skeletons_.at(object.skeleton);
-            std::vector<XMFLOAT4X4> skin = ComputeSkinMatrices(skeleton, Pose(object));
-            skin.resize(kMaxBones);
-            context_->UpdateSubresource(bones_.Get(), 0, nullptr, skin.data(), 0, 0);
+        if (object.alpha >= 1) {
+            DrawObject(object, view, proj, false);
+        } else {
+            XMVECTOR position = CachedWorldMatrix(object).r[3];
+            float distanceSq = XMVectorGetX(XMVector3LengthSq(position - XMLoadFloat3(&eye_)));
+            translucent.emplace_back(distanceSq, &object);
         }
-        context_->UpdateSubresource(constants_.Get(), 0, nullptr, &c, 0, 0);
+    }
 
-        ID3D11ShaderResourceView* srv =
-            object.texture ? textures_.at(object.texture).Get() : whiteTexture_.Get();
-        context_->PSSetShaderResources(0, 1, &srv);
+    if (shadow_.enabled && lighting_.direction.y < -kMinShadowLightDown) {
+        context_->OMSetDepthStencilState(shadowDepthState_.Get(), 0);
+        context_->OMSetBlendState(alphaBlend_.Get(), nullptr, 0xFFFFFFFF);
+        context_->RSSetState(shadowRasterizer_.Get());
+        for (const auto& [id, object] : objects_)
+            if (object.mesh != 0 && object.castsShadow && object.alpha > 0)
+                DrawObject(object, view, proj, true);
+    }
 
-        UINT stride = sizeof(GpuVertex), offset = 0;
-        context_->IASetVertexBuffers(0, 1, mesh.vertices.GetAddressOf(), &stride, &offset);
-        context_->IASetIndexBuffer(mesh.indices.Get(), DXGI_FORMAT_R32_UINT, 0);
-        context_->DrawIndexed(mesh.indexCount, 0, 0);
+    if (!translucent.empty()) {
+        // 멀수록 먼저. 거리가 같으면 오브젝트 ID 순(map 순회 순서를 stable_sort가 유지)이라 결과가 결정적이다.
+        std::stable_sort(translucent.begin(), translucent.end(),
+                         [](const auto& a, const auto& b) { return a.first > b.first; });
+        context_->OMSetDepthStencilState(blendDepthState_.Get(), 0);
+        context_->OMSetBlendState(alphaBlend_.Get(), nullptr, 0xFFFFFFFF);
+        context_->RSSetState(rasterizer_.Get());
+        for (const auto& [distanceSq, object] : translucent)
+            DrawObject(*object, view, proj, false);
     }
 
     context_->CopyResource(staging_.Get(), colorTarget_.Get());

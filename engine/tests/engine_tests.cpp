@@ -2721,6 +2721,604 @@ void Test_RotationKeysOnArbitraryAxesMatchAnIndependentReference()
     gge_renderer_destroy(r);
 }
 
+// ---- 7단계: 조명 / 알파 / 그림자 ----
+// 밝기 규약(gge.h): 앰비언트 + 방향광색 * max(0, N.-L) + 점광원 합. 각 테스트는 손으로 계산한 값과 비교한다(채널 오차 +-2).
+struct Px { int r, g, b; };
+
+Px PixelAt(const Image& img, int x, int y)
+{
+    uint32_t p = img.At(x, y);
+    return {Red(p), Green(p), Blue(p)};
+}
+
+Px Center(const Image& img) { return PixelAt(img, img.width / 2, img.height / 2); }
+
+bool Close(Px a, Px b, int tol = 2)
+{
+    return std::abs(a.r - b.r) <= tol && std::abs(a.g - b.g) <= tol && std::abs(a.b - b.b) <= tol;
+}
+
+Px Expect(float r, float g, float b)
+{
+    return {static_cast<int>(std::lround(r * 255)), static_cast<int>(std::lround(g * 255)), static_cast<int>(std::lround(b * 255))};
+}
+
+void Report(const char* what, Px actual, Px expected)
+{
+    std::printf("  %s: actual (%d,%d,%d) expected (%d,%d,%d)\n", what, actual.r, actual.g, actual.b, expected.r,
+                expected.g, expected.b);
+}
+
+#define CHECK_PX(what, actual, expected)                                   \
+    do {                                                                   \
+        Px a_ = (actual), e_ = (expected);                                 \
+        if (!Close(a_, e_)) Report(what, a_, e_);                          \
+        CHECK(Close(a_, e_));                                              \
+    } while (0)
+
+const float kBackgroundColor[3] = {0.05f, 0.05f, 0.08f};  // 렌더러의 지우기 색(8비트로는 13,13,20)
+
+// 월드 점이 화면(렌더 타깃 픽셀)의 어디에 찍히는지. 렌더러가 쓰는 오른손 look-at + 세로 시야각 원근을 따로 풀었다.
+bool ProjectToPixel(const float eye[3], const float target[3], float fovY, int w, int h, const float p[3], int& px, int& py)
+{
+    auto sub = [](const float* a, const float* b) { return std::array<double, 3>{a[0] - b[0], a[1] - b[1], a[2] - b[2]}; };
+    auto dot = [](const std::array<double, 3>& a, const std::array<double, 3>& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+    auto cross = [](const std::array<double, 3>& a, const std::array<double, 3>& b) {
+        return std::array<double, 3>{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+    };
+    auto norm = [&](std::array<double, 3> a) {
+        double l = std::sqrt(dot(a, a));
+        return std::array<double, 3>{a[0] / l, a[1] / l, a[2] / l};
+    };
+    auto f = norm(sub(target, eye));
+    auto right = norm(cross(f, {0, 1, 0}));
+    auto up = cross(right, f);
+    auto d = sub(p, eye);
+    double z = dot(d, f);
+    if (z <= 0) return false;
+    double tanHalf = std::tan(fovY / 2), aspect = static_cast<double>(w) / h;
+    double ndcX = dot(d, right) / (z * tanHalf * aspect), ndcY = dot(d, up) / (z * tanHalf);
+    px = static_cast<int>(std::floor((ndcX * 0.5 + 0.5) * w));
+    py = static_cast<int>(std::floor((1 - (ndcY * 0.5 + 0.5)) * h));
+    return px >= 0 && px < w && py >= 0 && py < h;
+}
+
+void SetDirectional(GgeRenderer* r, float dx, float dy, float dz, float cr, float cg, float cb)
+{
+    const float dir[3] = {dx, dy, dz}, color[3] = {cr, cg, cb};
+    CHECK(gge_renderer_set_directional_light(r, dir, color) == 1);
+}
+
+int AddPoint(GgeRenderer* r, float x, float y, float z, float cr, float cg, float cb, float range)
+{
+    const float pos[3] = {x, y, z}, color[3] = {cr, cg, cb};
+    int id = gge_light_create_point(r, pos, color, range);
+    CHECK(id > 0);
+    return id;
+}
+
+// 정면 사각형(+Z 면, 한 변 2*half)을 카메라 (0,0,5)에서 본다. 화면 중앙이 사각형 중앙이다.
+int FacingQuad(GgeRenderer* r, float cr, float cg, float cb, float z = 0, float half = 2.0f)
+{
+    int obj = gge_object_create(r, QuadMesh(r, half), 0, 0);
+    CHECK(obj > 0);
+    CHECK(gge_object_set_color(r, obj, cr, cg, cb) == 1);
+    Place(r, obj, 0, 0, z);
+    gge_renderer_set_camera(r, 0, 0, 5, 0, 0, 0, 0.8f);
+    return obj;
+}
+
+// 바닥(y=0, 위 향함)을 비스듬히 본다. 화면 중앙이 월드 원점이다.
+int WhiteFloor(GgeRenderer* r, float half = 6.0f)
+{
+    int obj = gge_object_create(r, FloorMesh(r, half, 1.0f), 0, 0);
+    CHECK(obj > 0);
+    CHECK(gge_object_set_color(r, obj, 1, 1, 1) == 1);
+    gge_renderer_set_camera(r, 0, 6, 3, 0, 0, 0, 0.8f);
+    return obj;
+}
+
+void Test_DefaultLightingIsTheOldFixedLight()
+{
+    // 조명 API를 부르지 않으면 이전의 고정 조명 0.25 + 0.75 * N.-L과 같아야 한다(정규화 포함).
+    GgeRenderer* r = NewRenderer();
+    FacingQuad(r, 1, 1, 1);
+    float shade = 0.25f + 0.75f * (0.6f / std::sqrt(0.4f * 0.4f + 1.0f + 0.6f * 0.6f));
+    CHECK_PX("default light", Center(Render(r)), Expect(shade, shade, shade));
+    gge_renderer_destroy(r);
+}
+
+void Test_AmbientAndDirectionalLightSetTheBrightnessPerChannel()
+{
+    GgeRenderer* r = NewRenderer();
+    FacingQuad(r, 1, 1, 1);
+    SetDirectional(r, 0, 0, -5, 0.5f, 0.25f, 0.0f);  // +Z 면에 정면으로 닿는다(길이는 정규화된다)
+    CHECK(gge_renderer_set_ambient(r, 0.1f, 0.2f, 0.3f) == 1);
+    CHECK_PX("ambient + directional", Center(Render(r)), Expect(0.6f, 0.45f, 0.3f));
+
+    SetDirectional(r, 0, 0, 1, 0.5f, 0.25f, 0.0f);   // 뒤에서 비추면 N.-L < 0: 앰비언트만 남는다
+    CHECK_PX("light from behind", Center(Render(r)), Expect(0.1f, 0.2f, 0.3f));
+
+    SetDirectional(r, 0, -1, -1, 1, 1, 1);           // 45도: N.-L = cos 45
+    CHECK(gge_renderer_set_ambient(r, 0, 0, 0) == 1);
+    float c = std::cos(kPi / 4);
+    CHECK_PX("45 degrees", Center(Render(r)), Expect(c, c, c));
+
+    CHECK(gge_renderer_set_ambient(r, 3, 3, 3) == 1);  // 과노출은 흰색으로 포화
+    CHECK_PX("overexposed", Center(Render(r)), Expect(1, 1, 1));
+    gge_renderer_destroy(r);
+}
+
+void Test_ObjectColorAndTextureMultiplyTheLight()
+{
+    GgeRenderer* r = NewRenderer();
+    FacingQuad(r, 0.5f, 1.0f, 0.25f);
+    SetDirectional(r, 0, 0, -1, 0, 0, 0);
+    CHECK(gge_renderer_set_ambient(r, 0.8f, 0.8f, 0.8f) == 1);
+    CHECK_PX("color * ambient", Center(Render(r)), Expect(0.4f, 0.8f, 0.2f));
+    gge_renderer_destroy(r);
+}
+
+void Test_PointLightFallsOffWithDistanceAndAngle()
+{
+    GgeRenderer* r = NewRenderer();
+    WhiteFloor(r);
+    SetDirectional(r, 0, -1, 0, 0, 0, 0);
+    CHECK(gge_renderer_set_ambient(r, 0, 0, 0) == 1);  // 점광원만 남긴다
+    const float pos[3] = {0, 2, 0}, white[3] = {1, 1, 1};
+    int light = gge_light_create_point(r, pos, white, 4.0f);
+    CHECK(light > 0);
+
+    // 바로 아래: 거리 2, 범위 4 -> a = 0.5, a^2 = 0.25, N.l = 1
+    CHECK_PX("directly below", Center(Render(r)), Expect(0.25f, 0.25f, 0.25f));
+
+    const float higher[3] = {0, 3, 0};
+    CHECK(gge_light_set_point(r, light, higher, white, 4.0f) == 1);  // 거리 3: a = 0.25, a^2 = 0.0625
+    CHECK_PX("farther", Center(Render(r)), Expect(0.0625f, 0.0625f, 0.0625f));
+
+    const float atRange[3] = {0, 4, 0};
+    CHECK(gge_light_set_point(r, light, atRange, white, 4.0f) == 1);  // 범위 끝: 정확히 0
+    CHECK_PX("at range", Center(Render(r)), Expect(0, 0, 0));
+
+    const float beside[3] = {2, 2, 0};
+    CHECK(gge_light_set_point(r, light, beside, white, 4.0f) == 1);  // 거리 2.83, a^2 = (1-0.7071)^2, N.l = 0.7071
+    float a = 1 - std::sqrt(8.0f) / 4;
+    float lit = a * a * (2.0f / std::sqrt(8.0f));
+    CHECK_PX("oblique", Center(Render(r)), Expect(lit, lit, lit));
+
+    const float below[3] = {0, -2, 0};
+    CHECK(gge_light_set_point(r, light, below, white, 4.0f) == 1);  // 바닥 아래에서 비추면 윗면은 N.l < 0
+    CHECK_PX("light under the surface", Center(Render(r)), Expect(0, 0, 0));
+    gge_renderer_destroy(r);
+}
+
+void Test_PointLightsAddUpAndAreIndependent()
+{
+    GgeRenderer* r = NewRenderer();
+    WhiteFloor(r);
+    SetDirectional(r, 0, -1, 0, 0, 0, 0);
+    CHECK(gge_renderer_set_ambient(r, 0, 0, 0) == 1);
+    int a = AddPoint(r, 0, 2, 0, 1, 1, 1, 4);   // 중앙에서 0.25 (회색)
+    int b = AddPoint(r, 0, 2, 0, 1, 0, 0, 4);   // 같은 자리 빨강: +0.25 R
+    CHECK_PX("two lights", Center(Render(r)), Expect(0.5f, 0.25f, 0.25f));
+
+    CHECK(gge_light_destroy(r, a) == 1);
+    CHECK_PX("first removed", Center(Render(r)), Expect(0.25f, 0, 0));
+    CHECK(gge_light_destroy(r, b) == 1);
+    CHECK_PX("all removed", Center(Render(r)), Expect(0, 0, 0));
+
+    int c = AddPoint(r, 0, 2, 0, 0, 0, 1, 4);
+    CHECK(c > b);  // ID는 재사용되지 않는다
+    CHECK_PX("re-added", Center(Render(r)), Expect(0, 0, 0.25f));
+    gge_renderer_destroy(r);
+}
+
+void Test_PointLightLimitAndValidation()
+{
+    GgeRenderer* r = NewRenderer();
+    std::vector<int> ids;
+    for (int i = 0; i < 8; ++i) ids.push_back(AddPoint(r, 0, 1, 0, 1, 1, 1, 3));
+    const float pos[3] = {0, 1, 0}, white[3] = {1, 1, 1};
+    CHECK(gge_light_create_point(r, pos, white, 3) == 0);
+    CHECK(std::strstr(gge_last_error(), "too many point lights") != nullptr);
+    CHECK(gge_light_destroy(r, ids[3]) == 1);
+    CHECK(gge_light_create_point(r, pos, white, 3) > 0);  // 자리가 나면 다시 만들 수 있다
+
+    const float nan3[3] = {std::nanf(""), 0, 0}, neg[3] = {-0.1f, 0, 0}, inf3[3] = {0, INFINITY, 0};
+    struct Case { const float* p; const float* c; float range; const char* expected; };
+    const Case cases[] = {
+        {nan3, white, 3, "position must be finite"},
+        {pos, neg, 3, "color must be finite and non-negative"},
+        {pos, inf3, 3, "color must be finite and non-negative"},
+        {pos, white, 0, "range must be a finite number greater than 0"},
+        {pos, white, -1, "range must be a finite number greater than 0"},
+        {pos, white, std::nanf(""), "range must be a finite number greater than 0"},
+        {pos, white, INFINITY, "range must be a finite number greater than 0"},
+        {nullptr, white, 3, "null vector"},
+        {pos, nullptr, 3, "null vector"},
+    };
+    CHECK(gge_light_destroy(r, ids[4]) == 1);  // 자리를 하나 비워 두어, 거부가 "가득 참" 때문이 아님을 보인다
+    for (const Case& c : cases) {
+        CHECK(gge_light_create_point(r, c.p, c.c, c.range) == 0);
+        bool named = std::strstr(gge_last_error(), c.expected) != nullptr;
+        if (!named) std::printf("  expected '%s', got '%s'\n", c.expected, gge_last_error());
+        CHECK(named);
+        CHECK(gge_light_set_point(r, ids[0], c.p, c.c, c.range) == 0);
+    }
+    CHECK(gge_light_set_point(r, 9999, pos, white, 3) == 0);
+    CHECK(std::strstr(gge_last_error(), "unknown point light id") != nullptr);
+    CHECK(gge_light_destroy(r, 9999) == 0);
+    CHECK(gge_light_destroy(r, ids[3]) == 0);  // 이미 해제한 ID
+
+    // 전역 조명 인자
+    const float zero[3] = {0, 0, 0}, dir[3] = {0, -1, 0};
+    CHECK(gge_renderer_set_ambient(r, -0.1f, 0, 0) == 0);
+    CHECK(gge_renderer_set_ambient(r, 0, std::nanf(""), 0) == 0);
+    CHECK(gge_renderer_set_directional_light(r, zero, white) == 0);
+    CHECK(std::strstr(gge_last_error(), "must not be zero") != nullptr);
+    CHECK(gge_renderer_set_directional_light(r, nan3, white) == 0);
+    CHECK(gge_renderer_set_directional_light(r, dir, neg) == 0);
+    CHECK(gge_renderer_set_directional_light(r, nullptr, white) == 0);
+    gge_renderer_destroy(r);
+}
+
+void Test_RejectedLightingChangesLeaveTheImageUnchanged()
+{
+    GgeRenderer* r = NewRenderer();
+    FacingQuad(r, 1, 1, 1);
+    Image before = Render(r);
+    CHECK(gge_renderer_set_ambient(r, -1, 0, 0) == 0);
+    const float zero[3] = {0, 0, 0}, white[3] = {1, 1, 1};
+    CHECK(gge_renderer_set_directional_light(r, zero, white) == 0);
+    CHECK(gge_renderer_set_shadow(r, 1, std::nanf(""), 0.5f) == 0);
+    CHECK(Render(r).bgra == before.bgra);
+    gge_renderer_destroy(r);
+}
+
+void Test_ObjectAlphaBlendsWithWhatIsBehind()
+{
+    GgeRenderer* r = NewRenderer();
+    int back = FacingQuad(r, 1, 0, 0, -1.0f, 3.0f);  // 불투명 빨강(뒤)
+    (void)back;
+    int front = gge_object_create(r, QuadMesh(r, 2.0f), 0, 0);
+    gge_object_set_color(r, front, 0, 0, 1);
+    Place(r, front, 0, 0, 1.0f);
+    SetDirectional(r, 0, 0, -1, 0, 0, 0);
+    CHECK(gge_renderer_set_ambient(r, 1, 1, 1) == 1);  // 밝기 1: 출력 = 오브젝트 색
+
+    CHECK(gge_object_set_alpha(r, front, 0.25f) == 1);
+    CHECK_PX("25% blue over red", Center(Render(r)), Expect(0.75f, 0, 0.25f));
+    CHECK(gge_object_set_alpha(r, front, 0.5f) == 1);
+    CHECK_PX("50%", Center(Render(r)), Expect(0.5f, 0, 0.5f));
+    CHECK(gge_object_set_alpha(r, front, 1.0f) == 1);
+    CHECK_PX("opaque", Center(Render(r)), Expect(0, 0, 1));
+    CHECK(gge_object_set_alpha(r, front, 0.0f) == 1);
+    CHECK_PX("invisible", Center(Render(r)), Expect(1, 0, 0));
+    gge_renderer_destroy(r);
+}
+
+void Test_TranslucentOrderDoesNotDependOnCreationOrderAndNeverHidesWhatIsBehindIt()
+{
+    // 빨강 불투명(가장 뒤) 위에 초록(중간) 50%, 파랑(앞) 50%를 겹친다: 먼 것부터 섞으면 (0.25, 0.25, 0.5).
+    auto build = [&](bool nearFirst) {
+        GgeRenderer* r = NewRenderer();
+        FacingQuad(r, 1, 0, 0, -2.0f, 4.0f);
+        SetDirectional(r, 0, 0, -1, 0, 0, 0);
+        gge_renderer_set_ambient(r, 1, 1, 1);
+        int mid = 0, nearObj = 0;
+        auto make = [&](float cr, float cg, float cb, float z) {
+            int o = gge_object_create(r, QuadMesh(r, 2.0f), 0, 0);
+            gge_object_set_color(r, o, cr, cg, cb);
+            gge_object_set_alpha(r, o, 0.5f);
+            Place(r, o, 0, 0, z);
+            return o;
+        };
+        if (nearFirst) { nearObj = make(0, 0, 1, 1.0f); mid = make(0, 1, 0, 0.0f); }
+        else { mid = make(0, 1, 0, 0.0f); nearObj = make(0, 0, 1, 1.0f); }
+        (void)mid; (void)nearObj;
+        Image img = Render(r);
+        gge_renderer_destroy(r);
+        return img;
+    };
+    Image a = build(true), b = build(false);
+    CHECK(a.bgra == b.bgra);
+    CHECK_PX("blue over green over red", Center(a), Expect(0.25f, 0.25f, 0.5f));
+}
+
+void Test_OpaqueObjectInFrontOccludesTranslucentOneBehind()
+{
+    GgeRenderer* r = NewRenderer();
+    FacingQuad(r, 1, 0, 0, 1.0f);  // 불투명 빨강(앞)
+    SetDirectional(r, 0, 0, -1, 0, 0, 0);
+    gge_renderer_set_ambient(r, 1, 1, 1);
+    int glass = gge_object_create(r, QuadMesh(r, 2.0f), 0, 0);
+    gge_object_set_color(r, glass, 0, 1, 0);
+    gge_object_set_alpha(r, glass, 0.5f);
+    Place(r, glass, 0, 0, -1.0f);  // 뒤: 깊이 검사로 가려져야 한다
+    CHECK_PX("translucent behind opaque", Center(Render(r)), Expect(1, 0, 0));
+    gge_renderer_destroy(r);
+}
+
+void Test_RenderTargetAlphaStaysOpaque()
+{
+    GgeRenderer* r = NewRenderer();
+    FacingQuad(r, 1, 0, 0, -1.0f, 3.0f);
+    int glass = gge_object_create(r, QuadMesh(r, 2.0f), 0, 0);
+    gge_object_set_alpha(r, glass, 0.3f);
+    Image img = Render(r);
+    CHECK(((img.At(img.width / 2, img.height / 2) >> 24) & 0xFF) == 255);  // WPF 비트맵이 반투명해지지 않는다
+    gge_renderer_destroy(r);
+}
+
+void Test_AlphaAndShadowArgumentsAreValidated()
+{
+    GgeRenderer* r = NewRenderer();
+    int obj = FacingQuad(r, 1, 1, 1);
+    for (float bad : {-0.01f, 1.01f, std::nanf(""), INFINITY, -INFINITY}) {
+        CHECK(gge_object_set_alpha(r, obj, bad) == 0);
+        CHECK(std::strstr(gge_last_error(), "alpha must be") != nullptr);
+    }
+    CHECK(gge_object_set_alpha(r, obj, 0.0f) == 1 && gge_object_set_alpha(r, obj, 1.0f) == 1);  // 경계는 허용
+    CHECK(gge_object_set_alpha(r, 9999, 0.5f) == 0);
+    CHECK(gge_object_set_casts_shadow(r, 9999, 1) == 0);
+
+    CHECK(gge_renderer_set_shadow(r, 1, 0, -0.1f) == 0);
+    CHECK(gge_renderer_set_shadow(r, 1, 0, 1.1f) == 0);
+    CHECK(std::strstr(gge_last_error(), "opacity must be") != nullptr);
+    CHECK(gge_renderer_set_shadow(r, 1, INFINITY, 0.5f) == 0);
+    CHECK(std::strstr(gge_last_error(), "plane height must be finite") != nullptr);
+    CHECK(gge_renderer_set_shadow(r, 1, 0, 0.0f) == 1 && gge_renderer_set_shadow(r, 1, 0, 1.0f) == 1);
+    gge_renderer_destroy(r);
+}
+
+void Test_TextureAlphaCutsOutTexels()
+{
+    GgeRenderer* r = NewRenderer();
+    // 위 행은 알파 0(빨강, 초록), 아래 행은 불투명(파랑, 흰색).
+    const uint8_t texture[16] = {255, 0, 0, 0, 0, 255, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255};
+    int tex = gge_texture_create(r, texture, 2, 2);
+    CHECK(tex > 0);
+    int obj = gge_object_create(r, QuadMesh(r, 2.0f), tex, 0);
+    gge_object_set_color(r, obj, 1, 1, 1);
+    gge_renderer_set_camera(r, 0, 0, 5, 0, 0, 0, 0.8f);
+    SetDirectional(r, 0, 0, -1, 0, 0, 0);
+    gge_renderer_set_ambient(r, 1, 1, 1);
+    Image img = Render(r);
+    Px background = Expect(kBackgroundColor[0], kBackgroundColor[1], kBackgroundColor[2]);
+    CHECK_PX("cut-out top-left", PixelAt(img, img.width / 2 - 8, img.height / 2 - 8), background);
+    CHECK_PX("cut-out top-right", PixelAt(img, img.width / 2 + 8, img.height / 2 - 8), background);
+    CHECK_PX("opaque bottom-left", PixelAt(img, img.width / 2 - 8, img.height / 2 + 8), Expect(0, 0, 1));
+    CHECK_PX("opaque bottom-right", PixelAt(img, img.width / 2 + 8, img.height / 2 + 8), Expect(1, 1, 1));
+
+    // 알파가 정확히 절반(128)인 텍셀은 그린다(경계: 절반 미만만 버린다).
+    const uint8_t edge[4] = {255, 255, 255, 128};
+    int edgeTex = gge_texture_create(r, edge, 1, 1);
+    gge_object_set_texture(r, obj, edgeTex);
+    CHECK_PX("alpha 128 is kept", Center(Render(r)), Expect(1, 1, 1));
+    const uint8_t low[4] = {255, 255, 255, 127};
+    gge_object_set_texture(r, obj, gge_texture_create(r, low, 1, 1));
+    CHECK_PX("alpha 127 is cut", Center(Render(r)), background);
+    gge_renderer_destroy(r);
+}
+
+// ---- 그림자 ----
+struct ShadowScene {
+    GgeRenderer* r;
+    int floor, caster;
+    float eye[3] = {0, 5, 9}, target[3] = {0, 0, 0};
+};
+
+// 바닥 + 높이 1.5에 떠 있는 한 변 1짜리 큐브. 방향광은 바로 아래, 그림자는 불투명도 0.6.
+ShadowScene MakeShadowScene()
+{
+    ShadowScene s;
+    s.r = NewRenderer(320, 240);
+    s.floor = WhiteFloor(s.r);
+    gge_renderer_set_camera(s.r, s.eye[0], s.eye[1], s.eye[2], s.target[0], s.target[1], s.target[2], 0.8f);
+    s.caster = gge_object_create(s.r, CubeMesh(s.r), 0, 0);
+    gge_object_set_color(s.r, s.caster, 1, 1, 1);
+    Place(s.r, s.caster, 0, 1.5f, 0, 0.5f);
+    gge_object_set_casts_shadow(s.r, s.caster, 1);
+    SetDirectional(s.r, 0, -1, 0, 0.75f, 0.75f, 0.75f);
+    gge_renderer_set_shadow(s.r, 1, 0.0f, 0.6f);
+    return s;
+}
+
+Px FloorAt(const ShadowScene& s, const Image& img, float x, float z)
+{
+    const float p[3] = {x, 0, z};
+    int px = 0, py = 0;
+    bool visible = ProjectToPixel(s.eye, s.target, 0.8f, img.width, img.height, p, px, py);
+    CHECK(visible);
+    return PixelAt(img, px, py);
+}
+
+void Test_ShadowDarkensTheFloorExactlyWhereTheLightIsBlocked()
+{
+    ShadowScene s = MakeShadowScene();
+    Image img = Render(s.r);
+    // 바닥은 N.-L = 1이라 밝기 1(흰색). 그림자 안은 (1 - 0.6)배.
+    CHECK_PX("lit floor", FloorAt(s, img, 2.0f, 0), Expect(1, 1, 1));
+    CHECK_PX("lit floor, other side", FloorAt(s, img, -3.0f, 1.0f), Expect(1, 1, 1));
+    CHECK_PX("shadow center", FloorAt(s, img, 0, 0), Expect(0.4f, 0.4f, 0.4f));
+    CHECK_PX("shadow near edge", FloorAt(s, img, 0.4f, 0.4f), Expect(0.4f, 0.4f, 0.4f));
+    CHECK_PX("just outside the footprint", FloorAt(s, img, 0.7f, 0), Expect(1, 1, 1));
+    CHECK_PX("just outside, z", FloorAt(s, img, 0, -0.7f), Expect(1, 1, 1));
+    gge_renderer_destroy(s.r);
+}
+
+void Test_ShadowIsPaintedOncePerPixel()
+{
+    // 큐브를 바닥으로 누르면 윗면/아랫면/옆면이 같은 자리에 여러 겹 겹친다. 겹침마다 어두워지면 0.4^2 = 0.16(41) 아래로 내려간다.
+    ShadowScene s = MakeShadowScene();
+    Image img = Render(s.r);
+    Px p = FloorAt(s, img, 0.1f, 0.1f);
+    CHECK(p.r > 95 && p.r < 110);
+    gge_renderer_destroy(s.r);
+}
+
+void Test_ShadowFollowsTheLightDirection()
+{
+    ShadowScene s = MakeShadowScene();
+    SetDirectional(s.r, -1, -1, 0, 0.75f, 0.75f, 0.75f);  // 높이 1.5의 중심이 x = -1.5로 밀려 떨어진다
+    Image img = Render(s.r);
+    float lit = 0.25f + 0.75f * std::cos(kPi / 4);       // 바닥의 N.-L = cos 45
+    CHECK_PX("old shadow spot is lit now", FloorAt(s, img, 0, 0), Expect(lit, lit, lit));
+    CHECK_PX("shifted shadow center", FloorAt(s, img, -1.5f, 0), Expect(lit * 0.4f, lit * 0.4f, lit * 0.4f));
+    CHECK_PX("far side is lit", FloorAt(s, img, 2.0f, 0), Expect(lit, lit, lit));
+    gge_renderer_destroy(s.r);
+}
+
+void Test_ShadowSwitchesAndGuards()
+{
+    ShadowScene s = MakeShadowScene();
+    Image shadowed = Render(s.r);
+    Px dark = FloorAt(s, shadowed, 0, 0);
+
+    gge_renderer_set_shadow(s.r, 0, 0.0f, 0.6f);                   // 끔
+    CHECK_PX("disabled", FloorAt(s, Render(s.r), 0, 0), Expect(1, 1, 1));
+    gge_renderer_set_shadow(s.r, 1, 0.0f, 0.0f);                   // 불투명도 0
+    CHECK_PX("opacity 0", FloorAt(s, Render(s.r), 0, 0), Expect(1, 1, 1));
+    gge_renderer_set_shadow(s.r, 1, 0.0f, 1.0f);                   // 불투명도 1: 완전히 검다
+    CHECK_PX("opacity 1", FloorAt(s, Render(s.r), 0, 0), Expect(0, 0, 0));
+    gge_renderer_set_shadow(s.r, 1, 0.0f, 0.6f);
+
+    gge_object_set_casts_shadow(s.r, s.caster, 0);                 // 드리우지 않는 오브젝트
+    CHECK_PX("does not cast", FloorAt(s, Render(s.r), 0, 0), Expect(1, 1, 1));
+    gge_object_set_casts_shadow(s.r, s.caster, 1);
+    CHECK_PX("casts again", FloorAt(s, Render(s.r), 0, 0), dark);
+
+    SetDirectional(s.r, 1, 0, 0, 0.75f, 0.75f, 0.75f);             // 수평 광선: 투영이 무한히 길어지므로 그리지 않는다
+    Image sideways = Render(s.r);
+    SetDirectional(s.r, 0, 1, 0, 0.75f, 0.75f, 0.75f);             // 위로 향함
+    CHECK(Render(s.r).bgra == sideways.bgra);                      // 둘 다 그림자 없이 같은 장면(바닥은 N.-L = 0이라 앰비언트만)
+    gge_renderer_set_shadow(s.r, 0, 0, 0.6f);
+    CHECK(Render(s.r).bgra == sideways.bgra);
+
+    gge_object_set_alpha(s.r, s.caster, 0.0f);                     // 안 그려지는 오브젝트는 그림자도 없다
+    SetDirectional(s.r, 0, -1, 0, 0.75f, 0.75f, 0.75f);
+    gge_renderer_set_shadow(s.r, 1, 0, 0.6f);
+    CHECK_PX("invisible caster", FloorAt(s, Render(s.r), 0, 0), Expect(1, 1, 1));
+    gge_renderer_destroy(s.r);
+}
+
+void Test_ShadowPlaneHeightMovesTheShadow()
+{
+    // 평면을 y = 0.5에 두면(바닥은 그대로 y = 0) 그림자는 허공(바닥 아래)에 그려져 바닥에 보이지 않는다.
+    ShadowScene s = MakeShadowScene();
+    gge_renderer_set_shadow(s.r, 1, 0.5f, 0.6f);
+    int plateau = gge_object_create(s.r, FloorMesh(s.r, 2.0f, 1.0f), 0, 0);  // 높이 0.5의 받침판
+    gge_object_set_color(s.r, plateau, 1, 1, 1);
+    Place(s.r, plateau, 0, 0.5f, 0);
+    Image img = Render(s.r);
+    const float onPlateau[3] = {0, 0.5f, 0};
+    int px = 0, py = 0;
+    CHECK(ProjectToPixel(s.eye, s.target, 0.8f, img.width, img.height, onPlateau, px, py));
+    CHECK_PX("shadow on the raised plane", PixelAt(img, px, py), Expect(0.4f, 0.4f, 0.4f));
+    gge_renderer_destroy(s.r);
+}
+
+void Test_ObjectInFrontOfTheShadowOccludesIt()
+{
+    // 그림자 점 (0,0,0)을 가리는 기둥(그림자를 드리우지 않음)이 있으면 화면에는 기둥이 보여야 한다.
+    ShadowScene s = MakeShadowScene();
+    int pillar = gge_object_create(s.r, CubeMesh(s.r), 0, 0);
+    gge_object_set_color(s.r, pillar, 0.3f, 0.6f, 0.9f);
+    const float p[3] = {0, 1.0f, 1.8f}, rot[3] = {0, 0, 0}, scale[3] = {0.5f, 1.0f, 0.4f};
+    gge_object_set_transform(s.r, pillar, p, rot, scale);
+    Image withShadow = Render(s.r);
+    gge_renderer_set_shadow(s.r, 0, 0, 0.6f);
+    Image without = Render(s.r);
+    const float spot[3] = {0, 0, 0};
+    int px = 0, py = 0;
+    CHECK(ProjectToPixel(s.eye, s.target, 0.8f, withShadow.width, withShadow.height, spot, px, py));
+    CHECK(PixelAt(withShadow, px, py).b != 255);                                    // 기둥 색이 보인다(바닥 흰색이 아님)
+    CHECK_PX("pillar hides the shadow", PixelAt(withShadow, px, py), PixelAt(without, px, py));
+    gge_renderer_destroy(s.r);
+}
+
+void Test_SkinnedObjectCastsTheShadowOfItsCurrentPose()
+{
+    GgeRenderer* r = NewRenderer(320, 240);
+    WhiteFloor(r);
+    gge_renderer_set_camera(r, 0, 6, 8, 0, 0.5f, 0, 0.8f);
+    SetDirectional(r, 0, -1, 0, 0.75f, 0.75f, 0.75f);
+    int mesh = SkinnedTube(r);
+    int skeleton = ChainSkeleton(r);
+    int bend = CreateClip(r, 1.0f, {ZRotation(1, 0, kPi / 3), ZRotation(2, 0, kPi / 3)});
+    int obj = gge_object_create(r, mesh, 0, 0);
+    gge_object_set_skeleton(r, obj, skeleton);
+    gge_object_set_color(r, obj, 0.9f, 0.6f, 0.3f);
+    gge_object_set_casts_shadow(r, obj, 1);
+    Place(r, obj, 0, 0.5f, 0);
+
+    auto leftmostShadowColumn = [&](float time) {
+        gge_object_set_pose(r, obj, bend, time, 0, 0, 0);
+        gge_renderer_set_shadow(r, 0, 0, 0.6f);
+        Image lit = Render(r);
+        gge_renderer_set_shadow(r, 1, 0, 0.6f);
+        Image shadowed = Render(r);
+        int leftmost = lit.width;
+        for (int y = 0; y < lit.height; ++y)
+            for (int x = 0; x < lit.width; ++x)
+                if (PixelAt(lit, x, y).r - PixelAt(shadowed, x, y).r > 20) leftmost = std::min(leftmost, x);
+        return leftmost;
+    };
+    // 휴식 자세(똑바로 선 튜브)의 그림자는 반지름 0.3 안쪽이고 몸통 뒤에 가려진다. 구부리면 -x 쪽 바닥(x = -0.7 너머)까지 뻗는다.
+    const float eye[3] = {0, 6, 8}, target[3] = {0, 0.5f, 0}, probe[3] = {-0.7f, 0, 0};
+    int probeX = 0, probeY = 0;
+    CHECK(ProjectToPixel(eye, target, 0.8f, 320, 240, probe, probeX, probeY));
+    int rest = leftmostShadowColumn(0.0f), bent = leftmostShadowColumn(1.0f);
+    std::printf("  leftmost shadow column: rest %d, bent %d, probe %d\n", rest, bent, probeX);
+    CHECK(rest > probeX);   // 곧게 선 자세는 그 너머에 그림자가 없다
+    CHECK(bent <= probeX);  // 구부린 자세의 그림자는 그 너머까지 닿는다
+    gge_renderer_destroy(r);
+}
+
+// 방 하나: 체크 바닥, 그림자를 드리우는 큐브와 기둥, 반투명 유리판, 색이 다른 점광원 2개.
+void BuildLitScene(GgeRenderer* r)
+{
+    int checker = gge_texture_create(r, kQuadTexture, 2, 2);
+    int floor = gge_object_create(r, FloorMesh(r, 6.0f, 3.0f), checker, 0);
+    gge_object_set_color(r, floor, 0.8f, 0.8f, 0.8f);
+    int cube = gge_object_create(r, CubeMesh(r), 0, 0);
+    gge_object_set_color(r, cube, 0.9f, 0.6f, 0.3f);
+    Place(r, cube, -1.2f, 1.1f, 0.0f, 0.6f, 0.5f);
+    gge_object_set_casts_shadow(r, cube, 1);
+    int pillar = gge_object_create(r, CubeMesh(r), 0, 0);
+    gge_object_set_color(r, pillar, 0.5f, 0.6f, 0.7f);
+    const float pp[3] = {2.2f, 1.0f, -1.0f}, rot[3] = {0, 0, 0}, ps[3] = {0.4f, 1.0f, 0.4f};
+    gge_object_set_transform(r, pillar, pp, rot, ps);
+    gge_object_set_casts_shadow(r, pillar, 1);
+    int glass = gge_object_create(r, QuadMesh(r, 1.0f), 0, 0);
+    gge_object_set_color(r, glass, 0.4f, 0.9f, 0.9f);
+    gge_object_set_alpha(r, glass, 0.5f);
+    Place(r, glass, 0.3f, 1.0f, 2.0f, 1.0f);
+    gge_renderer_set_ambient(r, 0.15f, 0.15f, 0.2f);
+    SetDirectional(r, -0.5f, -1.0f, -0.3f, 0.5f, 0.5f, 0.45f);
+    AddPoint(r, -3.5f, 1.5f, 2.0f, 1.0f, 0.2f, 0.2f, 6.0f);
+    AddPoint(r, 3.5f, 1.5f, 1.0f, 0.2f, 0.3f, 1.0f, 6.0f);
+    gge_renderer_set_shadow(r, 1, 0.0f, 0.5f);
+    gge_renderer_set_camera(r, 0, 5.0f, 9.0f, 0, 0.5f, 0, 0.8f);
+}
+
+void Test_GoldenLitScene()
+{
+    GgeRenderer* r = NewRenderer(320, 240);
+    BuildLitScene(r);
+    CHECK(MatchesGolden("lit_scene_320x240", Render(r)));
+    gge_renderer_destroy(r);
+}
+
+void Test_GoldenLitSceneRetro()
+{
+    GgeRenderer* r = NewRenderer(320, 240);
+    BuildLitScene(r);
+    gge_renderer_set_retro(r, 1, 5, 1, 1);
+    CHECK(MatchesGolden("lit_scene_retro_320x240", Render(r)));
+    gge_renderer_destroy(r);
+}
+
 }  // namespace
 
 int main()
@@ -2821,6 +3419,28 @@ int main()
         {"GgmHeaderAndIndexBoundaries", Test_GgmHeaderAndIndexBoundaries},
         {"TextureLoadEnforcesTheSizeLimitPerDimension", Test_TextureLoadEnforcesTheSizeLimitPerDimension},
         {"RotationKeysOnArbitraryAxesMatchAnIndependentReference", Test_RotationKeysOnArbitraryAxesMatchAnIndependentReference},
+        {"DefaultLightingIsTheOldFixedLight", Test_DefaultLightingIsTheOldFixedLight},
+        {"AmbientAndDirectionalLightSetTheBrightnessPerChannel", Test_AmbientAndDirectionalLightSetTheBrightnessPerChannel},
+        {"ObjectColorAndTextureMultiplyTheLight", Test_ObjectColorAndTextureMultiplyTheLight},
+        {"PointLightFallsOffWithDistanceAndAngle", Test_PointLightFallsOffWithDistanceAndAngle},
+        {"PointLightsAddUpAndAreIndependent", Test_PointLightsAddUpAndAreIndependent},
+        {"PointLightLimitAndValidation", Test_PointLightLimitAndValidation},
+        {"RejectedLightingChangesLeaveTheImageUnchanged", Test_RejectedLightingChangesLeaveTheImageUnchanged},
+        {"ObjectAlphaBlendsWithWhatIsBehind", Test_ObjectAlphaBlendsWithWhatIsBehind},
+        {"TranslucentOrderDoesNotDependOnCreationOrderAndNeverHidesWhatIsBehindIt", Test_TranslucentOrderDoesNotDependOnCreationOrderAndNeverHidesWhatIsBehindIt},
+        {"OpaqueObjectInFrontOccludesTranslucentOneBehind", Test_OpaqueObjectInFrontOccludesTranslucentOneBehind},
+        {"RenderTargetAlphaStaysOpaque", Test_RenderTargetAlphaStaysOpaque},
+        {"AlphaAndShadowArgumentsAreValidated", Test_AlphaAndShadowArgumentsAreValidated},
+        {"TextureAlphaCutsOutTexels", Test_TextureAlphaCutsOutTexels},
+        {"ShadowDarkensTheFloorExactlyWhereTheLightIsBlocked", Test_ShadowDarkensTheFloorExactlyWhereTheLightIsBlocked},
+        {"ShadowIsPaintedOncePerPixel", Test_ShadowIsPaintedOncePerPixel},
+        {"ShadowFollowsTheLightDirection", Test_ShadowFollowsTheLightDirection},
+        {"ShadowSwitchesAndGuards", Test_ShadowSwitchesAndGuards},
+        {"ShadowPlaneHeightMovesTheShadow", Test_ShadowPlaneHeightMovesTheShadow},
+        {"ObjectInFrontOfTheShadowOccludesIt", Test_ObjectInFrontOfTheShadowOccludesIt},
+        {"SkinnedObjectCastsTheShadowOfItsCurrentPose", Test_SkinnedObjectCastsTheShadowOfItsCurrentPose},
+        {"GoldenLitScene", Test_GoldenLitScene},
+        {"GoldenLitSceneRetro", Test_GoldenLitSceneRetro},
     };
     for (const Case& c : cases) {
         int before = g_failures;

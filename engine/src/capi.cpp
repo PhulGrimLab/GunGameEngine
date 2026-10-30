@@ -238,6 +238,46 @@ GGE_API int gge_object_set_color(GgeRenderer* r, int object_id, float red, float
     return Guard([&] { r->impl.SetObjectColor(object_id, {red, green, blue}); return 1; });
 }
 
+GGE_API int gge_object_set_alpha(GgeRenderer* r, int object_id, float alpha)
+{
+    return Guard([&] { r->impl.SetObjectAlpha(object_id, alpha); return 1; });
+}
+
+GGE_API int gge_object_set_casts_shadow(GgeRenderer* r, int object_id, int casts)
+{
+    return Guard([&] { r->impl.SetObjectCastsShadow(object_id, casts != 0); return 1; });
+}
+
+GGE_API int gge_renderer_set_ambient(GgeRenderer* r, float red, float green, float blue)
+{
+    return Guard([&] { r->impl.SetAmbient({red, green, blue}); return 1; });
+}
+
+GGE_API int gge_renderer_set_directional_light(GgeRenderer* r, const float* direction, const float* color)
+{
+    return Guard([&] { r->impl.SetDirectionalLight(Vec3(direction), Vec3(color)); return 1; });
+}
+
+GGE_API int gge_light_create_point(GgeRenderer* r, const float* position, const float* color, float range)
+{
+    return Guard([&] { return r->impl.CreatePointLight(Vec3(position), Vec3(color), range); });
+}
+
+GGE_API int gge_light_set_point(GgeRenderer* r, int light_id, const float* position, const float* color, float range)
+{
+    return Guard([&] { r->impl.SetPointLight(light_id, Vec3(position), Vec3(color), range); return 1; });
+}
+
+GGE_API int gge_light_destroy(GgeRenderer* r, int light_id)
+{
+    return Guard([&] { r->impl.DestroyPointLight(light_id); return 1; });
+}
+
+GGE_API int gge_renderer_set_shadow(GgeRenderer* r, int enabled, float plane_y, float opacity)
+{
+    return Guard([&] { r->impl.SetShadow(enabled != 0, plane_y, opacity); return 1; });
+}
+
 GGE_API void gge_renderer_set_camera(GgeRenderer* r, float ex, float ey, float ez, float tx, float ty,
                                      float tz, float fov_y_radians)
 {

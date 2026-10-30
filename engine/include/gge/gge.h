@@ -92,6 +92,28 @@ GGE_API int gge_object_set_texture(GgeRenderer* r, int object_id, int texture_id
 GGE_API int gge_object_set_transform(GgeRenderer* r, int object_id, const float* position,
                                      const float* rotation, const float* scale);
 GGE_API int gge_object_set_color(GgeRenderer* r, int object_id, float red, float green, float blue);
+// 불투명도 0..1(유한). 1 = 불투명(기본), 0 = 그리지 않음, 그 사이 = 알파 블렌딩. 반투명 오브젝트는 불투명을 모두 그린 뒤
+// 카메라에서 먼 것부터 깊이 쓰기 없이 섞는다(오브젝트 단위 정렬: 한 오브젝트 안의 면끼리는 정렬하지 않는다).
+// 텍스처 알파는 별개로 컷아웃에 쓰인다: 알파가 절반 미만인 텍셀은 그리지 않는다.
+GGE_API int gge_object_set_alpha(GgeRenderer* r, int object_id, float alpha);
+// 그림자를 드리울지(gge_renderer_set_shadow가 켜져 있을 때). 기본은 0.
+GGE_API int gge_object_set_casts_shadow(GgeRenderer* r, int object_id, int casts);
+
+// ---- 조명 ----
+// 밝기 = 앰비언트 + 방향광색 * max(0, N.-L) + 점광원 합. 점광원은 색 * max(0, N.l) * a^2, a = saturate(1 - 거리/범위).
+// 기본값은 앰비언트 (0.25,0.25,0.25), 방향광 방향 (-0.4,-1,-0.6), 방향광색 (0.75,0.75,0.75)로, 조명 API가 없던 때의 고정 조명과 같다.
+// 색 성분은 유한하고 0 이상(1 초과 허용). 잘못된 값은 0을 반환한다.
+GGE_API int gge_renderer_set_ambient(GgeRenderer* r, float red, float green, float blue);
+// direction은 빛이 나아가는 방향(float[3], 0이 아닌 유한 벡터, 정규화는 엔진이 한다). color는 float[3].
+GGE_API int gge_renderer_set_directional_light(GgeRenderer* r, const float* direction, const float* color);
+// 점광원은 렌더러당 최대 8개. position/color는 float[3], range > 0. ID는 1부터이며 해제 후에도 재사용되지 않는다.
+GGE_API int gge_light_create_point(GgeRenderer* r, const float* position, const float* color, float range);
+GGE_API int gge_light_set_point(GgeRenderer* r, int light_id, const float* position, const float* color, float range);
+GGE_API int gge_light_destroy(GgeRenderer* r, int light_id);
+// 평면 투영 그림자: 방향광을 y = plane_y 평면에 투영한 모양을 opacity(0..1)만큼 어둡게 칠한다. 겹치는 부분도 한 번만 칠한다.
+// 방향광이 아래를 향할 때(y 성분 < 0)만 그려진다. 바닥 평면에만 떨어지며(다른 면에는 안 떨어짐), 드리우는 오브젝트는
+// 평면 위에 있어야 한다. 기본은 꺼짐.
+GGE_API int gge_renderer_set_shadow(GgeRenderer* r, int enabled, float plane_y, float opacity);
 
 // ---- 카메라/렌더 ----
 GGE_API void gge_renderer_set_camera(GgeRenderer* r, float eye_x, float eye_y, float eye_z,
