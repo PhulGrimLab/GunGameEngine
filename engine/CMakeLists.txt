@@ -4,6 +4,7 @@ add_library(gge SHARED
     src/obj_loader.cpp
     src/mesh_io.cpp
     src/texture_loader.cpp
+    src/world.cpp
     src/capi.cpp)
 target_include_directories(gge PUBLIC include PRIVATE src)
 target_compile_definitions(gge PRIVATE GGE_EXPORTS NOMINMAX WIN32_LEAN_AND_MEAN)

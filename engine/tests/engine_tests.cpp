@@ -1289,6 +1289,138 @@ void Test_GoldenSkinnedBend()
     gge_renderer_destroy(r);
 }
 
+// ---- 6단계: 게임플레이 월드(고정 카메라 방) ----
+const float kEyeA[3] = {4, 3, 5}, kEyeB[3] = {-4, 3, 5}, kLookAt[3] = {0, 0, 0};
+
+// 축 정렬 사각형 [x0,x1]x[z0,z1]의 꼭짓점 4개(x,z 쌍).
+std::array<float, 8> Rect(float x0, float z0, float x1, float z1) { return {x0, z0, x1, z0, x1, z1, x0, z1}; }
+
+int AddRoom(GgeWorld* w, const float* xz, int n, const float* eye = kEyeA)
+{
+    return gge_world_add_room(w, xz, n, eye, kLookAt, 0.8f);
+}
+
+void Test_RoomRejectsBadInput()
+{
+    GgeWorld* w = gge_world_create();
+    auto sq = Rect(0, 0, 2, 2);
+    CHECK(AddRoom(w, sq.data(), 4) == 1);
+
+    CHECK(AddRoom(w, sq.data(), 2) == 0);   // 꼭짓점 부족
+    CHECK(AddRoom(w, nullptr, 4) == 0);
+    const float line[] = {0, 0, 1, 0, 2, 0};  // 면적 0
+    CHECK(AddRoom(w, line, 3) == 0);
+    const float dup[] = {0, 0, 0, 0, 2, 0, 2, 2};  // 길이 0인 변
+    CHECK(AddRoom(w, dup, 4) == 0);
+    const float bowtieFlat[] = {0, 0, 2, 2, 2, 0, 0, 2};  // 대칭 나비넥타이: 부호 있는 면적이 0
+    CHECK(AddRoom(w, bowtieFlat, 4) == 0);
+    const float bowtie[] = {0, 0, 4, 2, 4, 0, 0, 1};  // 비대칭: 면적은 0이 아니지만 두 변이 교차
+    CHECK(AddRoom(w, bowtie, 4) == 0);
+    CHECK(std::strstr(gge_last_error(), "self-intersecting") != nullptr);
+    const float spike[] = {0, 0, 4, 0, 2, 0, 2, 2};  // 같은 직선 위에서 되돌아가는 돌기
+    CHECK(AddRoom(w, spike, 4) == 0);
+    auto nan = sq;
+    nan[3] = std::nanf("");
+    CHECK(AddRoom(w, nan.data(), 4) == 0);
+
+    CHECK(gge_world_add_room(w, sq.data(), 4, nullptr, kLookAt, 0.8f) == 0);
+    CHECK(gge_world_add_room(w, sq.data(), 4, kEyeA, kEyeA, 0.8f) == 0);  // eye == target
+    CHECK(gge_world_add_room(w, sq.data(), 4, kEyeA, kLookAt, 0.0f) == 0);
+    CHECK(gge_world_add_room(w, sq.data(), 4, kEyeA, kLookAt, 3.2f) == 0);  // fov >= pi
+    CHECK(gge_world_add_room(w, sq.data(), 4, kEyeA, kLookAt, std::nanf("")) == 0);
+
+    auto sq2 = Rect(10, 10, 12, 12);
+    CHECK(AddRoom(w, sq2.data(), 4) == 2);  // 실패한 호출이 ID를 소모하지 않았다
+    gge_world_destroy(w);
+}
+
+void Test_FindRoomHandlesConcaveAndBoundary()
+{
+    // L자(오목): 아래 가로 막대 + 왼쪽 세로 막대. 오목 모서리 바깥 영역이 (2..4, 2..4)다.
+    const float ccw[] = {0, 0, 4, 0, 4, 2, 2, 2, 2, 4, 0, 4};
+    const float cw[] = {0, 4, 2, 4, 2, 2, 4, 2, 4, 0, 0, 0};  // 같은 도형, 반대 감김
+    const float* shapes[] = {ccw, cw};
+    for (const float* shape : shapes) {  // 감는 방향과 무관해야 한다
+        GgeWorld* w = gge_world_create();
+        int room = AddRoom(w, shape, 6);
+        CHECK(room == 1);
+        CHECK(gge_world_find_room(w, 1, 1) == room);
+        CHECK(gge_world_find_room(w, 3, 1) == room);
+        CHECK(gge_world_find_room(w, 1, 3) == room);
+        CHECK(gge_world_find_room(w, 3, 3) == 0);    // 오목 모서리 바깥
+        CHECK(gge_world_find_room(w, -0.5f, 1) == 0);
+        CHECK(gge_world_find_room(w, 5, 1) == 0);
+        CHECK(gge_world_find_room(w, 0, 1) == room);  // 변 위
+        CHECK(gge_world_find_room(w, 4, 2) == room);  // 꼭짓점
+        CHECK(gge_world_find_room(w, 2, 3) == room);  // 오목 모서리의 안쪽 변
+        gge_world_destroy(w);
+    }
+
+    GgeWorld* w = gge_world_create();
+    auto first = Rect(0, 0, 4, 4), second = Rect(2, 0, 6, 4);
+    int a = AddRoom(w, first.data(), 4), b = AddRoom(w, second.data(), 4);
+    CHECK(gge_world_find_room(w, 3, 1) == a);  // 겹치면 ID가 작은 방이 앞선다
+    CHECK(gge_world_find_room(w, 5, 1) == b);
+    gge_world_destroy(w);
+}
+
+void Test_ActiveRoomSwitchesAndKeepsHysteresis()
+{
+    GgeWorld* w = gge_world_create();
+    CHECK(gge_world_get_active_room(w) == 0);
+    CHECK(gge_world_update_active_room(w, 0, 0) == 0);  // 방이 없다
+
+    auto left = Rect(0, 0, 4, 4), right = Rect(4, 0, 8, 4), overlap = Rect(3, 0, 9, 4);
+    int a = AddRoom(w, left.data(), 4), b = AddRoom(w, right.data(), 4, kEyeB), c = AddRoom(w, overlap.data(), 4);
+    CHECK(a == 1 && b == 2 && c == 3);
+
+    CHECK(gge_world_update_active_room(w, 20, 20) == 0);   // 처음에 어떤 방에도 속하지 않음
+    CHECK(gge_world_update_active_room(w, 8.5f, 1) == c);  // c에만 속함
+    CHECK(gge_world_find_room(w, 3.5f, 1) == a);           // 조회는 ID가 작은 a를 고르지만 활성 방은 안 바뀐다
+    CHECK(gge_world_get_active_room(w) == c);
+    CHECK(gge_world_update_active_room(w, 3.5f, 1) == c);  // a·c가 겹치는 곳: 현재 방 c 유지(깜빡임 없음)
+    CHECK(gge_world_update_active_room(w, 1, 1) == a);     // c를 벗어나 a로 전환
+    CHECK(gge_world_update_active_room(w, 4, 1) == a);     // 맞닿은 경계에서도 a 유지
+    CHECK(gge_world_update_active_room(w, 4.5f, 1) == b);  // a를 벗어나 b(b,c 중 ID가 작은 방)로 전환
+    CHECK(gge_world_update_active_room(w, 20, 20) == b);   // 방 밖으로 나가도 마지막 방 유지
+    CHECK(gge_world_update_active_room(w, 3.5f, 1) == a);  // 돌아오면 다시 전환
+    gge_world_destroy(w);
+}
+
+void Test_RoomCameraRoundTripAndDrivesRender()
+{
+    GgeWorld* w = gge_world_create();
+    auto left = Rect(0, 0, 4, 4), right = Rect(6, 0, 10, 4);
+    int a = AddRoom(w, left.data(), 4, kEyeA), b = AddRoom(w, right.data(), 4, kEyeB);
+
+    float eye[3], target[3], fov = 0;
+    CHECK(gge_world_get_room_camera(w, b, eye, target, &fov) == 1);
+    CHECK(std::memcmp(eye, kEyeB, sizeof(eye)) == 0 && std::memcmp(target, kLookAt, sizeof(target)) == 0);
+    CHECK(fov == 0.8f);
+    CHECK(gge_world_get_room_camera(w, 0, eye, target, &fov) == 0);
+    CHECK(gge_world_get_room_camera(w, 3, eye, target, &fov) == 0);
+    CHECK(gge_world_get_room_camera(w, a, nullptr, target, &fov) == 0);
+
+    // 방 진입으로 고른 카메라를 렌더러에 적용하면 직접 지정한 카메라와 같은 화면이고, 방마다 화면이 다르다.
+    GgeRenderer* r = NewRenderer();
+    SetupCubeScene(r);
+    auto renderFromRoomAt = [&](float x, float z) {
+        int room = gge_world_update_active_room(w, x, z);
+        CHECK(gge_world_get_room_camera(w, room, eye, target, &fov) == 1);
+        gge_renderer_set_camera(r, eye[0], eye[1], eye[2], target[0], target[1], target[2], fov);
+        return Render(r);
+    };
+    Image inA = renderFromRoomAt(1, 1);
+    gge_renderer_set_camera(r, kEyeA[0], kEyeA[1], kEyeA[2], 0, 0, 0, 0.8f);
+    CHECK(inA.bgra == Render(r).bgra);
+    Image inB = renderFromRoomAt(8, 1);
+    gge_renderer_set_camera(r, kEyeB[0], kEyeB[1], kEyeB[2], 0, 0, 0, 0.8f);
+    CHECK(inB.bgra == Render(r).bgra);
+    CHECK(inA.bgra != inB.bgra);
+    gge_renderer_destroy(r);
+    gge_world_destroy(w);
+}
+
 }  // namespace
 
 int main()
@@ -1336,6 +1468,10 @@ int main()
         {"SkinnedRenderMatchesDeformedStaticMesh", Test_SkinnedRenderMatchesDeformedStaticMesh},
         {"ObjectTransformIsIndependentOfPose", Test_ObjectTransformIsIndependentOfPose},
         {"GoldenSkinnedBend", Test_GoldenSkinnedBend},
+        {"RoomRejectsBadInput", Test_RoomRejectsBadInput},
+        {"FindRoomHandlesConcaveAndBoundary", Test_FindRoomHandlesConcaveAndBoundary},
+        {"ActiveRoomSwitchesAndKeepsHysteresis", Test_ActiveRoomSwitchesAndKeepsHysteresis},
+        {"RoomCameraRoundTripAndDrivesRender", Test_RoomCameraRoundTripAndDrivesRender},
     };
     for (const Case& c : cases) {
         int before = g_failures;

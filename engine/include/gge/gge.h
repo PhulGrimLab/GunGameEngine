@@ -100,5 +100,30 @@ GGE_API int gge_renderer_render(GgeRenderer* r);
 // BGRA8 프레임버퍼. 다음 render 호출 전까지 유효하며 소유권은 엔진에 있다.
 GGE_API const uint8_t* gge_renderer_get_pixels(GgeRenderer* r, int* width, int* height, int* stride);
 
+// ---- 게임플레이 월드 (렌더러와 독립) ----
+// 방(room) = 바닥(XZ 평면) 위 단순 다각형 영역 + 고정 카메라. Y(높이)는 보지 않는다. 방 ID는 1부터, 0은 "없음".
+// 월드는 한 스레드에서만 사용한다.
+typedef struct GgeWorld GgeWorld;
+
+GGE_API GgeWorld* gge_world_create(void);
+GGE_API void gge_world_destroy(GgeWorld* w);
+
+// xz: (x,z) 쌍 vertex_count개(시계/반시계 모두 허용). 3개 미만, 면적 0, 변 자기 교차, 비유한 값은 실패.
+// eye/target/fov: eye != target, 0 < fov_y_radians < pi. 성공하면 방 ID를 반환한다.
+GGE_API int gge_world_add_room(GgeWorld* w, const float* xz, int vertex_count, const float* eye,
+                               const float* target, float fov_y_radians);
+
+// (x,z)를 포함하는 방 중 ID가 가장 작은 것. 없으면 0. 경계 위는 포함이다. 활성 방은 바뀌지 않는다.
+GGE_API int gge_world_find_room(const GgeWorld* w, float x, float z);
+
+// 플레이어 위치로 활성 방을 갱신하고 활성 방 ID를 반환한다. 현재 활성 방이 점을 포함하면 유지(겹친 경계에서
+// 깜빡임 방지), 아니면 find_room 결과로 전환, 어떤 방에도 속하지 않으면 마지막 활성 방을 유지한다(처음엔 0).
+GGE_API int gge_world_update_active_room(GgeWorld* w, float x, float z);
+GGE_API int gge_world_get_active_room(const GgeWorld* w);
+
+// 방 카메라를 읽는다. eye/target은 float[3], fov는 포인터(각각 NULL 불가). gge_renderer_set_camera에 그대로 넘기면 된다.
+GGE_API int gge_world_get_room_camera(const GgeWorld* w, int room_id, float* eye, float* target,
+                                      float* fov_y_radians);
+
 // 마지막 오류 메시지(UTF-8). 스레드별로 유지된다.
 GGE_API const char* gge_last_error(void);

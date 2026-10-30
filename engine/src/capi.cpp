@@ -8,10 +8,15 @@
 #include "obj_loader.h"
 #include "renderer.h"
 #include "texture_loader.h"
+#include "world.h"
 
 struct GgeRenderer {
     gge::Renderer impl;
     GgeRenderer(int w, int h, bool warp) : impl(w, h, warp) {}
+};
+
+struct GgeWorld {
+    gge::World impl;
 };
 
 namespace {
@@ -238,6 +243,43 @@ GGE_API const uint8_t* gge_renderer_get_pixels(GgeRenderer* r, int* width, int* 
     if (height) *height = r->impl.Height();
     if (stride) *stride = r->impl.Stride();
     return r->impl.Pixels();
+}
+
+GGE_API GgeWorld* gge_world_create(void) { return new GgeWorld(); }
+
+GGE_API void gge_world_destroy(GgeWorld* w) { delete w; }
+
+GGE_API int gge_world_add_room(GgeWorld* w, const float* xz, int vertex_count, const float* eye, const float* target,
+                               float fov_y_radians)
+{
+    return Guard([&] {
+        if (!eye || !target) {
+            throw std::runtime_error("null camera vector argument");
+        }
+        gge::RoomCamera camera = {{eye[0], eye[1], eye[2]}, {target[0], target[1], target[2]}, fov_y_radians};
+        return w->impl.AddRoom(xz, vertex_count, camera);
+    });
+}
+
+GGE_API int gge_world_find_room(const GgeWorld* w, float x, float z) { return w->impl.FindRoom(x, z); }
+
+GGE_API int gge_world_update_active_room(GgeWorld* w, float x, float z) { return w->impl.UpdateActiveRoom(x, z); }
+
+GGE_API int gge_world_get_active_room(const GgeWorld* w) { return w->impl.ActiveRoom(); }
+
+GGE_API int gge_world_get_room_camera(const GgeWorld* w, int room_id, float* eye, float* target,
+                                      float* fov_y_radians)
+{
+    return Guard([&] {
+        if (!eye || !target || !fov_y_radians) {
+            throw std::runtime_error("null output argument");
+        }
+        const gge::RoomCamera& camera = w->impl.GetRoomCamera(room_id);
+        std::memcpy(eye, camera.eye, sizeof(camera.eye));
+        std::memcpy(target, camera.target, sizeof(camera.target));
+        *fov_y_radians = camera.fovY;
+        return 1;
+    });
 }
 
 GGE_API const char* gge_last_error(void) { return gge::LastError().c_str(); }
