@@ -20,6 +20,8 @@ public sealed class InspectorPanel : StackPanel
     private readonly TextBox[] _rotation = NewVecBoxes();
     private readonly TextBox[] _scale = NewVecBoxes();
     private readonly TextBox[] _color = NewVecBoxes();
+    private readonly TextBox _alpha = new();
+    private readonly CheckBox _castsShadow = new() { Content = "Casts shadow", Margin = new Thickness(0, 4, 0, 0) };
     private const string RestPoseLabel = "(rest pose)";
 
     private readonly ComboBox _clip = new();
@@ -46,6 +48,11 @@ public sealed class InspectorPanel : StackPanel
         AddVecRow("Rotation (deg)", _rotation);
         AddVecRow("Scale", _scale);
         AddVecRow("Color (0-1)", _color);
+        _alpha.LostFocus += (_, _) => Commit();
+        _alpha.KeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Enter) Commit(); };
+        AddRow("Alpha (0-1)", _alpha);
+        _castsShadow.Click += (_, _) => { if (!_refreshing && _node is not null) _node.CastsShadow = _castsShadow.IsChecked == true; };
+        Children.Add(_castsShadow);
         BuildAnimationSection();
         Show(null);
     }
@@ -123,6 +130,8 @@ public sealed class InspectorPanel : StackPanel
         Fill(_rotation, n?.Rotation ?? default, DegreesPerRadian);
         Fill(_scale, n?.Scale ?? new Vec3(1, 1, 1), 1f);
         Fill(_color, n?.Color ?? default, 1f);
+        _alpha.Text = Format(n?.Alpha ?? 1f);
+        _castsShadow.IsChecked = n?.CastsShadow ?? false;
         _speed.Text = Format(n?.AnimationSpeed ?? 1f);
         _refreshing = false;
         UpdateClips();
@@ -137,6 +146,8 @@ public sealed class InspectorPanel : StackPanel
         _node.Rotation = Read(_rotation, _node.Rotation, DegreesPerRadian);
         _node.Scale = Read(_scale, _node.Scale, 1f);
         _node.Color = Read(_color, _node.Color, 1f);
+        float alpha = Edited(_alpha.Text, _node.Alpha, 1f);
+        _node.Alpha = alpha >= 0 && alpha <= 1 ? alpha : _node.Alpha;  // 0..1 밖의 값은 이전 값으로 되돌린다
         _node.AnimationSpeed = Edited(_speed.Text, _node.AnimationSpeed, 1f);
         Refresh();  // 잘못 입력한 값은 이전 값으로 되돌린다
     }

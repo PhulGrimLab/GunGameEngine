@@ -31,6 +31,36 @@ public static class SceneSerializer
         public int Version { get; set; }
         public List<NodeDto>? Nodes { get; set; }
         public GameplayDto? Gameplay { get; set; }  // 선택: 없으면 게임플레이 데이터가 없는 씬(이전 버전 파일과 호환)
+        public LightingDto? Lighting { get; set; }  // 선택: 없으면 기본 조명(이전 버전 파일과 호환)
+    }
+
+    private sealed class LightingDto
+    {
+        public float[]? Ambient { get; set; }
+        public SunDto? Sun { get; set; }
+        public List<PointLightDto?>? Points { get; set; }
+        public ShadowDto? Shadow { get; set; }
+    }
+
+    private sealed class SunDto
+    {
+        public float[]? Direction { get; set; }
+        public float[]? Color { get; set; }
+    }
+
+    private sealed class PointLightDto
+    {
+        public string? Name { get; set; }
+        public float[]? Position { get; set; }
+        public float[]? Color { get; set; }
+        public float? Range { get; set; }
+    }
+
+    private sealed class ShadowDto
+    {
+        public bool? Enabled { get; set; }
+        public float? PlaneY { get; set; }
+        public float? Opacity { get; set; }
     }
 
     private sealed class GameplayDto
@@ -89,6 +119,8 @@ public static class SceneSerializer
         public string? Clip { get; set; }
         public bool? Playing { get; set; }
         public float? Speed { get; set; }
+        public float? Alpha { get; set; }
+        public bool? CastsShadow { get; set; }
         public List<NodeDto>? Children { get; set; }
     }
 
@@ -104,6 +136,7 @@ public static class SceneSerializer
             Version = CurrentVersion,
             Nodes = document.Roots.Select(n => ToDto(n, baseDir)).ToList(),
             Gameplay = document.Gameplay.IsEmpty ? null : ToDto(document.Gameplay),
+            Lighting = document.Lighting.IsDefault ? null : ToDto(document.Lighting),
         };
         string json = JsonSerializer.Serialize(file, Options);
 
@@ -147,6 +180,7 @@ public static class SceneSerializer
         foreach (NodeDto? dto in file.Nodes)
             document.Add(FromDto(dto, baseDir, depth: 1), null);
         document.Gameplay = FromDto(file.Gameplay);
+        document.Lighting = FromDto(file.Lighting);
         return document;
     }
 
@@ -162,6 +196,8 @@ public static class SceneSerializer
         Clip = node.AnimationClip,
         Playing = node.AnimationClip is null ? null : node.AnimationPlaying,
         Speed = node.AnimationClip is null || node.AnimationSpeed == 1f ? null : node.AnimationSpeed,
+        Alpha = node.Alpha == 1f ? null : node.Alpha,
+        CastsShadow = node.CastsShadow ? true : null,
         Children = node.Children.Count == 0 ? null : node.Children.Select(c => ToDto(c, baseDir)).ToList(),
     };
 
@@ -183,6 +219,9 @@ public static class SceneSerializer
         if (dto.Scale is not null) node.Scale = ToVec3(dto.Scale, "scale");
         if (dto.Color is not null) node.Color = ToVec3(dto.Color, "color");
         node.AnimationClip = dto.Clip;
+        if (dto.Alpha is { } alpha)
+            node.Alpha = float.IsFinite(alpha) && alpha >= 0 && alpha <= 1 ? alpha : throw new SceneFormatException("'alpha' must be a number between 0 and 1");
+        if (dto.CastsShadow is { } casts) node.CastsShadow = casts;
         if (dto.Playing is { } playing) node.AnimationPlaying = playing;
         if (dto.Speed is { } speed)
             node.AnimationSpeed = float.IsFinite(speed) ? speed : throw new SceneFormatException("'speed' must be a finite number");
@@ -289,6 +328,84 @@ public static class SceneSerializer
             };
         }
         return data;
+    }
+
+    private static LightingDto ToDto(LightingData data) => new()
+    {
+        Ambient = ToArray(data.Ambient),
+        Sun = new SunDto { Direction = ToArray(data.SunDirection), Color = ToArray(data.SunColor) },
+        Points = data.PointLights.Count == 0
+            ? null
+            : data.PointLights.Select(p => (PointLightDto?)new PointLightDto { Name = p.Name, Position = ToArray(p.Position), Color = ToArray(p.Color), Range = p.Range }).ToList(),
+        Shadow = data.ShadowEnabled || data.ShadowPlaneY != 0 || data.ShadowOpacity != LightingData.DefaultShadowOpacity
+            ? new ShadowDto { Enabled = data.ShadowEnabled, PlaneY = data.ShadowPlaneY, Opacity = data.ShadowOpacity }
+            : null,
+    };
+
+    /// <summary>조명 섹션을 읽는다(없으면 기본 조명). 엔진이 거부할 값(음수 색, 0 방향, 범위 0 이하, 점광원 9개 이상 등)은
+    /// 여기서 사유와 함께 거부해, 열기 실패가 로드 후 엔진 오류보다 먼저 알려지게 한다.</summary>
+    private static LightingData FromDto(LightingDto? dto)
+    {
+        var data = new LightingData();
+        if (dto is null)
+            return data;
+
+        if (dto.Ambient is not null)
+            data.Ambient = ToColor(dto.Ambient, "lighting 'ambient'");
+        if (dto.Sun is { } sun)
+        {
+            if (sun.Direction is not null)
+            {
+                Vec3 direction = ToVec3(sun.Direction, "lighting sun 'direction'");
+                if (direction == default)
+                    throw new SceneFormatException("lighting sun 'direction' must not be zero");
+                data.SunDirection = direction;
+            }
+            if (sun.Color is not null)
+                data.SunColor = ToColor(sun.Color, "lighting sun 'color'");
+        }
+
+        List<PointLightDto?> points = dto.Points ?? [];
+        if (points.Count > LightingData.MaxPointLights)
+            throw new SceneFormatException($"lighting has {points.Count} point lights; at most {LightingData.MaxPointLights} are supported");
+        foreach (PointLightDto? point in points)
+        {
+            if (point is null)
+                throw new SceneFormatException("lighting.points contains a null entry");
+            string name = point.Name ?? "Light";
+            float range = point.Range ?? 6f;
+            if (!float.IsFinite(range) || range <= 0)
+                throw new SceneFormatException($"point light '{name}': 'range' must be a positive finite number");
+            data.PointLights.Add(new PointLightDef
+            {
+                Name = name,
+                Position = ToVec3(point.Position ?? throw new SceneFormatException($"point light '{name}' needs a 'position'"), $"point light '{name}' position"),
+                Color = point.Color is null ? new Vec3(1, 1, 1) : ToColor(point.Color, $"point light '{name}' color"),
+                Range = range,
+            });
+        }
+
+        if (dto.Shadow is { } shadow)
+        {
+            float planeY = shadow.PlaneY ?? 0f, opacity = shadow.Opacity ?? LightingData.DefaultShadowOpacity;
+            if (!float.IsFinite(planeY))
+                throw new SceneFormatException("lighting shadow 'planeY' must be a finite number");
+            if (!float.IsFinite(opacity) || opacity < 0 || opacity > 1)
+                throw new SceneFormatException("lighting shadow 'opacity' must be a number between 0 and 1");
+            data.ShadowEnabled = shadow.Enabled ?? false;
+            data.ShadowPlaneY = planeY;
+            data.ShadowOpacity = opacity;
+        }
+        return data;
+    }
+
+    /// <summary>조명 색: 유한하고 0 이상인 3개의 숫자(1을 넘는 과노출은 허용).</summary>
+    private static Vec3 ToColor(float[] values, string field)
+    {
+        Vec3 color = ToVec3(values, field);
+        if (color.X < 0 || color.Y < 0 || color.Z < 0)
+            throw new SceneFormatException($"{field} must not be negative");
+        return color;
     }
 
     private static float[] ToPolygon(float[]? values, string owner)

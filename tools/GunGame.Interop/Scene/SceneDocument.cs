@@ -11,6 +11,9 @@ public sealed class SceneDocument
     /// 에디터에는 아직 편집 UI가 없어 씬 파일(JSON)에서 읽어 온다.</summary>
     public GameplayData Gameplay { get; set; } = new();
 
+    /// <summary>앰비언트/방향광/점광원/그림자. 노드 구조와는 독립이며 SceneSync.ApplyLighting이 엔진에 반영한다.</summary>
+    public LightingData Lighting { get; set; } = new();
+
     /// <summary>노드가 추가/삭제/이동될 때 발생한다. 속성 변경은 포함하지 않는다.</summary>
     public event Action? StructureChanged;
 

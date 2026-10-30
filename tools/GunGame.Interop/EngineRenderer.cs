@@ -179,6 +179,45 @@ public sealed unsafe class EngineRenderer : IDisposable
     public void SetObjectColor(int objectId, Vec3 rgb) =>
         Check(Native.gge_object_set_color(Handle, objectId, rgb.X, rgb.Y, rgb.Z));
 
+    /// <summary>오브젝트 불투명도 0..1. 1 = 불투명(기본), 0 = 그리지 않음, 사이 = 알파 블렌딩.</summary>
+    public void SetObjectAlpha(int objectId, float alpha) => Check(Native.gge_object_set_alpha(Handle, objectId, alpha));
+
+    /// <summary>SetShadow가 켜져 있을 때 이 오브젝트가 바닥 평면에 그림자를 드리울지.</summary>
+    public void SetObjectCastsShadow(int objectId, bool casts) =>
+        Check(Native.gge_object_set_casts_shadow(Handle, objectId, casts ? 1 : 0));
+
+    // ---- 조명 (규약은 gge.h) ----
+    public void SetAmbient(Vec3 rgb) => Check(Native.gge_renderer_set_ambient(Handle, rgb.X, rgb.Y, rgb.Z));
+
+    /// <param name="direction">빛이 나아가는 방향(0이 아닌 벡터, 엔진이 정규화)</param>
+    public void SetDirectionalLight(Vec3 direction, Vec3 color)
+    {
+        float* d = stackalloc float[3] { direction.X, direction.Y, direction.Z };
+        float* c = stackalloc float[3] { color.X, color.Y, color.Z };
+        Check(Native.gge_renderer_set_directional_light(Handle, d, c));
+    }
+
+    /// <summary>점광원을 만든다(렌더러당 최대 8개). 돌려주는 ID는 SetPointLight/DestroyPointLight에 쓴다.</summary>
+    public int CreatePointLight(Vec3 position, Vec3 color, float range)
+    {
+        float* p = stackalloc float[3] { position.X, position.Y, position.Z };
+        float* c = stackalloc float[3] { color.X, color.Y, color.Z };
+        return CheckId(Native.gge_light_create_point(Handle, p, c, range));
+    }
+
+    public void SetPointLight(int lightId, Vec3 position, Vec3 color, float range)
+    {
+        float* p = stackalloc float[3] { position.X, position.Y, position.Z };
+        float* c = stackalloc float[3] { color.X, color.Y, color.Z };
+        Check(Native.gge_light_set_point(Handle, lightId, p, c, range));
+    }
+
+    public void DestroyPointLight(int lightId) => Check(Native.gge_light_destroy(Handle, lightId));
+
+    /// <summary>평면 투영 그림자: 방향광을 y = planeY 평면에 투영해 opacity(0..1)만큼 어둡게 칠한다.</summary>
+    public void SetShadow(bool enabled, float planeY, float opacity) =>
+        Check(Native.gge_renderer_set_shadow(Handle, enabled ? 1 : 0, planeY, opacity));
+
     // ---- 카메라/렌더 ----
     public void SetCamera(Vec3 eye, Vec3 target, float fovYRadians) =>
         Native.gge_renderer_set_camera(Handle, eye.X, eye.Y, eye.Z, target.X, target.Y, target.Z, fovYRadians);
@@ -315,6 +354,30 @@ public sealed unsafe class EngineRenderer : IDisposable
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern int gge_object_set_color(nint renderer, int objectId, float r, float g, float b);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_object_set_alpha(nint renderer, int objectId, float alpha);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_object_set_casts_shadow(nint renderer, int objectId, int casts);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_renderer_set_ambient(nint renderer, float r, float g, float b);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_renderer_set_directional_light(nint renderer, float* direction, float* color);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_light_create_point(nint renderer, float* position, float* color, float range);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_light_set_point(nint renderer, int lightId, float* position, float* color, float range);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_light_destroy(nint renderer, int lightId);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_renderer_set_shadow(nint renderer, int enabled, float planeY, float opacity);
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern void gge_renderer_set_camera(nint renderer, float ex, float ey, float ez, float tx, float ty, float tz, float fovY);

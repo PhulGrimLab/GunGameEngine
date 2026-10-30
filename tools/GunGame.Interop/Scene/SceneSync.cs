@@ -39,6 +39,7 @@ public sealed class SceneSync : IDisposable
     private readonly Dictionary<SceneNode, Entry> _entries = [];
     private readonly Dictionary<SceneNode, AnimationPlayer> _players = [];
     private readonly List<int> _rootObjects = [];
+    private readonly List<int> _pointLights = [];
     private readonly List<string> _errors = [];
     private readonly List<string> _warnings = [];
     private SceneDocument? _document;
@@ -66,6 +67,7 @@ public sealed class SceneSync : IDisposable
         _document = document;
         document.StructureChanged += OnStructureChanged;
         Rebuild();
+        ApplyLighting();  // 문서마다 조명이 다르므로 Rebuild가 지운 오류 목록 뒤에 반영한다(실패 사유가 남게)
     }
 
     /// <summary>노드의 메시가 가진 애니메이션 클립 이름들(없으면 빈 목록).</summary>
@@ -282,6 +284,35 @@ public sealed class SceneSync : IDisposable
     {
         _engine.SetObjectTransform(objectId, node.Position, node.Rotation, node.Scale);
         _engine.SetObjectColor(objectId, node.Color);
+        _engine.SetObjectAlpha(objectId, node.Alpha);
+        _engine.SetObjectCastsShadow(objectId, node.CastsShadow);
+    }
+
+    /// <summary>
+    /// 문서의 조명(앰비언트, 방향광, 점광원, 그림자)을 엔진에 반영한다: 이전 점광원은 모두 없애고 다시 만든다.
+    /// 문서에 값이 있어도 엔진이 받아들이지 못한 경우(파일에서 읽을 때 걸러지므로 코드로 직접 넣은 값뿐)는 Errors에 사유를 남긴다.
+    /// Attach가 부르며, 조명을 편집한 쪽(에디터)도 값을 바꿀 때마다 부른다. 다시 그리기는 호출자가 한다.
+    /// </summary>
+    public void ApplyLighting()
+    {
+        if (_document is null)
+            return;
+        LightingData lighting = _document.Lighting;
+        try
+        {
+            foreach (int id in _pointLights)
+                _engine.DestroyPointLight(id);
+            _pointLights.Clear();
+            _engine.SetAmbient(lighting.Ambient);
+            _engine.SetDirectionalLight(lighting.SunDirection, lighting.SunColor);
+            foreach (PointLightDef light in lighting.PointLights)
+                _pointLights.Add(_engine.CreatePointLight(light.Position, light.Color, light.Range));
+            _engine.SetShadow(lighting.ShadowEnabled, lighting.ShadowPlaneY, lighting.ShadowOpacity);
+        }
+        catch (EngineException ex)
+        {
+            _errors.Add("lighting: " + ex.Message);
+        }
     }
 
     private void ApplyAnimation(SceneNode node, Entry entry)

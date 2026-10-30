@@ -21,6 +21,8 @@ public sealed class SceneNode : INotifyPropertyChanged
     private string? _animationClip;
     private bool _animationPlaying = true;
     private float _animationSpeed = 1f;
+    private float _alpha = 1f;
+    private bool _castsShadow;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -33,6 +35,12 @@ public sealed class SceneNode : INotifyPropertyChanged
     public Vec3 Rotation { get => _rotation; set => Set(ref _rotation, value); }
     public Vec3 Scale { get => _scale; set => Set(ref _scale, value); }
     public Vec3 Color { get => _color; set => Set(ref _color, value); }
+
+    /// <summary>불투명도 0..1(1 = 불투명). 1보다 작으면 알파 블렌딩, 0이면 그리지 않는다.</summary>
+    public float Alpha { get => _alpha; set => Set(ref _alpha, value); }
+
+    /// <summary>씬의 그림자(Lighting.Shadow)가 켜져 있을 때 바닥 평면에 그림자를 드리울지.</summary>
+    public bool CastsShadow { get => _castsShadow; set => Set(ref _castsShadow, value); }
 
     /// <summary>재생할 클립 이름(glTF 애니메이션 이름). null이면 레스트 포즈.</summary>
     public string? AnimationClip { get => _animationClip; set => Set(ref _animationClip, value); }

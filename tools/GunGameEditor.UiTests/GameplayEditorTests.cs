@@ -1,5 +1,6 @@
 using System.IO;
 using System.Windows;
+using System.Windows.Controls;
 using GunGame.Interop;
 using GunGame.Scene;
 
@@ -384,5 +385,165 @@ public sealed class GameplayEditorTests(UiHost host) : UiTestBase(host)
         Assert.Null(s.SelectedGameplay);
         Assert.False(s.GameplayPanel.IsEnabled);
         Assert.Equal(Visibility.Visible, s.Inspector.Visibility);
+    });
+
+    // ---- 7단계: 노드 알파/그림자, 조명 항목, 점광원 ----
+    [Fact]
+    public void NodeInspector_EditsAlphaAndCastsShadow_AndRejectsBadAlpha() => WithHeroScene((s, _) =>
+    {
+        SceneNode hero = s.Roots.Single();
+        s.Select(hero);
+        byte[] opaque = s.ViewportPixels();
+
+        s.TypeEnter(s.Box(EditorSession.AlphaBox), "0.4");
+        Assert.Equal(0.4f, hero.Alpha);
+        Assert.NotEqual(opaque, s.ViewportPixels());                // 화면에 바로 반영된다
+
+        foreach (string bad in new[] { "2", "-0.1", "abc" })         // 범위 밖/숫자 아님은 이전 값으로 되돌린다
+        {
+            s.TypeEnter(s.Box(EditorSession.AlphaBox), bad);
+            Assert.Equal(0.4f, hero.Alpha);
+            Assert.Equal("0.4", s.Box(EditorSession.AlphaBox).Text);
+        }
+
+        s.TypeEnter(s.Box(EditorSession.AlphaBox), "0");             // 경계: 완전 투명 = 그리지 않음
+        Assert.Equal(0f, hero.Alpha);
+        s.TypeEnter(s.Box(EditorSession.AlphaBox), "1");
+        Assert.Equal(opaque, s.ViewportPixels());
+
+        CheckBox casts = s.Find<CheckBox>(s.Inspector, c => c.Content as string == "Casts shadow");
+        Assert.False(casts.IsChecked);
+        s.Toggle(casts);
+        Assert.True(hero.CastsShadow);
+        s.Toggle(casts);
+        Assert.False(hero.CastsShadow);
+
+        hero.Alpha = 0.25f;  // 코드로 바꾼 값도 인스펙터 칸에 반영된다
+        Assert.Equal("0.25", s.Box(EditorSession.AlphaBox).Text);
+    });
+
+    [Fact]
+    public void LightingItem_IsFirstInTheList_AndItsEditsReachTheScreenAndDocument() => WithHeroScene((s, _) =>
+    {
+        Assert.Equal(EditorSession.LightingLabel, s.AllListLabels()[0]);
+        s.SelectGameplay(EditorSession.LightingLabel);
+        var lighting = Assert.IsType<LightingData>(s.SelectedGameplay!.Def);
+        Assert.Equal("0.25, 0.25, 0.25", s.Field("Ambient (r, g, b)").Text);
+        byte[] before = s.ViewportPixels();
+
+        s.TypeEnter(s.Field("Ambient (r, g, b)"), "1, 0.5, 0");
+        Assert.Equal(new Vec3(1, 0.5f, 0), lighting.Ambient);
+        Assert.NotEqual(before, s.ViewportPixels());
+
+        s.TypeEnter(s.Field("Ambient (r, g, b)"), "-1, 0, 0");
+        Assert.Equal("Rejected: ambient must not be negative", s.Status);
+        Assert.Equal(new Vec3(1, 0.5f, 0), lighting.Ambient);
+        s.TypeEnter(s.Field("Sun direction (x, y, z)"), "0, 0, 0");
+        Assert.Equal("Rejected: sun direction must not be zero", s.Status);
+        s.TypeEnter(s.Field("Sun color (r, g, b)"), "1, 1, -1");
+        Assert.StartsWith("Rejected: sun color", s.Status);
+        s.TypeEnter(s.Field("Shadow opacity (0-1)"), "1.5");
+        Assert.StartsWith("Rejected: shadow opacity", s.Status);
+
+        s.TypeEnter(s.Field("Sun direction (x, y, z)"), "0, -1, 0");
+        s.TypeEnter(s.Field("Sun color (r, g, b)"), "0.5, 0.5, 0.5");
+        s.TypeEnter(s.Field("Shadow plane Y"), "-0.5");
+        s.TypeEnter(s.Field("Shadow opacity (0-1)"), "0.8");
+        s.Toggle(s.Find<CheckBox>(s.GameplayPanel, c => c.Content as string == "Shadows"));
+        Assert.Equal((new Vec3(0, -1, 0), new Vec3(0.5f, 0.5f, 0.5f), -0.5f, 0.8f, true),
+                     (lighting.SunDirection, lighting.SunColor, lighting.ShadowPlaneY, lighting.ShadowOpacity, lighting.ShadowEnabled));
+    });
+
+    [Fact]
+    public void AddLight_PlacesItAboveTheViewTarget_AppliesIt_AndDeleteRemovesIt() => WithHeroScene((s, _) =>
+    {
+        Vec3 target = s.Window.Camera.Target;
+        byte[] before = s.ViewportPixels();
+
+        s.Click("Add Light");
+
+        Assert.Equal(["Light: Light"], s.GameplayLabels());
+        var light = Assert.IsType<PointLightDef>(s.SelectedGameplay!.Def);
+        Assert.Equal(new Vec3(target.X, target.Y + 2, target.Z), light.Position);
+        Assert.NotEqual(before, s.ViewportPixels());                 // 점광원이 바로 장면을 밝힌다
+        Assert.False(s.CheckByLabel("Show gameplay").IsChecked);     // 점광원은 영역 오버레이를 켜지 않는다
+
+        s.TypeEnter(s.Field("Color (r, g, b)"), "1, 0, 0");
+        s.TypeEnter(s.Field("Range"), "12");
+        s.TypeEnter(s.Field("Position (x, y, z)"), "1, 3, 1");
+        s.TypeEnter(s.Field("Name"), "Lamp");
+        Assert.Equal((new Vec3(1, 0, 0), 12f, new Vec3(1, 3, 1), "Lamp"), (light.Color, light.Range, light.Position, light.Name));
+        Assert.Equal(["Light: Lamp"], s.GameplayLabels());
+
+        s.TypeEnter(s.Field("Range"), "0");
+        Assert.Equal("Rejected: range must be greater than 0", s.Status);
+        s.TypeEnter(s.Field("Color (r, g, b)"), "1, -1, 0");
+        Assert.StartsWith("Rejected: light color", s.Status);
+        Assert.Equal(12f, light.Range);
+
+        byte[] lit = s.ViewportPixels();
+        s.Click("Delete Item");
+        Assert.Empty(s.GameplayLabels());
+        Assert.NotEqual(lit, s.ViewportPixels());                    // 삭제하면 엔진에서도 빠진다
+        Assert.Equal(before, s.ViewportPixels());                    // 원래 화면으로 돌아온다
+
+        s.SelectGameplay(EditorSession.LightingLabel);
+        s.Click("Delete Item");
+        Assert.StartsWith("The scene lighting cannot be deleted", s.Status);
+        Assert.Equal(EditorSession.LightingLabel, s.AllListLabels()[0]);
+    });
+
+    [Fact]
+    public void AddLight_StopsAtTheEngineLimit() => Ui(s =>
+    {
+        for (int i = 0; i < LightingData.MaxPointLights; i++)
+            s.Click("Add Light");
+        Assert.Equal(LightingData.MaxPointLights, s.GameplayLabels().Count);
+        Assert.Equal(["Light: Light", "Light: Light 2"], s.GameplayLabels().Take(2));
+
+        s.Click("Add Light");
+        Assert.Equal($"At most {LightingData.MaxPointLights} point lights are supported", s.Status);
+        Assert.Equal(LightingData.MaxPointLights, s.GameplayLabels().Count);
+    });
+
+    [Fact]
+    public void LightingAndNodeFlags_SurviveSaveAndReopen() => WithHeroScene((s, path) =>
+    {
+        SceneNode hero = s.Roots.Single();
+        hero.Alpha = 0.6f;
+        hero.CastsShadow = true;
+        s.Click("Add Light");
+        s.TypeEnter(s.Field("Color (r, g, b)"), "0.2, 0.4, 1");
+        s.SelectGameplay(EditorSession.LightingLabel);
+        s.TypeEnter(s.Field("Ambient (r, g, b)"), "0.3, 0.3, 0.4");
+        s.Toggle(s.Find<CheckBox>(s.GameplayPanel, c => c.Content as string == "Shadows"));
+        s.Click("Save");
+        Assert.StartsWith("Saved", s.Status);
+
+        s.Click("New");
+        Assert.Empty(s.GameplayLabels());
+        Assert.True(s.Window.OpenScenePath(path));
+        s.Pump();
+
+        Assert.Equal(["Light: Light"], s.GameplayLabels());
+        SceneNode reopened = s.Roots.Single();
+        Assert.Equal((0.6f, true), (reopened.Alpha, reopened.CastsShadow));
+        s.SelectGameplay(EditorSession.LightingLabel);
+        var lighting = (LightingData)s.SelectedGameplay!.Def;
+        Assert.Equal((new Vec3(0.3f, 0.3f, 0.4f), true), (lighting.Ambient, lighting.ShadowEnabled));
+        Assert.Equal(new Vec3(0.2f, 0.4f, 1f), lighting.PointLights.Single().Color);
+    });
+
+    [Fact]
+    public void LightingEditingIsLockedWhilePlaying() => WithHeroScene((s, _) =>
+    {
+        s.Click("Add Room");
+        s.Select(s.Roots.Single());
+        s.Click("Set Player");
+        s.Click("Play");
+        Assert.True(s.Window.IsPlaying, s.Status);
+        Assert.False(s.ButtonByLabel("Add Light").IsEnabled);
+        s.Click("Stop");
+        Assert.True(s.ButtonByLabel("Add Light").IsEnabled);
     });
 }

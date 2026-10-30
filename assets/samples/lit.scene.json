@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "nodes": [
+    { "name": "Floor",  "mesh": "cube.obj", "position": [0, -1, 0],      "scale": [6, 1, 6],        "color": [0.7, 0.7, 0.75] },
+    { "name": "Crate",  "mesh": "cube.obj", "position": [-1.5, 0.6, 0],  "scale": [0.6, 0.6, 0.6],  "rotation": [0, 0.5, 0], "color": [0.9, 0.6, 0.3], "castsShadow": true },
+    { "name": "Pillar", "mesh": "cube.obj", "position": [2, 1.2, -1],    "scale": [0.4, 1.2, 0.4],  "color": [0.5, 0.6, 0.8], "castsShadow": true },
+    { "name": "Glass",  "mesh": "cube.obj", "position": [0.3, 0.8, 2],   "scale": [1, 0.8, 0.05],   "color": [0.4, 0.9, 0.9], "alpha": 0.5 }
+  ],
+  "lighting": {
+    "ambient": [0.15, 0.15, 0.2],
+    "sun": { "direction": [-0.5, -1, -0.3], "color": [0.5, 0.5, 0.45] },
+    "points": [
+      { "name": "Red",  "position": [-3.5, 1.5, 2], "color": [1, 0.2, 0.2], "range": 6 },
+      { "name": "Blue", "position": [3.5, 1.5, 1],  "color": [0.2, 0.3, 1], "range": 6 }
+    ],
+    "shadow": { "enabled": true, "planeY": 0, "opacity": 0.5 }
+  }
+}

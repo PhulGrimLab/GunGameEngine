@@ -33,6 +33,7 @@
                 <Button Content="Add Room" Click="OnAddRoom" />
                 <Button Content="Add Collider" Click="OnAddCollider" />
                 <Button Content="Add Trigger" Click="OnAddTrigger" />
+                <Button Content="Add Light" Click="OnAddLight" />
                 <Button Content="Set Player" Click="OnSetPlayer" />
                 <Button Content="Delete Item" Click="OnDeleteGameplayItem" />
             </ToolBar>

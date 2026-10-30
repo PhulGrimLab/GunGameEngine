@@ -326,7 +326,8 @@ public partial class MainWindow : Window
     private void RefreshGameplayList(object? keep = null, bool reshowInspector = true)
     {
         GameplayData data = _document.Gameplay;
-        var items = new List<GameplayItem>();
+        var items = new List<GameplayItem> { new(GameplayKind.Lighting, _document.Lighting) };
+        items.AddRange(_document.Lighting.PointLights.Select(p => new GameplayItem(GameplayKind.PointLight, p)));
         items.AddRange(data.Rooms.Select(r => new GameplayItem(GameplayKind.Room, r)));
         items.AddRange(data.Colliders.Select(c => new GameplayItem(GameplayKind.Collider, c)));
         items.AddRange(data.Triggers.Select(t => new GameplayItem(GameplayKind.Trigger, t)));
@@ -365,6 +366,40 @@ public partial class MainWindow : Window
     {
         RefreshGameplayList(SelectedGameplayItem?.Def, reshowInspector: false);
         UpdateOverlay();
+        if (SelectedGameplayItem is { Kind: GameplayKind.Lighting or GameplayKind.PointLight })
+            ApplyLighting();
+    }
+
+    /// <summary>문서의 조명을 엔진에 반영하고 다시 그린다. 엔진이 거부한 값이 있으면 상태 표시줄에 사유를 보인다.</summary>
+    private void ApplyLighting()
+    {
+        if (_sync is null)
+            return;
+        int before = _sync.Errors.Count;
+        _sync.ApplyLighting();
+        if (_sync.Errors.Count > before)
+            StatusText.Text = "Lighting problem: " + _sync.Errors[^1];
+        Redraw();
+    }
+
+    /// <summary>"Add Light": 편집 카메라가 보는 점(목표점) 위 2 단위에 점광원을 추가한다.</summary>
+    private void OnAddLight(object sender, RoutedEventArgs e)
+    {
+        LightingData lighting = _document.Lighting;
+        if (lighting.PointLights.Count >= LightingData.MaxPointLights)
+        {
+            StatusText.Text = $"At most {LightingData.MaxPointLights} point lights are supported";
+            return;
+        }
+        Vec3 target = _camera.Target;
+        var light = new PointLightDef
+        {
+            Name = GameplayEditing.UniqueName(lighting.PointLights.Select(p => p.Name), "Light"),
+            Position = new Vec3(target.X, target.Y + 2f, target.Z),
+        };
+        lighting.PointLights.Add(light);
+        ApplyLighting();
+        AddGameplayItem(GameplayKind.PointLight, light);
     }
 
     private void OnAddRoom(object sender, RoutedEventArgs e) =>
@@ -400,7 +435,8 @@ public partial class MainWindow : Window
     private void AddGameplayItem(GameplayKind kind, object def)
     {
         RefreshGameplayList(def);
-        GameplayCheck.IsChecked = true;
+        if (kind != GameplayKind.PointLight)  // 점광원은 오버레이가 그리지 않는다(영역 표시와 무관)
+            GameplayCheck.IsChecked = true;
         UpdateOverlay();
         StatusText.Text = $"Added {kind}: edit values in the inspector";
     }
@@ -424,6 +460,13 @@ public partial class MainWindow : Window
             case GameplayKind.Trigger:
                 data.Triggers.Remove((TriggerDef)item.Def);
                 break;
+            case GameplayKind.PointLight:
+                _document.Lighting.PointLights.Remove((PointLightDef)item.Def);
+                ApplyLighting();
+                break;
+            case GameplayKind.Lighting:
+                StatusText.Text = "The scene lighting cannot be deleted (edit its values instead)";
+                return;
             default:
                 data.Player = null;
                 break;
@@ -613,14 +656,15 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 뷰포트 비트맵의 현재 픽셀을 복사한다(고정된 사본). RenderTargetBitmap으로 비트맵을 다시 그리면 WPF 렌더 스레드가 아직 반영하지
+    /// 못한 이전 프레임의 일부가 섞여 찢어진 그림이 나올 수 있어(드물게 재현됨), UI 스레드가 쓴 값을 직접 복사한다.
+    /// </summary>
     internal BitmapSource CaptureViewport()
     {
-        var target = new RenderTargetBitmap(RenderWidth, RenderHeight, 96, 96, PixelFormats.Pbgra32);
-        var visual = new DrawingVisual();
-        using (var dc = visual.RenderOpen())
-            dc.DrawImage(_bitmap, new Rect(0, 0, RenderWidth, RenderHeight));
-        target.Render(visual);
-        return target;
+        var copy = new WriteableBitmap(_bitmap);
+        copy.Freeze();
+        return copy;
     }
 
     internal BitmapSource CaptureWindow()

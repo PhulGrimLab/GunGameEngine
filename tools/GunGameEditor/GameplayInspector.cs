@@ -9,9 +9,9 @@ using GunGame.Scene;
 namespace GunGameEditor;
 
 /// <summary>게임플레이 항목의 종류(방/충돌체/트리거/플레이어).</summary>
-public enum GameplayKind { Room, Collider, Trigger, Player }
+public enum GameplayKind { Room, Collider, Trigger, Player, Lighting, PointLight }
 
-/// <summary>게임플레이 목록의 한 항목: 종류와 원본 데이터(RoomDef/ColliderDef/TriggerDef/PlayerDef)를 가리킨다.</summary>
+/// <summary>게임플레이 목록의 한 항목: 종류와 원본 데이터(RoomDef/ColliderDef/TriggerDef/PlayerDef/LightingData/PointLightDef)를 가리킨다.</summary>
 public sealed record GameplayItem(GameplayKind Kind, object Def)
 {
     /// <summary>목록에 보이는 글자: "Room: Hall" 형태. Player는 연결된 노드 이름을 보인다.</summary>
@@ -20,6 +20,8 @@ public sealed record GameplayItem(GameplayKind Kind, object Def)
         GameplayKind.Room => "Room: " + ((RoomDef)Def).Name,
         GameplayKind.Collider => "Collider: " + ((ColliderDef)Def).Name,
         GameplayKind.Trigger => "Trigger: " + ((TriggerDef)Def).Name,
+        GameplayKind.Lighting => "Lighting: Scene",
+        GameplayKind.PointLight => "Light: " + ((PointLightDef)Def).Name,
         _ => "Player: " + ((PlayerDef)Def).Node,
     };
 }
@@ -72,6 +74,12 @@ public sealed class GameplayInspector : StackPanel
             case GameplayKind.Trigger:
                 BuildTrigger((TriggerDef)item.Def);
                 break;
+            case GameplayKind.Lighting:
+                BuildLighting((LightingData)item.Def);
+                break;
+            case GameplayKind.PointLight:
+                BuildPointLight((PointLightDef)item.Def);
+                break;
             default:
                 BuildPlayer((PlayerDef)item.Def);
                 break;
@@ -118,6 +126,30 @@ public sealed class GameplayInspector : StackPanel
             v => int.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out int tag) ? Apply(() => t.Tag = tag) : "tag must be an integer");
         AddPolygon(() => t.Polygon, p => t.Polygon = p);
         AddMove((dx, dz) => t.Polygon = GameplayEditing.Translate(t.Polygon, dx, dz));
+    }
+
+    private void BuildLighting(LightingData l)
+    {
+        const string ColorRule = " must not be negative";
+        AddNumbers("Ambient (r, g, b)", 3, () => Fmt(l.Ambient.X, l.Ambient.Y, l.Ambient.Z),
+            v => v.Any(x => x < 0) ? "ambient" + ColorRule : null, v => l.Ambient = new Vec3(v[0], v[1], v[2]));
+        AddNumbers("Sun direction (x, y, z)", 3, () => Fmt(l.SunDirection.X, l.SunDirection.Y, l.SunDirection.Z),
+            v => v.All(x => x == 0) ? "sun direction must not be zero" : null, v => l.SunDirection = new Vec3(v[0], v[1], v[2]));
+        AddNumbers("Sun color (r, g, b)", 3, () => Fmt(l.SunColor.X, l.SunColor.Y, l.SunColor.Z),
+            v => v.Any(x => x < 0) ? "sun color" + ColorRule : null, v => l.SunColor = new Vec3(v[0], v[1], v[2]));
+        AddCheck("Shadows", () => l.ShadowEnabled, on => l.ShadowEnabled = on);
+        AddNumbers("Shadow plane Y", 1, () => Fmt(l.ShadowPlaneY), v => l.ShadowPlaneY = v[0]);
+        AddNumbers("Shadow opacity (0-1)", 1, () => Fmt(l.ShadowOpacity),
+            v => v[0] >= 0 && v[0] <= 1 ? null : "shadow opacity must be between 0 and 1", v => l.ShadowOpacity = v[0]);
+    }
+
+    private void BuildPointLight(PointLightDef p)
+    {
+        AddText("Name", () => p.Name, v => SetName(v, n => p.Name = n));
+        AddNumbers("Position (x, y, z)", 3, () => Fmt(p.Position.X, p.Position.Y, p.Position.Z), v => p.Position = new Vec3(v[0], v[1], v[2]));
+        AddNumbers("Color (r, g, b)", 3, () => Fmt(p.Color.X, p.Color.Y, p.Color.Z),
+            v => v.Any(x => x < 0) ? "light color must not be negative" : null, v => p.Color = new Vec3(v[0], v[1], v[2]));
+        AddNumbers("Range", 1, () => Fmt(p.Range), v => v[0] > 0 ? null : "range must be greater than 0", v => p.Range = v[0]);
     }
 
     private void BuildPlayer(PlayerDef p)
@@ -232,6 +264,19 @@ public sealed class GameplayInspector : StackPanel
         AddLabel(label);
         Children.Add(box);
         _fields.Add((box, get));
+    }
+
+    /// <summary>체크박스 칸: 클릭하면 바로 반영하고 Changed를 알린다.</summary>
+    private void AddCheck(string label, Func<bool> get, Action<bool> set)
+    {
+        var box = new CheckBox { Content = label, IsChecked = get(), Margin = new Thickness(0, 8, 0, 0) };
+        AutomationProperties.SetName(box, label);
+        box.Click += (_, _) =>
+        {
+            set(box.IsChecked == true);
+            Changed?.Invoke();
+        };
+        Children.Add(box);
     }
 
     private void AddLabel(string label) =>

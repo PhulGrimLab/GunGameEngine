@@ -373,7 +373,7 @@ public sealed class InspectorInputTests(UiHost host) : UiTestBase(host)
         s.Pump();
         Assert.Equal(clips.Items[1], node.AnimationClip);
 
-        CheckBox playing = EditorSession.FindAll<CheckBox>(s.Inspector).Single();
+        CheckBox playing = EditorSession.FindAll<CheckBox>(s.Inspector, c => c.Content as string == "Playing").Single();
         Assert.True(node.AnimationPlaying);
         s.Toggle(playing);
         Assert.False(node.AnimationPlaying);

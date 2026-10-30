@@ -22,8 +22,8 @@ namespace GunGameEditor.UiTests;
 /// </summary>
 public sealed class EditorSession : IDisposable
 {
-    // 인스펙터 TextBox 순서(InspectorPanel 생성 순서): 이름, 위치xyz, 회전xyz, 크기xyz, 색xyz, 재생 속도
-    public const int NameBox = 0, PositionBox = 1, RotationBox = 4, ScaleBox = 7, ColorBox = 10, SpeedBox = 13;
+    // 인스펙터 TextBox 순서(InspectorPanel 생성 순서): 이름, 위치xyz, 회전xyz, 크기xyz, 색xyz, 알파, 재생 속도
+    public const int NameBox = 0, PositionBox = 1, RotationBox = 4, ScaleBox = 7, ColorBox = 10, AlphaBox = 13, SpeedBox = 14;
 
     public MainWindow Window { get; } = new()
     {
@@ -73,8 +73,13 @@ public sealed class EditorSession : IDisposable
     public GameplayInspector GameplayPanel => Window.GameplayInspectorPanel;
     public GameplayItem? SelectedGameplay => Window.SelectedGameplayItem;
 
-    /// <summary>게임플레이 목록에 보이는 글자들.</summary>
-    public List<string> GameplayLabels() => GameplayList.Items.Cast<GameplayItem>().Select(i => i.Display).ToList();
+    /// <summary>게임플레이 목록에 보이는 글자들. 항상 맨 위에 있는 "Lighting: Scene" 항목은 뺀다(방/충돌체/트리거/플레이어/점광원만 본다).</summary>
+    public List<string> GameplayLabels() => AllListLabels().Where(l => l != LightingLabel).ToList();
+
+    public const string LightingLabel = "Lighting: Scene";
+
+    /// <summary>Lighting 항목까지 포함한 목록 글자들.</summary>
+    public List<string> AllListLabels() => GameplayList.Items.Cast<GameplayItem>().Select(i => i.Display).ToList();
 
     /// <summary>게임플레이 목록에서 항목을 클릭해 선택한다.</summary>
     public void SelectGameplay(string label)
