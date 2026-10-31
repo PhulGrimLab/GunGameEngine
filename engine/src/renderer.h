@@ -5,14 +5,35 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
+#include <string>
 #include <vector>
 
 #include "animation.h"
+#include "font.h"
 
 namespace gge {
 
 constexpr int kVertexFloats = 8;  // position(3) + normal(3) + uv(2)
 constexpr int kMaxPointLights = 8;
+constexpr int kMaxUiItems = 64;   // 화면 위 글자/사각형 항목 수 상한
+
+// 화면 위 항목(HUD/대화창). 3D가 모두 그려지고 GPU 후처리(PS1 효과)가 끝난 뒤 렌더러의 읽기용 CPU 픽셀에 덮어 그려진다(그래서 PS1 효과를 받지 않고
+// 장치와 무관하게 바이트 단위로 같다). 그리는 순서는 만든 순서(ID 오름차순)다. 종류를 enum으로 열어 두어 나중에 텍스처 쿼드(아이콘) 등을 더할 수 있다.
+enum class UiKind { Text, Rect };
+
+struct UiItem {
+    UiKind kind = UiKind::Text;
+    int x = 0, y = 0;            // 렌더 타깃의 정수 픽셀 좌표(왼쪽 위). 화면 밖/음수도 되며 잘려서 그려진다
+    uint32_t rgb = 0xFFFFFF;     // 0xRRGGBB
+    bool visible = true;
+    // Text
+    std::shared_ptr<const Font> font;   // 항목이 폰트를 공유하므로 핸들을 destroy해도 항목이 지워질 때까지 폰트가 산다
+    std::string text;
+    int maxWidth = 0;                   // 0 이하 = 줄바꿈은 '\n'뿐
+    // Rect
+    int width = 0, height = 0, alpha = 255;
+};
 
 struct RetroSettings {
     bool vertexSnap = false;  // 클립 공간 정점을 렌더 타깃 픽셀 격자에 스냅
@@ -126,6 +147,20 @@ public:
     // 본별 모델 공간 전역 행렬(행 벡터 규약, 행 우선 16 float).
     std::vector<DirectX::XMFLOAT4X4> GetObjectPose(int id);
 
+    // ---- 화면 위 항목(글자/사각형) ----
+    // ID는 1부터, 해제 후 재사용하지 않고, 최대 kMaxUiItems개. 오류는 모두 사유가 담긴 예외이고 상태는 그대로다.
+    // 글자: 폰트는 null이 아니어야 하고 text는 kMaxTextBytes 이하. 사각형: 크기 > 0, alpha 0..255(0 = 안 보임, 255 = 불투명).
+    int CreateUiText(std::shared_ptr<const Font> font, std::string text, int x, int y, int maxWidth, uint32_t rgb);
+    int CreateUiRect(int x, int y, int width, int height, uint32_t rgb, int alpha);
+    void SetUiText(int id, std::string text);           // 글자 항목만
+    void SetUiRect(int id, int width, int height, int alpha);   // 사각형 항목만(체력 바 길이 같은 용도)
+    void SetUiPosition(int id, int x, int y);
+    void SetUiColor(int id, uint32_t rgb);
+    void SetUiVisible(int id, bool visible);
+    void DestroyUi(int id);
+    void ClearUi();
+    int UiCount() const { return static_cast<int>(ui_.size()); }
+
     void Render();
 
     const uint8_t* Pixels() const { return pixels_.data(); }
@@ -179,6 +214,10 @@ private:
     std::map<int, Clip> clips_;
     uint64_t renderStamp_ = 0;  // Render 호출마다 증가. Object::worldStamp와 비교한다.
     int nextMesh_ = 1, nextTexture_ = 1, nextObject_ = 1, nextSkeleton_ = 1, nextClip_ = 1;
+    std::map<int, UiItem> ui_;
+    int nextUi_ = 1;
+    UiItem& GetUi(int id);
+    void DrawUi();   // Render 끝에서 읽기용 픽셀 위에 항목을 만든 순서대로 덮어 그린다
 
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> context_;

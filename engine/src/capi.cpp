@@ -799,6 +799,63 @@ GGE_API int gge_fill_rect_bgra(uint8_t* bgra, int width, int height, int stride,
     });
 }
 
+GGE_API int gge_ui_create_text(GgeRenderer* r, const GgeFont* font, const char* text_utf8, int x, int y, int max_width, uint32_t rgb)
+{
+    return Guard([&] {
+        if (!r)
+            throw std::runtime_error("null renderer");
+        if (!font)
+            throw std::runtime_error("null font");
+        return r->impl.CreateUiText(font->impl, text_utf8 ? text_utf8 : "", x, y, max_width, rgb);
+    });
+}
+
+GGE_API int gge_ui_create_rect(GgeRenderer* r, int x, int y, int width, int height, uint32_t rgb, int alpha)
+{
+    return Guard([&] {
+        if (!r)
+            throw std::runtime_error("null renderer");
+        return r->impl.CreateUiRect(x, y, width, height, rgb, alpha);
+    });
+}
+
+GGE_API int gge_ui_set_text(GgeRenderer* r, int item_id, const char* text_utf8)
+{
+    return Guard([&] { r->impl.SetUiText(item_id, text_utf8 ? text_utf8 : ""); return 1; });
+}
+
+GGE_API int gge_ui_set_rect(GgeRenderer* r, int item_id, int width, int height, int alpha)
+{
+    return Guard([&] { r->impl.SetUiRect(item_id, width, height, alpha); return 1; });
+}
+
+GGE_API int gge_ui_set_position(GgeRenderer* r, int item_id, int x, int y)
+{
+    return Guard([&] { r->impl.SetUiPosition(item_id, x, y); return 1; });
+}
+
+GGE_API int gge_ui_set_color(GgeRenderer* r, int item_id, uint32_t rgb)
+{
+    return Guard([&] { r->impl.SetUiColor(item_id, rgb); return 1; });
+}
+
+GGE_API int gge_ui_set_visible(GgeRenderer* r, int item_id, int visible)
+{
+    return Guard([&] { r->impl.SetUiVisible(item_id, visible != 0); return 1; });
+}
+
+GGE_API int gge_ui_destroy(GgeRenderer* r, int item_id)
+{
+    return Guard([&] { r->impl.DestroyUi(item_id); return 1; });
+}
+
+GGE_API int gge_ui_clear(GgeRenderer* r)
+{
+    return Guard([&] { r->impl.ClearUi(); return 1; });
+}
+
+GGE_API int gge_ui_get_count(const GgeRenderer* r) { return r->impl.UiCount(); }
+
 GGE_API int gge_scene_get_node_slot_count(const GgeScene* s) { return s->impl.NodeSlotCount(); }
 
 GGE_API int gge_scene_set_spawn_failure_for_tests(GgeScene* s, int after_nodes)

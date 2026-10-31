@@ -5934,6 +5934,197 @@ void Test_BitmapFontLoaderSurvivesRandomDamage()
     CHECK(accepted > 20 && rejected > 100);   // 두 경로가 모두 실제로 쓰였다
 }
 
+// ---- 화면 위 항목(렌더러 CPU 패스) ----
+struct UiScene {
+    GgeRenderer* r;
+    int objects = 0;
+    explicit UiScene(int w, int h) : r(NewRenderer(w, h))
+    {
+        if (!r) return;
+        int obj = gge_object_create(r, CubeMesh(r), 0, 0);   // 배경에 3D 물체가 있어 3D가 UI 뒤에 깔리는지 보인다
+        objects = obj;
+        gge_renderer_set_camera(r, 0, 0, 5, 0, 0, 0, 0.9f);
+    }
+    ~UiScene() { gge_renderer_destroy(r); }
+};
+
+// 두 화면에서 달라진 픽셀 위치를 'x'/'.' 글자 그림으로(경계 상자 안: 시작 (x0,y0), 크기 w x h). 상자 밖에 달라진 픽셀이 있으면 '!'를 하나 덧붙인다.
+std::string DiffMask(const Image& a, const Image& b, int x0, int y0, int w, int h)
+{
+    std::string s;
+    for (int y = 0; y < a.height; ++y)
+        for (int x = 0; x < a.width; ++x)
+            if (a.At(x, y) != b.At(x, y) && (x < x0 || y < y0 || x >= x0 + w || y >= y0 + h)) return "!outside";
+    for (int y = y0; y < y0 + h; ++y) {
+        for (int x = x0; x < x0 + w; ++x) s += a.At(x, y) != b.At(x, y) ? 'x' : '.';
+        s += '\n';
+    }
+    return s;
+}
+
+// 색이 정확히 rgb인 픽셀 수(알파 255).
+int CountExactPixels(const Image& img, uint32_t rgb)
+{
+    int n = 0;
+    for (int y = 0; y < img.height; ++y)
+        for (int x = 0; x < img.width; ++x) {
+            const uint32_t p = img.At(x, y);   // BGRA 리틀엔디언: 0xAARRGGBB
+            if ((p & 0x00FFFFFF) == rgb && (p >> 24) == 255) ++n;
+        }
+    return n;
+}
+
+void Test_UiItemsDrawOverTheFinishedFrameWithoutPs1Effects()
+{
+    FontHandle f(BdfText(TestGlyphs()));
+    if (!f.f) return;
+    UiScene s(64, 48);
+    if (!s.r) return;
+    const Image base = Render(s.r);
+
+    // 글자: 3D 위에 정확한 픽셀로 덮이고, 그 밖의 모든 픽셀은 3D 결과 그대로다.
+    const int text = gge_ui_create_text(s.r, f.f, "AB", 10, 20, 0, 0xFF00FF);
+    CHECK(text == 1);
+    const Image withText = Render(s.r);
+    CHECK(DiffMask(base, withText, 10, 20, 12, 9) == Rows({".xxx..xxxx..", "x...x.x..x..", "x...x.xxxx..", "xxxxx.x..x..", "x...x.x..x..", "x...x.x..x..", "x...x.xxxx..", "............", "............"}));
+    CHECK(CountExactPixels(base, 0xFF00FF) == 0 && CountExactPixels(withText, 0xFF00FF) == 38);   // 켜진 픽셀: A 18개 + B 20개, 색은 바이트까지 정확
+
+    // PS1 효과(색 깊이 3비트 + 디더)를 켜도 글자 색은 요청한 0x336699 그대로다(UI는 후처리 뒤에 그려진다). 3D 쪽은 양자화돼 달라진다.
+    CHECK(gge_renderer_set_retro(s.r, 0, 3, 1, 0) == 1);
+    CHECK(gge_ui_set_color(s.r, text, 0x336699) == 1);
+    const Image retro = Render(s.r);
+    CHECK(DifferingPixels(withText, retro, 0) > 50);                 // 3D는 PS1 효과를 받았다
+    CHECK(CountExactPixels(retro, 0x336699) == 38);                  // 3비트 양자화로는 0x33/0x66/0x99가 나올 수 없으니 38개 모두 UI 픽셀이다
+    CHECK(gge_renderer_set_retro(s.r, 0, 8, 0, 0) == 1);
+}
+
+void Test_UiItemsKeepTheirOrderVisibilityAndAlpha()
+{
+    FontHandle f(BdfText(TestGlyphs()));
+    if (!f.f) return;
+    UiScene s(64, 48);
+    if (!s.r) return;
+    const Image base = Render(s.r);
+
+    // 사각형 -> 글자 순으로 만들면 글자가 사각형 위에 보인다. 반투명 사각형은 3D 픽셀과 정수 식으로 섞인다.
+    const int back = gge_ui_create_rect(s.r, 4, 4, 30, 20, 0x102030, 255);
+    const int text = gge_ui_create_text(s.r, f.f, "A", 6, 6, 0, 0xFFFF00);
+    CHECK(back == 1 && text == 2);
+    Image img = Render(s.r);
+    CHECK(CountExactPixels(img, 0x102030) == 30 * 20 - 18 && CountExactPixels(img, 0xFFFF00) == 18);   // 글자 18픽셀이 사각형을 덮었다
+    // 순서는 만든 순서다: 글자를 먼저 만들고 사각형을 나중에 만들면 사각형이 글자를 가린다.
+    UiScene t(64, 48);
+    const int textFirst = gge_ui_create_text(t.r, f.f, "A", 6, 6, 0, 0xFFFF00);
+    const int rectAfter = gge_ui_create_rect(t.r, 4, 4, 30, 20, 0x102030, 255);
+    CHECK(textFirst == 1 && rectAfter == 2);
+    img = Render(t.r);
+    CHECK(CountExactPixels(img, 0x102030) == 30 * 20 && CountExactPixels(img, 0xFFFF00) == 0);
+
+    // 반투명 사각형: 결과 픽셀 = (src*a + dst*(255-a) + 127) / 255, 모든 채널을 3D 기준 화면에서 따로 계산한 값과 비교한다. 두 번 그려도 누적되지 않는다.
+    CHECK(gge_ui_destroy(s.r, back) == 1 && gge_ui_destroy(s.r, text) == 1);
+    const int glass = gge_ui_create_rect(s.r, 0, 0, 64, 48, 0xC03020, 100);
+    CHECK(glass == 3);                                          // ID는 재사용하지 않는다
+    const Image once = Render(s.r), twice = Render(s.r);
+    CHECK(once.bgra == twice.bgra);
+    bool allBlended = true;
+    for (int y = 0; y < 48 && allBlended; ++y)
+        for (int x = 0; x < 64; ++x) {
+            const uint32_t b = base.At(x, y), o = once.At(x, y);
+            const int br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+            const int er = (0xC0 * 100 + br * 155 + 127) / 255, eg = (0x30 * 100 + bg * 155 + 127) / 255, eb = (0x20 * 100 + bb * 155 + 127) / 255;
+            if (static_cast<int>((o >> 16) & 255) != er || static_cast<int>((o >> 8) & 255) != eg || static_cast<int>(o & 255) != eb) { allBlended = false; break; }
+        }
+    CHECK(allBlended);
+
+    // 숨기기/보이기/이동/색/크기/글자 바꾸기.
+    CHECK(gge_ui_set_visible(s.r, glass, 0) == 1);
+    CHECK(Render(s.r).bgra == base.bgra);                       // 숨기면 3D 그대로
+    CHECK(gge_ui_set_visible(s.r, glass, 1) == 1 && Render(s.r).bgra == once.bgra);
+    CHECK(gge_ui_set_rect(s.r, glass, 10, 5, 255) == 1 && gge_ui_set_color(s.r, glass, 0x00FF00) == 1 && gge_ui_set_position(s.r, glass, 3, 2) == 1);
+    CHECK(CountExactPixels(Render(s.r), 0x00FF00) == 50);
+    CHECK(CountExactPixels(base, 0xFFFFFF) == 0);              // 3D 장면에 순백이 없어야 아래 개수가 UI 픽셀만 센다
+    const int label = gge_ui_create_text(s.r, f.f, "A", 0, 0, 0, 0xFFFFFF);
+    CHECK(gge_ui_set_text(s.r, label, "B") == 1 && CountExactPixels(Render(s.r), 0xFFFFFF) == 20);   // B의 켜진 픽셀 20개
+    CHECK(gge_ui_set_text(s.r, label, nullptr) == 1 && CountExactPixels(Render(s.r), 0xFFFFFF) == 0);
+    CHECK(gge_ui_get_count(s.r) == 2 && gge_ui_clear(s.r) == 1 && gge_ui_get_count(s.r) == 0);
+    CHECK(Render(s.r).bgra == base.bgra);                       // 지우면 3D 그대로
+}
+
+void Test_UiItemsRejectBadRequestsAndChangeNothing()
+{
+    FontHandle f(BdfText(TestGlyphs()));
+    if (!f.f) return;
+    UiScene s(64, 48);
+    if (!s.r) return;
+    const int text = gge_ui_create_text(s.r, f.f, "A", 1, 1, 0, 0xFFFFFF);
+    const int rect = gge_ui_create_rect(s.r, 0, 0, 5, 5, 0x123456, 255);
+    CHECK(text == 1 && rect == 2);
+    const Image before = Render(s.r);
+    auto rejected = [&](const char* what, int result, const char* reason) {
+        if (result != 0 || !LastErrorHas(reason)) std::printf("  not rejected as expected: %s (error: %s)\n", what, gge_last_error());
+        CHECK(result == 0);
+        CHECK(LastErrorHas(reason));
+        CHECK(gge_ui_get_count(s.r) == 2);
+    };
+    rejected("null font", gge_ui_create_text(s.r, nullptr, "x", 0, 0, 0, 0), "null font");
+    rejected("null renderer", gge_ui_create_text(nullptr, f.f, "x", 0, 0, 0, 0), "null renderer");
+    rejected("text too long", gge_ui_create_text(s.r, f.f, std::string(1025, 'A').c_str(), 0, 0, 0, 0), "too long");
+    rejected("rect width 0", gge_ui_create_rect(s.r, 0, 0, 0, 5, 0, 255), "rectangle size must be positive");
+    rejected("rect height < 0", gge_ui_create_rect(s.r, 0, 0, 5, -1, 0, 255), "rectangle size must be positive");
+    rejected("rect alpha 256", gge_ui_create_rect(s.r, 0, 0, 5, 5, 0, 256), "alpha must be 0..255");
+    rejected("rect alpha -1", gge_ui_create_rect(s.r, 0, 0, 5, 5, 0, -1), "alpha must be 0..255");
+    rejected("set text on a rectangle", gge_ui_set_text(s.r, rect, "x"), "is a rectangle, not text");
+    rejected("set rect on text", gge_ui_set_rect(s.r, text, 5, 5, 255), "is text, not a rectangle");
+    rejected("set rect size 0", gge_ui_set_rect(s.r, rect, 0, 5, 255), "rectangle size must be positive");
+    rejected("set rect alpha", gge_ui_set_rect(s.r, rect, 5, 5, 300), "alpha must be 0..255");
+    rejected("set text too long", gge_ui_set_text(s.r, text, std::string(1025, 'A').c_str()), "too long");
+    rejected("unknown id (set)", gge_ui_set_position(s.r, 99, 0, 0), "unknown ui item id 99");
+    rejected("unknown id (color)", gge_ui_set_color(s.r, 0, 0), "unknown ui item id 0");
+    rejected("unknown id (visible)", gge_ui_set_visible(s.r, -3, 1), "unknown ui item id -3");
+    rejected("unknown id (destroy)", gge_ui_destroy(s.r, 99), "unknown ui item id 99");
+    CHECK(Render(s.r).bgra == before.bgra);                      // 거부된 요청은 화면도 바꾸지 않는다
+
+    // 한도 64: 가득 차면 거부, 하나 지우면 다시 만들 수 있고 ID는 계속 늘어난다.
+    for (int i = 0; i < 62; ++i) CHECK(gge_ui_create_rect(s.r, 0, 0, 1, 1, 0, 0) == 3 + i);
+    CHECK(gge_ui_get_count(s.r) == 64);
+    CHECK(gge_ui_create_rect(s.r, 0, 0, 1, 1, 0, 255) == 0 && LastErrorHas("too many ui items (max 64)"));
+    CHECK(gge_ui_create_text(s.r, f.f, "x", 0, 0, 0, 0) == 0 && LastErrorHas("too many ui items (max 64)"));
+    CHECK(gge_ui_destroy(s.r, 3) == 1 && gge_ui_create_rect(s.r, 0, 0, 1, 1, 0, 255) == 65);
+    CHECK(gge_ui_destroy(s.r, 3) == 0 && LastErrorHas("unknown ui item id 3"));   // 이미 지운 ID
+}
+
+void Test_UiTextKeepsItsFontAliveAndSurvivesRendererSizes()
+{
+    FontHandle f(BdfText(TestGlyphs()));
+    if (!f.f) return;
+    // 폰트 핸들을 먼저 destroy해도 그 폰트를 쓰는 항목은 계속 그려진다(공유 참조). 렌더러를 파괴하면 항목과 폰트가 함께 정리된다.
+    GgeFont* temp = gge_font_load_memory(BdfText(TestGlyphs()).data(), BdfText(TestGlyphs()).size());
+    CHECK(temp != nullptr);
+    GgeRenderer* r = NewRenderer(64, 48);
+    if (!temp || !r) { gge_font_destroy(temp); if (r) gge_renderer_destroy(r); return; }
+    const Image base = Render(r);
+    CHECK(gge_ui_create_text(r, temp, "AB", 3, 3, 0, 0xFFFFFF) == 1);
+    const Image drawn = Render(r);
+    CHECK(CountExactPixels(drawn, 0xFFFFFF) == 38);
+    gge_font_destroy(temp);                                      // 핸들만 사라진다
+    CHECK(Render(r).bgra == drawn.bgra);
+    CHECK(gge_ui_set_text(r, 1, "가") == 1 && CountExactPixels(Render(r), 0xFFFFFF) > 0);   // 새 글자도 같은 폰트로 그린다
+    gge_renderer_destroy(r);
+
+    // 렌더 타깃 크기가 달라도(아주 작은 것, 가로로 긴 것, 글자가 걸치는 것) 같은 규칙으로 잘려서 그려지고 크래시가 없다.
+    const int sizes[][2] = {{1, 1}, {7, 5}, {33, 17}, {200, 12}};
+    for (const auto& sz : sizes) {
+        GgeRenderer* small = NewRenderer(sz[0], sz[1]);
+        if (!small) continue;
+        CHECK(gge_ui_create_rect(small, -2, -2, sz[0] + 4, 3, 0x0000FF, 255) == 1);
+        CHECK(gge_ui_create_text(small, f.f, "AB가\nW", sz[0] - 3, 1, 8, 0xFFFFFF) == 2);
+        const Image img = Render(small);
+        CHECK(img.width == sz[0] && img.height == sz[1]);
+        CHECK(CountExactPixels(img, 0x0000FF) >= std::min(sz[1], 1) );   // 위쪽 사각형이 줄어든 타깃에도 걸린다
+        gge_renderer_destroy(small);
+    }
+}
+
 int main()
 {
     struct Case { const char* name; std::function<void()> fn; };
@@ -5944,6 +6135,10 @@ int main()
         {"TextTreatsInvalidUtf8AndMissingGlyphsWithoutCrashing", Test_TextTreatsInvalidUtf8AndMissingGlyphsWithoutCrashing},
         {"TextAndRectanglesAreClippedAtTheBufferEdges", Test_TextAndRectanglesAreClippedAtTheBufferEdges},
         {"BitmapFontLoaderSurvivesRandomDamage", Test_BitmapFontLoaderSurvivesRandomDamage},
+        {"UiItemsDrawOverTheFinishedFrameWithoutPs1Effects", Test_UiItemsDrawOverTheFinishedFrameWithoutPs1Effects},
+        {"UiItemsKeepTheirOrderVisibilityAndAlpha", Test_UiItemsKeepTheirOrderVisibilityAndAlpha},
+        {"UiItemsRejectBadRequestsAndChangeNothing", Test_UiItemsRejectBadRequestsAndChangeNothing},
+        {"UiTextKeepsItsFontAliveAndSurvivesRendererSizes", Test_UiTextKeepsItsFontAliveAndSurvivesRendererSizes},
         {"SpawnedObjectStartsFromTheBakedTemplateAndLooksLikeABakedCopy", Test_SpawnedObjectStartsFromTheBakedTemplateAndLooksLikeABakedCopy},
         {"DestroyedObjectsLeaveNoTrace_AndTheirNamesCanBeReused", Test_DestroyedObjectsLeaveNoTrace_AndTheirNamesCanBeReused},
         {"SpawnRejectsBadRequests_AndChangesNothing", Test_SpawnRejectsBadRequests_AndChangesNothing},

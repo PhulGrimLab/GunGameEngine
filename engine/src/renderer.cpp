@@ -890,6 +890,115 @@ void Renderer::Render()
                     static_cast<const uint8_t*>(mapped.pData) + static_cast<size_t>(y) * mapped.RowPitch,
                     Stride());
     context_->Unmap(staging_.Get(), 0);
+    DrawUi();
+}
+
+// ---- 화면 위 항목 ----
+UiItem& Renderer::GetUi(int id)
+{
+    const auto it = ui_.find(id);
+    if (it == ui_.end())
+        throw std::runtime_error("unknown ui item id " + std::to_string(id));
+    return it->second;
+}
+
+int Renderer::CreateUiText(std::shared_ptr<const Font> font, std::string text, int x, int y, int maxWidth, uint32_t rgb)
+{
+    if (!font)
+        throw std::runtime_error("a text item needs a font");
+    if (text.size() > kMaxTextBytes)
+        throw std::runtime_error("text is too long (" + std::to_string(text.size()) + " bytes, max " + std::to_string(kMaxTextBytes) + ")");
+    if (static_cast<int>(ui_.size()) >= kMaxUiItems)
+        throw std::runtime_error("too many ui items (max " + std::to_string(kMaxUiItems) + ")");
+    UiItem item;
+    item.kind = UiKind::Text;
+    item.font = std::move(font);
+    item.text = std::move(text);
+    item.x = x;
+    item.y = y;
+    item.maxWidth = maxWidth;
+    item.rgb = rgb;
+    const int id = nextUi_++;
+    ui_.emplace(id, std::move(item));
+    return id;
+}
+
+int Renderer::CreateUiRect(int x, int y, int width, int height, uint32_t rgb, int alpha)
+{
+    if (width <= 0 || height <= 0)
+        throw std::runtime_error("rectangle size must be positive");
+    if (alpha < 0 || alpha > 255)
+        throw std::runtime_error("alpha must be 0..255");
+    if (static_cast<int>(ui_.size()) >= kMaxUiItems)
+        throw std::runtime_error("too many ui items (max " + std::to_string(kMaxUiItems) + ")");
+    UiItem item;
+    item.kind = UiKind::Rect;
+    item.x = x;
+    item.y = y;
+    item.width = width;
+    item.height = height;
+    item.rgb = rgb;
+    item.alpha = alpha;
+    const int id = nextUi_++;
+    ui_.emplace(id, std::move(item));
+    return id;
+}
+
+void Renderer::SetUiText(int id, std::string text)
+{
+    UiItem& item = GetUi(id);
+    if (item.kind != UiKind::Text)
+        throw std::runtime_error("ui item " + std::to_string(id) + " is a rectangle, not text");
+    if (text.size() > kMaxTextBytes)
+        throw std::runtime_error("text is too long (" + std::to_string(text.size()) + " bytes, max " + std::to_string(kMaxTextBytes) + ")");
+    item.text = std::move(text);
+}
+
+void Renderer::SetUiRect(int id, int width, int height, int alpha)
+{
+    UiItem& item = GetUi(id);
+    if (item.kind != UiKind::Rect)
+        throw std::runtime_error("ui item " + std::to_string(id) + " is text, not a rectangle");
+    if (width <= 0 || height <= 0)
+        throw std::runtime_error("rectangle size must be positive");
+    if (alpha < 0 || alpha > 255)
+        throw std::runtime_error("alpha must be 0..255");
+    item.width = width;
+    item.height = height;
+    item.alpha = alpha;
+}
+
+void Renderer::SetUiPosition(int id, int x, int y)
+{
+    UiItem& item = GetUi(id);
+    item.x = x;
+    item.y = y;
+}
+
+void Renderer::SetUiColor(int id, uint32_t rgb) { GetUi(id).rgb = rgb; }
+
+void Renderer::SetUiVisible(int id, bool visible) { GetUi(id).visible = visible; }
+
+void Renderer::DestroyUi(int id)
+{
+    GetUi(id);
+    ui_.erase(id);
+}
+
+void Renderer::ClearUi() { ui_.clear(); }
+
+void Renderer::DrawUi()
+{
+    for (const auto& [id, item] : ui_) {
+        if (!item.visible)
+            continue;
+        if (item.kind == UiKind::Rect) {
+            FillRect(pixels_.data(), width_, height_, Stride(), item.x, item.y, item.width, item.height, item.rgb, item.alpha);
+        } else {
+            const TextLayout layout = LayoutText(*item.font, item.text, item.maxWidth);
+            DrawLayout(*item.font, layout, pixels_.data(), width_, height_, Stride(), item.x, item.y, item.rgb);
+        }
+    }
 }
 
 }  // namespace gge

@@ -343,4 +343,27 @@ GGE_API int gge_font_draw_text(const GgeFont* font, const char* text_utf8, int m
 // 범위 밖 alpha, 크기가 0 이하인 사각형, 잘못된 버퍼 크기는 0(버퍼는 그대로).
 GGE_API int gge_fill_rect_bgra(uint8_t* bgra, int width, int height, int stride, int x, int y, int rect_width, int rect_height, uint32_t rgb, int alpha);
 
+// ---- 화면 위 항목(HUD/대화창): 렌더러가 매 gge_renderer_render의 끝에서 그린다 ----
+// 항목은 3D가 모두 그려지고 GPU 후처리(PS1 효과)가 끝난 뒤 gge_renderer_get_pixels가 돌려주는 CPU 픽셀에 덮어 그려진다: PS1 효과를 받지 않고, WARP/GPU/에디터/
+// 플레이어/헤드리스에서 바이트 단위로 같다. 좌표는 렌더 타깃의 정수 픽셀(왼쪽 위 기준)이며 화면 밖/음수/걸친 항목은 잘려서 그려진다. 그리는 순서는 만든 순서다
+// (먼저 만든 것이 아래: 대화창 배경 사각형을 글자보다 먼저 만든다). ID는 1부터, 해제 후 재사용하지 않고, 렌더러당 최대 64개. 실패하면 0이고 사유는 gge_last_error(상태 그대로).
+// 글자 항목은 폰트를 공유 참조하므로 gge_font_destroy를 먼저 해도 항목이 지워지거나 렌더러가 파괴될 때까지 폰트가 산다. gge_renderer_destroy는 항목을 모두 정리한다.
+// 글자 규칙(줄바꿈/잘못된 UTF-8/없는 글자/1024바이트 한도)은 gge_font_measure_text와 같다. max_width <= 0이면 '\n'에서만 줄을 바꾼다. rgb는 0xRRGGBB.
+GGE_API int gge_ui_create_text(GgeRenderer* r, const GgeFont* font, const char* text_utf8, int x, int y, int max_width, uint32_t rgb);
+// 채운 사각형: 크기 > 0, alpha 0..255(0 = 안 보임, 255 = 불투명, 그 사이는 정수 혼합).
+GGE_API int gge_ui_create_rect(GgeRenderer* r, int x, int y, int width, int height, uint32_t rgb, int alpha);
+// 글자 항목의 글자를 바꾼다(사각형 항목이면 실패). text가 NULL이면 빈 문자열.
+GGE_API int gge_ui_set_text(GgeRenderer* r, int item_id, const char* text_utf8);
+// 사각형 항목의 크기/알파를 바꾼다(글자 항목이면 실패). 체력 바 길이 같은 용도.
+GGE_API int gge_ui_set_rect(GgeRenderer* r, int item_id, int width, int height, int alpha);
+GGE_API int gge_ui_set_position(GgeRenderer* r, int item_id, int x, int y);
+GGE_API int gge_ui_set_color(GgeRenderer* r, int item_id, uint32_t rgb);
+// visible == 0이면 항목을 그리지 않는다(지우지 않고 숨김).
+GGE_API int gge_ui_set_visible(GgeRenderer* r, int item_id, int visible);
+GGE_API int gge_ui_destroy(GgeRenderer* r, int item_id);
+// 모든 항목을 지운다.
+GGE_API int gge_ui_clear(GgeRenderer* r);
+// 살아 있는 항목 수.
+GGE_API int gge_ui_get_count(const GgeRenderer* r);
+
 GGE_API const char* gge_last_error(void);
