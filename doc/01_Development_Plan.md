@@ -121,12 +121,12 @@ SIGNALIS 스타일(PS1풍 저해상도 3D, 고정 카메라, 3인칭 탐험/전�
 - **C++**: `engine/tests/engine_tests.cpp`. 외부 프레임워크 없이 C API 경계를 검증. 골든 이미지는 `engine/tests/golden/*.ppm`, `GGE_UPDATE_GOLDEN=1`로 재생성(재생성 후에는 반드시 이미지를 눈으로 확인).
 - **C#**: `tools/GunGame.Interop.Tests` (xUnit). 실제 `gge.dll`을 WARP로 호출.
 - **WPF 화면**: `GunGameEditor.exe --selftest <scene.json|obj> <png>`. OS 화면 캡처 없이 앱이 그린 비트맵과 창 전체(`.window.png`)를 직접 저장.
-- 테스트는 GPU 대신 WARP(소프트웨어 어댑터)를 사용해 결과를 안정화한다.
+- 기본 테스트는 GPU 대신 WARP(소프트웨어 어댑터)를 사용해 결과를 안정화한다. `build.cmd test-gpu`(환경 변수 `GGE_FORCE_DEVICE=hardware|warp`가 호출자의 선택을 덮어씀)는 같은 테스트를 하드웨어 GPU로 돌리며, 이때 골든 비교만 골든 기준 경계 픽셀 차이를 전체의 1%까지 허용한다.
 
 ## 성능 측정
-- `buildin\engine_bench.exe`(ctest 미등록, 수동 실행): 64x48 WARP에서 시나리오별 프레임당 ms. 해상도를 작게 해 래스터화보다 CPU 쪽 비용이 드러나게 한다.
+- `build\bin\engine_bench.exe` [--hw] (ctest 미등록, 수동 실행): 64x48에서 시나리오별 프레임당 ms(기본 WARP, `--hw`는 하드웨어 GPU). 해상도를 작게 해 래스터화보다 CPU 쪽 비용이 드러나게 한다.
 - 2026-10-30 기준선(WARP): 평면 큐브 1000개 4.2ms, 깊이 20 계층 2000개 9.4ms -> 8.4ms(월드 행렬 프레임 캐시 후), 스키닝 50개x본 32 0.37ms.
-- 엔진 자체의 CPU 로직(행렬/상수 준비)은 평면 1000개에서 0.07ms로 프레임의 약 2%다. 나머지는 객체마다 D3D 호출(상수 버퍼 갱신 + DrawIndexed) 비용이라, 더 줄이려면 배칭/인스턴싱 같은 구조 변경이 필요하다(하드웨어 GPU에서는 미측정).
+- 엔진 자체의 CPU 로직(행렬/상수 준비)은 평면 1000개에서 0.07ms로 프레임의 약 2%다. 나머지는 객체마다 D3D 호출(상수 버퍼 갱신 + DrawIndexed) 비용이라, 더 줄이려면 배칭/인스턴싱 같은 구조 변경이 필요하다. 하드웨어 GPU(2026-10-31, 기본 어댑터): 평면 1000개 0.76ms, 계층 100x20 1.03ms, 스키닝 0.37ms로 이 규모에선 급하지 않다.
 
 ## 빌드
-`build.cmd` (빌드), `build.cmd test` (빌드 + 전체 테스트). 요구: Visual Studio/Build Tools(C++ 워크로드), CMake, .NET SDK 10(Ninja 불필요). `build.cmd test`는 엔진 테스트 + 플레이어 ctest 5개 + C# 테스트 + UI 입력 테스트 + 뷰어 selftest를 모두 돌린다.
+`build.cmd` (빌드), `build.cmd test` (빌드 + 전체 테스트). 요구: Visual Studio/Build Tools(C++ 워크로드), CMake, .NET SDK 10(Ninja 불필요). `build.cmd test`는 엔진 테스트 + 플레이어 ctest 5개 + C# 테스트 + UI 입력 테스트 + 뷰어 selftest를 모두 돌린다. `build.cmd test-gpu`는 같은 전체를 하드웨어 GPU로 돌린다.

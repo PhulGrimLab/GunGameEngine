@@ -1,17 +1,19 @@
 // 엔진 CPU 쪽 프레임 비용 벤치마크. 테스트가 아니므로 ctest에 등록하지 않고 수동으로 실행한다:
-//   build\bin\engine_bench.exe
+//   build\bin\engine_bench.exe [--hw]   (--hw: WARP 대신 하드웨어 GPU)
 // 해상도를 작게 해서 래스터화(WARP)보다 오브젝트 순회/행렬/스키닝 준비 비용이 드러나게 한다.
 // 각 시나리오는 워밍업 후 프레임당 평균 ms를 출력한다.
 #include <gge/gge.h>
 
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 namespace {
 
 constexpr int kWidth = 64, kHeight = 48;
 constexpr int kWarmupFrames = 5, kMeasuredFrames = 60;
+int g_useWarp = 1;  // --hw로 하드웨어 GPU 사용
 
 // 단위 큐브(면당 정점 4개) 정점/인덱스.
 void MakeCube(std::vector<float>& v, std::vector<uint32_t>& idx)
@@ -48,7 +50,7 @@ double TimeRender(GgeRenderer* r)
 // 평면(루트) 큐브 count개를 격자로 배치.
 double BenchFlat(int count)
 {
-    GgeRenderer* r = gge_renderer_create(kWidth, kHeight, 1);
+    GgeRenderer* r = gge_renderer_create(kWidth, kHeight, g_useWarp);
     std::vector<float> v;
     std::vector<uint32_t> idx;
     MakeCube(v, idx);
@@ -68,7 +70,7 @@ double BenchFlat(int count)
 // 깊이 depth의 부모-자식 체인 chains개(마지막 단계 노드만 메시).
 double BenchDeepHierarchy(int chains, int depth)
 {
-    GgeRenderer* r = gge_renderer_create(kWidth, kHeight, 1);
+    GgeRenderer* r = gge_renderer_create(kWidth, kHeight, g_useWarp);
     std::vector<float> v;
     std::vector<uint32_t> idx;
     MakeCube(v, idx);
@@ -92,7 +94,7 @@ double BenchDeepHierarchy(int chains, int depth)
 // 본 bones개 체인 스켈레톤을 쓰는 스키닝 오브젝트 count개(클립 재생 중).
 double BenchSkinned(int count, int bones)
 {
-    GgeRenderer* r = gge_renderer_create(kWidth, kHeight, 1);
+    GgeRenderer* r = gge_renderer_create(kWidth, kHeight, g_useWarp);
     std::vector<float> v;
     std::vector<uint32_t> idx;
     MakeCube(v, idx);
@@ -141,9 +143,13 @@ double BenchSkinned(int count, int bones)
 
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
-    std::printf("engine_bench (%dx%d, WARP, %d frames avg)\n", kWidth, kHeight, kMeasuredFrames);
+    for (int i = 1; i < argc; ++i)
+        if (std::strcmp(argv[i], "--hw") == 0)
+            g_useWarp = 0;
+    std::printf("engine_bench (%dx%d, %s, %d frames avg)\n", kWidth, kHeight, g_useWarp ? "WARP" : "hardware GPU",
+                kMeasuredFrames);
     std::printf("  flat    1000 cubes          : %8.3f ms/frame\n", BenchFlat(1000));
     std::printf("  hierarchy 100 chains x d20  : %8.3f ms/frame\n", BenchDeepHierarchy(100, 20));
     std::printf("  skinned  50 objs x 32 bones : %8.3f ms/frame\n", BenchSkinned(50, 32));

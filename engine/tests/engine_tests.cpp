@@ -186,7 +186,54 @@ bool ReadPpm(const fs::path& path, Image& img)
     return true;
 }
 
-// 채널당 허용 오차 이내인지 비교한다.
+// GGE_FORCE_DEVICE=hardware 로 하드웨어 GPU에서 돌리는 중인가(엔진이 같은 변수를 읽는다).
+bool RunningOnHardware()
+{
+    const char* v = std::getenv("GGE_FORCE_DEVICE");
+    return v != nullptr && std::string(v) == "hardware";
+}
+
+// 골든과 채널 허용 오차를 넘게 다른 픽셀 수. 골든에서 색 경계 위에 있는 픽셀(이웃 8칸 중 하나와 채널이
+// 32 넘게 다름)은 edge로, 그 밖의 평평한 영역은 strict로 센다. 경계 여부를 실제 이미지로 판정하면
+// 평평한 곳에 생긴 고립된 오류 픽셀이 스스로 경계가 되어 버리므로 골든 기준으로만 본다.
+struct GoldenDiff { size_t strict = 0, edge = 0; };
+
+GoldenDiff CompareImages(const Image& expected, const Image& actual, int tolerance)
+{
+    auto far = [](uint32_t a, uint32_t b, int limit) {
+        return std::abs(Red(a) - Red(b)) > limit || std::abs(Green(a) - Green(b)) > limit ||
+               std::abs(Blue(a) - Blue(b)) > limit;
+    };
+    auto onEdge = [&](const Image& img, int x, int y) {
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) {
+                int nx = x + dx, ny = y + dy;
+                if (nx >= 0 && ny >= 0 && nx < img.width && ny < img.height && far(img.At(nx, ny), img.At(x, y), 32))
+                    return true;
+            }
+        return false;
+    };
+    GoldenDiff diff;
+    for (int y = 0; y < expected.height; ++y)
+        for (int x = 0; x < expected.width; ++x) {
+            if (!far(expected.At(x, y), actual.At(x, y), tolerance)) continue;
+            (onEdge(expected, x, y) ? diff.edge : diff.strict)++;
+        }
+    return diff;
+}
+
+// 하드웨어 GPU는 삼각형 경계의 래스터 규칙이 WARP(골든 기준)과 달라 경계 픽셀만 크게 다를 수 있다.
+// 그래서 하드웨어에서는 경계 픽셀 차이를 전체의 1%까지 허용하고, 평평한 영역은 여전히 엄격하게 본다.
+constexpr double kHardwareEdgeBudget = 0.01;
+
+bool GoldenAccepts(const GoldenDiff& diff, size_t pixelCount, bool hardware)
+{
+    if (diff.strict != 0) return false;
+    if (!hardware) return diff.edge == 0;
+    return static_cast<double>(diff.edge) <= kHardwareEdgeBudget * static_cast<double>(pixelCount);
+}
+
+// 채널당 허용 오차 이내인지 비교한다(하드웨어 GPU 실행이면 경계 픽셀 예외 적용).
 bool MatchesGolden(const std::string& name, const Image& actual, int tolerance = 2)
 {
     fs::path path = fs::path(GGE_TEST_DATA_DIR) / "golden" / (name + ".ppm");
@@ -200,13 +247,11 @@ bool MatchesGolden(const std::string& name, const Image& actual, int tolerance =
         return false;
     }
     if (expected.width != actual.width || expected.height != actual.height) return false;
-    for (size_t i = 0; i < expected.bgra.size(); ++i) {
-        if ((i % 4) == 3) continue;
-        if (std::abs(int(expected.bgra[i]) - int(actual.bgra[i])) > tolerance) {
-            std::printf("  golden mismatch at byte %zu\n", i);
-            WritePpm(fs::temp_directory_path() / (name + "_actual.ppm"), actual);
-            return false;
-        }
+    GoldenDiff diff = CompareImages(expected, actual, tolerance);
+    if (!GoldenAccepts(diff, static_cast<size_t>(expected.width) * expected.height, RunningOnHardware())) {
+        std::printf("  golden mismatch: %zu flat-area pixels, %zu edge pixels\n", diff.strict, diff.edge);
+        WritePpm(fs::temp_directory_path() / (name + "_actual.ppm"), actual);
+        return false;
     }
     return true;
 }
@@ -4047,10 +4092,73 @@ void Test_SceneSkeletonRestPoseIsReadPerBoneAndComponent()
 
 }  // namespace
 
+// 골든 비교 규칙: 평평한 영역 차이는 항상 실패, 경계 픽셀 차이는 하드웨어에서만 1% 예산 안에서 허용.
+void Test_GoldenCompareRules()
+{
+    // 왼쪽 절반 검정, 오른쪽 절반 흰색인 20x20(경계는 x=9/10).
+    auto make = [] {
+        Image img;
+        img.width = img.height = 20;
+        img.bgra.assign(20 * 20 * 4, 255);
+        for (int y = 0; y < 20; ++y)
+            for (int x = 0; x < 10; ++x)
+                for (int c = 0; c < 3; ++c) img.bgra[(static_cast<size_t>(y) * 20 + x) * 4 + c] = 0;
+        return img;
+    };
+    auto setPixel = [](Image& img, int x, int y, uint8_t v) {
+        for (int c = 0; c < 3; ++c) img.bgra[(static_cast<size_t>(y) * 20 + x) * 4 + c] = v;
+    };
+    const size_t pixels = 400;
+
+    Image golden = make();
+    GoldenDiff same = CompareImages(golden, make(), 2);
+    CHECK(same.strict == 0 && same.edge == 0);
+
+    Image within = make();
+    setPixel(within, 3, 3, 2);  // 허용 오차(2) 이내
+    GoldenDiff d = CompareImages(golden, within, 2);
+    CHECK(d.strict == 0 && d.edge == 0);
+    setPixel(within, 3, 3, 3);  // 허용 오차 초과
+    d = CompareImages(golden, within, 2);
+    CHECK(d.strict == 1 && d.edge == 0);
+
+    Image flat = make();
+    setPixel(flat, 3, 3, 100);  // 평평한 영역(왼쪽 검정) 안의 큰 차이
+    d = CompareImages(golden, flat, 2);
+    CHECK(d.strict == 1 && d.edge == 0);
+    CHECK(!GoldenAccepts(d, pixels, false));
+    CHECK(!GoldenAccepts(d, pixels, true));  // 하드웨어에서도 평평한 영역은 거부
+
+    Image edge = make();
+    setPixel(edge, 9, 5, 255);  // 경계에 붙은 픽셀 하나가 반대 색
+    d = CompareImages(golden, edge, 2);
+    CHECK(d.strict == 0 && d.edge == 1);
+    CHECK(!GoldenAccepts(d, pixels, false));  // WARP은 경계도 엄격
+    CHECK(GoldenAccepts(d, pixels, true));
+
+    // 예산: 400픽셀의 1% = 4개까지 허용, 5개부터 거부.
+    Image many = make();
+    for (int y = 0; y < 4; ++y) setPixel(many, 9, y, 255);
+    d = CompareImages(golden, many, 2);
+    CHECK(d.strict == 0 && d.edge == 4);
+    CHECK(GoldenAccepts(d, pixels, true));
+    setPixel(many, 9, 4, 255);
+    d = CompareImages(golden, many, 2);
+    CHECK(d.edge == 5);
+    CHECK(!GoldenAccepts(d, pixels, true));
+
+    // 경계 판정은 골든 기준이다: 골든의 평평한 곳에 실제가 만든 고립 픽셀은 이웃과 달라도 경계가 아니다.
+    Image spurious = make();
+    setPixel(spurious, 15, 3, 0);  // 오른쪽 흰 영역 안에 검은 점
+    d = CompareImages(golden, spurious, 2);
+    CHECK(d.strict == 1 && d.edge == 0);
+}
+
 int main()
 {
     struct Case { const char* name; std::function<void()> fn; };
     const Case cases[] = {
+        {"GoldenCompareRules", Test_GoldenCompareRules},
         {"CreateRejectsInvalidSize", Test_CreateRejectsInvalidSize},
         {"EmptySceneIsUniformBackground", Test_EmptySceneIsUniformBackground},
         {"CubeIsVisibleAndFlatShaded", Test_CubeIsVisibleAndFlatShaded},

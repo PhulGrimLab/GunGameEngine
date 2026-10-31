@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -161,6 +162,23 @@ Microsoft::WRL::ComPtr<ID3DBlob> Compile(const char* entry, const char* target)
     return code;
 }
 
+// 테스트용 오버라이드: GGE_FORCE_DEVICE=hardware|warp 이면 호출자의 선택 대신 그 값을 쓴다.
+// 같은 테스트를 코드 수정 없이 하드웨어 GPU로 다시 돌리기 위한 것이다(그 외 값/미설정은 무시).
+bool ResolveUseWarp(bool requested)
+{
+    char* value = nullptr;
+    size_t length = 0;
+    if (_dupenv_s(&value, &length, "GGE_FORCE_DEVICE") != 0 || value == nullptr)
+        return requested;
+    std::string mode(value);
+    free(value);
+    if (mode == "hardware")
+        return false;
+    if (mode == "warp")
+        return true;
+    return requested;
+}
+
 }  // namespace
 
 Renderer::Renderer(int width, int height, bool useWarp) : width_(width), height_(height)
@@ -168,6 +186,7 @@ Renderer::Renderer(int width, int height, bool useWarp) : width_(width), height_
     if (width <= 0 || height <= 0)
         throw std::runtime_error("invalid render size");
 
+    useWarp = ResolveUseWarp(useWarp);
     Check(D3D11CreateDevice(nullptr, useWarp ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
                             nullptr, 0, D3D11_SDK_VERSION, &device_, nullptr, &context_),
           "D3D11CreateDevice");
