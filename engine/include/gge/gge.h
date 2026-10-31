@@ -224,5 +224,11 @@ GGE_API int gge_scene_get_player(const GgeScene* s, float* x, float* z, float* y
 GGE_API const char* gge_scene_active_room_name(const GgeScene* s);
 // 이름이 같은 첫 노드의 렌더러 오브젝트 ID(없으면 0). 테스트/도구가 오브젝트를 직접 만질 때 쓴다.
 GGE_API int gge_scene_find_object(const GgeScene* s, const char* node_name_utf8);
+// 이름이 같은 트리거를 모두 켜거나 끈다(enabled != 0이면 켬). 바뀐 트리거 수(>0)를 반환하고, 그 이름이 없으면 0(gge_last_error에 사유).
+// 안에 있는 채로 끄면 다음 gge_scene_step에서 Exit, 안에 있는 채로 다시 켜면 Enter 이벤트가 나온다.
+GGE_API int gge_scene_set_trigger_enabled(GgeScene* s, const char* trigger_name_utf8, int enabled);
+// 플레이어를 바닥 위치 (x,z)로 즉시 옮긴다(문/방 이동). 활성 방, 카메라, 트리거(이벤트는 poll로)가 새 위치로 갱신되고 방향은 그대로다.
+// 플레이어가 없거나, 값이 유한하지 않거나, 어떤 방에도 속하지 않으면 0(상태는 그대로). 충돌체 안인지는 검사하지 않는다. 성공하면 1.
+GGE_API int gge_scene_teleport_player(GgeScene* s, float x, float z);
 
 GGE_API const char* gge_last_error(void);

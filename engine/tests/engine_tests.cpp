@@ -3414,6 +3414,12 @@ struct SpecRoom {
     float eye[3], target[3], fov;
 };
 
+struct SpecTrigger {
+    std::string name;
+    std::vector<float> polygon;
+    int tag = 0;
+};
+
 // 메시 0 = 정면 사각형(정적), 메시 1 = 3본 체인에 묶인 띠(스킨, 클립 "bend" 하나).
 struct Spec {
     std::vector<std::vector<uint8_t>> textures;
@@ -3422,6 +3428,7 @@ struct Spec {
     std::string clipName = "bend";
     int pointLights = 0;
     std::vector<SpecRoom> rooms;
+    std::vector<SpecTrigger> triggers;
     bool hasPlayer = false;
     int playerNode = 0;
     bool hasSpawn = false;
@@ -3520,7 +3527,10 @@ std::vector<uint8_t> Serialize(const Spec& spec)
         w.Vec3(r.eye[0], r.eye[1], r.eye[2]); w.Vec3(r.target[0], r.target[1], r.target[2]); w.F(r.fov);
     }
     w.U32(0);  // colliders
-    w.U32(0);  // triggers
+    w.U32(static_cast<uint32_t>(spec.triggers.size()));
+    for (const SpecTrigger& t : spec.triggers) {
+        w.Str(t.name); w.U32(static_cast<uint32_t>(t.polygon.size() / 2)); w.Floats(t.polygon); w.I32(t.tag);
+    }
     w.U8(spec.hasPlayer ? 1 : 0);
     if (spec.hasPlayer) {
         w.I32(spec.playerNode); w.U8(spec.hasSpawn ? 1 : 0); w.F(spec.spawn[0]); w.F(spec.spawn[1]); w.F(0.4f); w.F(3);
@@ -3862,6 +3872,172 @@ void Test_BakedPlaySampleWalkFollowsTheGameplayRules()
     gge_renderer_destroy(r);
 }
 
+// ---- 스크립트가 쓰는 쓰기 API: 이름으로 트리거 켜기/끄기, 플레이어 텔레포트 ----
+// 사각형 방 하나(-10..10)와 원점에 스폰하는 플레이어(노드 0)를 가진 씬. 트리거는 호출자가 채운다.
+Spec RoomWithPlayerSpec(const fs::path& bmp)
+{
+    Spec s = VisualSpec(bmp);
+    SpecRoom room;
+    room.name = "Room";
+    room.polygon = {-10, -10, 10, -10, 10, 10, -10, 10};
+    room.eye[0] = 0; room.eye[1] = 8; room.eye[2] = 8;
+    room.target[0] = room.target[1] = room.target[2] = 0;
+    room.fov = 0.8f;
+    s.rooms = {room};
+    s.hasPlayer = true; s.playerNode = 0; s.hasSpawn = true; s.spawn[0] = 0; s.spawn[1] = 0;
+    return s;
+}
+
+std::vector<float> Square(float cx, float cz, float half)
+{
+    return {cx - half, cz - half, cx + half, cz - half, cx + half, cz + half, cx - half, cz + half};
+}
+
+void Test_SceneSetTriggerEnabledByName()
+{
+    GgeRenderer* r = NewRenderer(160, 120);
+    GgeScene* scene = gge_scene_load(r, SamplePlayScene().string().c_str());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+    CHECK(DrainEvents(scene) == "Enter StartPad 1");
+
+    CHECK(gge_scene_set_trigger_enabled(scene, "StartPad", 0) == 1);
+    CHECK(DrainEvents(scene).empty());             // 이벤트는 다음 Step에서 나온다
+    CHECK(gge_scene_step(scene, 0, 0, 0) == 1);
+    CHECK(DrainEvents(scene) == "Exit StartPad 1");
+    CHECK(gge_scene_set_trigger_enabled(scene, "StartPad", 1) == 1);
+    CHECK(gge_scene_step(scene, 0, 0, 0) == 1);
+    CHECK(DrainEvents(scene) == "Enter StartPad 1");
+
+    CHECK(gge_scene_set_trigger_enabled(scene, "Nope", 0) == 0);
+    CHECK(std::string(gge_last_error()).find("no trigger named 'Nope'") != std::string::npos);
+    CHECK(gge_scene_set_trigger_enabled(scene, nullptr, 0) == 0);
+    CHECK(gge_scene_set_trigger_enabled(scene, "startpad", 0) == 0);   // 이름은 대소문자를 구분한다
+    CHECK(gge_scene_step(scene, 0, 0, 0) == 1);
+    CHECK(DrainEvents(scene).empty());                                  // 실패한 호출은 아무것도 바꾸지 않는다
+
+    // Door를 끄면 끝까지 걸어도 Door 이벤트가 없다(StartPad만 나간다).
+    CHECK(gge_scene_set_trigger_enabled(scene, "Door", 0) == 1);
+    std::string events;
+    for (int i = 0; i < 200; ++i) {
+        gge_scene_step(scene, 1, 0, 1.0f / 30);
+        std::string e = DrainEvents(scene);
+        if (!e.empty()) events += (events.empty() ? "" : ", ") + e;
+    }
+    CHECK(events == "Exit StartPad 1");
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(r);
+}
+
+void Test_SceneSetTriggerEnabledAffectsEveryTriggerWithTheName()
+{
+    fs::path bmp = TempDir() / "scene_trigger.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+    Spec spec = RoomWithPlayerSpec(bmp);
+    spec.triggers = {{"Zone", Square(0, 0, 2), 1}, {"Zone", Square(0, 0, 3), 2}, {"Other", Square(6, 6, 1), 3}};
+
+    GgeRenderer* r = NewRenderer(160, 120);
+    GgeScene* scene = gge_scene_load(r, WriteScene("triggers.ggs", Serialize(spec)).string().c_str());
+    if (!scene) std::printf("  load failed: %s\n", gge_last_error());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+    CHECK(DrainEvents(scene) == "Enter Zone 1, Enter Zone 2");
+
+    CHECK(gge_scene_set_trigger_enabled(scene, "Zone", 0) == 2);       // 이름이 같은 둘 다
+    gge_scene_step(scene, 0, 0, 0);
+    CHECK(DrainEvents(scene) == "Exit Zone 1, Exit Zone 2");
+    CHECK(gge_scene_set_trigger_enabled(scene, "Zone", 1) == 2);
+    gge_scene_step(scene, 0, 0, 0);
+    CHECK(DrainEvents(scene) == "Enter Zone 1, Enter Zone 2");
+    CHECK(gge_scene_set_trigger_enabled(scene, "Other", 0) == 1);      // 다른 이름은 건드리지 않는다
+    gge_scene_step(scene, 0, 0, 0);
+    CHECK(DrainEvents(scene).empty());
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(r);
+}
+
+void Test_SceneTeleportPlayerSwitchesRoomsAndCameraImmediately()
+{
+    GgeRenderer* r = NewRenderer(160, 120);
+    GgeScene* scene = gge_scene_load(r, SamplePlayScene().string().c_str());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+    CHECK(DrainEvents(scene) == "Enter StartPad 1");
+    const Image hall = Render(r);
+
+    CHECK(gge_scene_teleport_player(scene, 4, 0) == 1);
+    float x = 0, z = 0, yaw = 9;
+    CHECK(gge_scene_get_player(scene, &x, &z, &yaw) == 1);
+    CHECK(x == 4.0f && z == 0.0f && yaw == 0.0f);                       // 방향은 그대로
+    CHECK(std::strcmp(gge_scene_active_room_name(scene), "Annex") == 0);
+    CHECK(DrainEvents(scene) == "Exit StartPad 1, Enter Door 7");       // (4,0)은 Door 안: 트리거가 새 위치로 바로 갱신된다(Exit 먼저)
+    CHECK(Render(r).bgra != hall.bgra);                                // 카메라와 플레이어가 바로 옮겨졌다(Step 없이)
+
+    CHECK(gge_scene_teleport_player(scene, -4, 0) == 1);
+    CHECK(std::strcmp(gge_scene_active_room_name(scene), "Hall") == 0);
+    CHECK(DrainEvents(scene) == "Exit Door 7, Enter StartPad 1");
+    CHECK(Render(r).bgra == hall.bgra);                              // 원래 자리로 돌아오면 같은 화면
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(r);
+}
+
+void Test_SceneTeleportPlayerRejectsBadTargetsAndLeavesStateAlone()
+{
+    GgeRenderer* r = NewRenderer(160, 120);
+    GgeScene* scene = gge_scene_load(r, SamplePlayScene().string().c_str());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+    DrainEvents(scene);
+    gge_scene_teleport_player(scene, 4, 0);
+    DrainEvents(scene);
+    const Image before = Render(r);
+
+    CHECK(gge_scene_teleport_player(scene, 100, 100) == 0);            // 어떤 방에도 속하지 않음
+    CHECK(std::string(gge_last_error()).find("outside every room") != std::string::npos);
+    CHECK(gge_scene_teleport_player(scene, std::nanf(""), 0) == 0);
+    CHECK(gge_scene_teleport_player(scene, 0, INFINITY) == 0);
+    CHECK(std::string(gge_last_error()).find("finite") != std::string::npos);
+
+    float x = 0, z = 0;
+    CHECK(gge_scene_get_player(scene, &x, &z, nullptr) == 1);
+    CHECK(x == 4.0f && z == 0.0f);
+    CHECK(std::strcmp(gge_scene_active_room_name(scene), "Annex") == 0);
+    CHECK(DrainEvents(scene).empty());
+    CHECK(Render(r).bgra == before.bgra);
+    gge_scene_destroy(scene);
+
+    // 플레이어가 없는 씬
+    fs::path bmp = TempDir() / "scene_noplayer.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+    GgeScene* none = gge_scene_load(r, WriteScene("noplayer.ggs", Serialize(VisualSpec(bmp))).string().c_str());
+    CHECK(none != nullptr);
+    if (none) {
+        CHECK(gge_scene_teleport_player(none, 0, 0) == 0);
+        CHECK(std::string(gge_last_error()).find("no player") != std::string::npos);
+        gge_scene_destroy(none);
+    }
+    gge_renderer_destroy(r);
+}
+
+void Test_SceneTeleportPlayerResetsTheHeldInputDirection()
+{
+    // 입력을 누른 채 방이 바뀌면 컷 직후에는 이전 방 카메라 기준 방향을 유지한다. 텔레포트는 그 기준을 비워야 한다.
+    GgeRenderer* r = NewRenderer(160, 120);
+    GgeScene* scene = gge_scene_load(r, SamplePlayScene().string().c_str());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+    for (int i = 0; i < 3; ++i) gge_scene_step(scene, 1, 0, 1.0f / 30);   // Hall에서 오른쪽 입력 유지(기준 = Hall 카메라)
+    CHECK(gge_scene_teleport_player(scene, 4, 0) == 1);                   // Annex 카메라는 -X를 본다
+    for (int i = 0; i < 10; ++i) gge_scene_step(scene, 1, 0, 1.0f / 30);
+    float x = 0, z = 0;
+    gge_scene_get_player(scene, &x, &z, nullptr);
+    // 기준을 비웠다면 Annex 카메라의 오른쪽(-Z)으로 간다. 비우지 않았다면 Hall 기준(+X)으로 계속 간다.
+    CHECK(std::fabs(x - 4.0f) < 1e-3f);
+    CHECK(z < -0.3f);
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(r);
+}
+
 void Test_GoldenPlaySceneFromTheBakedSample()
 {
     GgeRenderer* r = NewRenderer(320, 240);
@@ -4159,6 +4335,11 @@ int main()
     struct Case { const char* name; std::function<void()> fn; };
     const Case cases[] = {
         {"GoldenCompareRules", Test_GoldenCompareRules},
+        {"SceneSetTriggerEnabledByName", Test_SceneSetTriggerEnabledByName},
+        {"SceneSetTriggerEnabledAffectsEveryTriggerWithTheName", Test_SceneSetTriggerEnabledAffectsEveryTriggerWithTheName},
+        {"SceneTeleportPlayerSwitchesRoomsAndCameraImmediately", Test_SceneTeleportPlayerSwitchesRoomsAndCameraImmediately},
+        {"SceneTeleportPlayerRejectsBadTargetsAndLeavesStateAlone", Test_SceneTeleportPlayerRejectsBadTargetsAndLeavesStateAlone},
+        {"SceneTeleportPlayerResetsTheHeldInputDirection", Test_SceneTeleportPlayerResetsTheHeldInputDirection},
         {"CreateRejectsInvalidSize", Test_CreateRejectsInvalidSize},
         {"EmptySceneIsUniformBackground", Test_EmptySceneIsUniformBackground},
         {"CubeIsVisibleAndFlatShaded", Test_CubeIsVisibleAndFlatShaded},

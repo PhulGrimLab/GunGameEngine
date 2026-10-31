@@ -63,6 +63,28 @@ public sealed unsafe class EngineScene : IDisposable
     /// <summary>이름이 같은 첫 노드의 렌더러 오브젝트 ID. 없으면 0.</summary>
     public int FindObject(string nodeName) => Native.gge_scene_find_object(Handle, nodeName);
 
+    /// <summary>
+    /// 이름이 같은 트리거를 모두 켜거나 끄고 바뀐 개수를 돌려준다. 그 이름이 없으면 <see cref="EngineException"/>.
+    /// 안에 있는 채로 끄면 다음 <see cref="Step"/>에서 Exit, 다시 켜면 Enter 이벤트가 나온다.
+    /// </summary>
+    public int SetTriggerEnabled(string triggerName, bool enabled)
+    {
+        int count = Native.gge_scene_set_trigger_enabled(Handle, triggerName, enabled ? 1 : 0);
+        if (count == 0)
+            throw new EngineException(Native.LastError());
+        return count;
+    }
+
+    /// <summary>
+    /// 플레이어를 바닥 위치로 즉시 옮긴다(문/방 이동). 활성 방, 카메라, 트리거가 바로 갱신되고 방향은 그대로다.
+    /// 플레이어가 없거나, 값이 유한하지 않거나, 어떤 방에도 속하지 않으면 <see cref="EngineException"/>(상태는 그대로).
+    /// </summary>
+    public void TeleportPlayer(float x, float z)
+    {
+        if (Native.gge_scene_teleport_player(Handle, x, z) == 0)
+            throw new EngineException(Native.LastError());
+    }
+
     private nint Handle => _handle != 0 ? _handle : throw new ObjectDisposedException(nameof(EngineScene));
 
     public void Dispose()
@@ -97,6 +119,12 @@ public sealed unsafe class EngineScene : IDisposable
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern int gge_scene_find_object(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string nodeName);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_set_trigger_enabled(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string triggerName, int enabled);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_teleport_player(nint scene, float x, float z);
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         private static extern nint gge_last_error();

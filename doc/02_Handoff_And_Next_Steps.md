@@ -30,9 +30,9 @@ SIGNALIS 스타일(PS1풍 저해상도 3D, 고정 카메라, 3인칭 탐험/전�
 4. **D. 독립 플레이어 + 씬 bake**: `.ggs` 형식 + C# `SceneBaker` + 엔진 `Scene` 런타임 + `gge_player.exe` + 에디터 Bake 버튼. **C# 플레이 모드와 C++ 런타임을 같은 입력으로 프레임마다 비교**(위치/방향/방/이벤트/화면 바이트)하고, 문서만 보고 따로 만든 작성기로 로더를 검증하고, 체크섬을 맞춘 무작위 손상 400건으로 로더가 죽지 않는지 확인.
 
 ## 현재 테스트 (`build.cmd test`, 모두 통과)
-- C++ 엔진 `engine_tests`: **123개 케이스, 35701 체크**(골든 이미지 포함)
+- C++ 엔진 `engine_tests`: **134개 케이스, 35833 체크**(골든 이미지 포함)
 - 플레이어 ctest 5개: `--self-test`, 헤드리스 걷기(이벤트/방 확인), **헤드리스 화면 = 엔진 골든(바이트 동일)**, 없는 씬/잘못된 대본 거부
-- C# `GunGame.Interop.Tests`: **224개**
+- C# `GunGame.Interop.Tests`: **230개**
 - 에디터 UI 입력 `GunGameEditor.UiTests`: **93개**
 - 뷰어 selftest: OK
 - 수동 도구(ctest 미등록): `build\bin\engine_bench.exe [--hw]`(프레임 비용, 기본 WARP: 평면 큐브 1000개 약 4.2~4.7ms, `--hw`는 하드웨어 GPU: 약 0.76ms), `tools/mutation/*`(뮤테이션/커버리지 하네스)
@@ -105,7 +105,9 @@ build.cmd            전체 빌드 + (test 인자 시) 전체 테스트
 
 ## 다음 단계 제안 (우선순위 순)
 ### E. 8단계: C# 스크립팅(.NET 호스팅)
-트리거 이벤트가 이미 `tag`로 스크립트 연결 지점을 제공하고, 구운 씬 런타임이 `gge_scene_poll_event`로 이름 있는 이벤트를 내보낸다. 스크립트가 엔티티(오브젝트 이동/표시, 트리거 켜고 끄기, 문/아이템)를 제어하는 테스트가 필요하다. 먼저 **트리거 on/off, 오브젝트 알파/표시 토글, 방 전환 요청** 같은 최소 엔진 API를 `gge_scene_*`에 더하는 것을 권장한다(현재 `gge_scene_*`는 읽기 전용에 가깝다).
+트리거 이벤트가 이미 `tag`로 스크립트 연결 지점을 제공하고, 구운 씬 런타임이 `gge_scene_poll_event`로 이름 있는 이벤트를 내보낸다.
+- **완료(E-1, 엔진 쓰기 API)**: `gge_scene_set_trigger_enabled`(이름 기준, 같은 이름 전부, 없으면 실패)와 `gge_scene_teleport_player`(방 이동: 활성 방/카메라/트리거 즉시 갱신, 입력 방향 기준 해제, 방 밖/NaN/플레이어 없음은 거부)를 추가했고 C# `EngineScene.SetTriggerEnabled/TeleportPlayer` 래퍼가 있다. 오브젝트 알파/표시는 `gge_scene_find_object` + 렌더러 `gge_object_set_alpha`로 이미 가능하다. C++ 테스트 5개 + C# 테스트 6개, 결함 주입 C++ 6건/C# 4건 모두 검출.
+- **남은 것(E-2, 스크립트 호스트)**: 스크립트를 어디서 어떻게 돌릴지 정해야 한다 - (a) 독립 플레이어(C++)가 .NET을 호스팅(hostfxr) 하거나, (b) C# 플레이어/호스트가 `EngineScene` 래퍼 위에서 돌리거나, (c) 에디터 플레이 모드 안에서만 지원. 이벤트 -> 스크립트 핸들러 -> 위 API 호출 흐름의 테스트가 필요하다.
 ### F. 성능/품질 병행 과제
 - 어댑터 선택 기능(예: `GGE_ADAPTER`)을 엔진에 추가해 Intel/AMD 각각에서 `test-gpu`와 `engine_bench --hw` 실행.
 - 실제 Blender `.glb`(스킨/애니메이션) 검증 파일 확보, 선택 하이라이트/기즈모/본 시각화, 뷰포트에서 방/영역 꼭짓점 끌기, CRT/노이즈 후처리.

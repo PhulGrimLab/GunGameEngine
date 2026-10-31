@@ -46,6 +46,16 @@ public:
     // 이름이 같은 첫 노드의 렌더러 오브젝트 ID. 없으면 0.
     int FindObject(const std::string& nodeName) const;
 
+    // 이름이 같은 트리거를 모두 켜거나 끄고 바뀐 개수(찾은 개수)를 반환한다. 없으면 0.
+    // 이벤트는 World::SetTriggerEnabled 규칙대로 다음 Step에서 나온다(안에 있는 채로 끄면 Exit, 다시 켜면 Enter).
+    int SetTriggerEnabled(const std::string& name, bool enabled);
+
+    // 플레이어를 바닥 위치 (x,z)로 즉시 옮긴다(문/방 이동용). 입력 방향 기준을 비우고(카메라 컷 보정 해제), 활성 방과
+    // 트리거를 새 위치로 갱신하며 렌더러 카메라/플레이어 변환에 바로 반영한다. 방향(yaw)은 그대로다.
+    // 플레이어가 없거나, 값이 유한하지 않거나, 어떤 방에도 속하지 않으면 예외(상태는 바뀌지 않는다).
+    // 충돌체 안으로 옮기는지는 검사하지 않는다(호출자가 문 앞 같은 열린 자리를 골라야 한다).
+    void TeleportPlayer(float x, float z);
+
 private:
     struct Animated {
         int object = 0;

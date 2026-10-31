@@ -487,3 +487,19 @@ GGE_API int gge_scene_find_object(const GgeScene* s, const char* node_name_utf8)
 {
     return s->impl.FindObject(node_name_utf8 ? node_name_utf8 : "");
 }
+
+GGE_API int gge_scene_set_trigger_enabled(GgeScene* s, const char* trigger_name_utf8, int enabled)
+{
+    return Guard([&] {
+        const std::string name = trigger_name_utf8 ? trigger_name_utf8 : "";
+        const int count = s->impl.SetTriggerEnabled(name, enabled != 0);
+        if (count == 0)
+            throw std::runtime_error("no trigger named '" + name + "'");
+        return count;
+    });
+}
+
+GGE_API int gge_scene_teleport_player(GgeScene* s, float x, float z)
+{
+    return Guard([&] { s->impl.TeleportPlayer(x, z); return 1; });
+}

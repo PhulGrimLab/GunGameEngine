@@ -240,4 +240,30 @@ int Scene::FindObject(const std::string& nodeName) const
     return 0;
 }
 
+int Scene::SetTriggerEnabled(const std::string& name, bool enabled)
+{
+    int count = 0;
+    for (size_t i = 0; i < _data.triggers.size(); ++i)
+        if (_data.triggers[i].name == name) {
+            _world.SetTriggerEnabled(static_cast<int>(i) + 1, enabled);
+            ++count;
+        }
+    return count;
+}
+
+void Scene::TeleportPlayer(float x, float z)
+{
+    if (!_player.present)
+        throw std::runtime_error("the scene has no player to teleport");
+    if (!std::isfinite(x) || !std::isfinite(z))
+        throw std::runtime_error("teleport position must be finite");
+    if (_world.FindRoom(x, z) == 0)
+        throw std::runtime_error("teleport position (" + std::to_string(x) + ", " + std::to_string(z) + ") is outside every room");
+    _position = {x, z};
+    _world.ResetInputFrame();
+    _world.UpdateActiveRoom(x, z);
+    UpdateTriggers();
+    ApplyPlayer();
+}
+
 }  // namespace gge
