@@ -9,6 +9,7 @@ add_library(gge SHARED
     src/world.cpp
     src/scene_io.cpp
     src/scene.cpp
+    src/font.cpp
     src/capi.cpp)
 target_include_directories(gge PUBLIC include PRIVATE src)
 target_compile_definitions(gge PRIVATE GGE_EXPORTS NOMINMAX WIN32_LEAN_AND_MEAN)

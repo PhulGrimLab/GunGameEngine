@@ -150,8 +150,9 @@ public sealed class Spawner : IGameScript
         {
             (float X, float Z) player = context.PlayerPosition ?? throw new InvalidOperationException("the scene has no player");
             string name = $"Crate{++_counter}";
-            // 위치는 템플릿과 같은 부모(여기서는 루트) 기준이다. 높이는 템플릿의 구운 값(0.3)을 따른다.
-            context.SpawnObject("Crate", name, player.X, 0.3f, player.Z);
+            // 위치는 템플릿과 같은 부모(여기서는 루트) 기준이다. 높이는 템플릿의 위치에서 읽는다(숨겨도 위치는 그대로).
+            float height = context.GetObjectPosition("Crate")?.Y ?? throw new InvalidOperationException("the scene has no node named 'Crate'");
+            context.SpawnObject("Crate", name, player.X, height, player.Z);
             _spawned.Push(name);
             context.Log($"spawned {name} at {player.X:F2}, {player.Z:F2}");
         }

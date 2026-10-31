@@ -5506,6 +5506,7 @@ void Test_SpawnAndDestroyKeepEveryInvariantUnderRandomSequences()
     unsigned seed = 12345;
     auto next = [&] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
     int total = 0, spawned = 0, destroyed = 0, refused = 0;
+    const int failuresBefore = g_failures;
     for (int op = 0; op < 3000; ++op) {
         f.Step();   // 한 프레임 한도에 걸리지 않게 매 연산마다 프레임을 넘긴다
         const std::string name = "I" + std::to_string(next() % 40);
@@ -5528,7 +5529,7 @@ void Test_SpawnAndDestroyKeepEveryInvariantUnderRandomSequences()
             }
             CHECK(f.Exists("Crate") && f.Exists("Panel"));
         }
-        if (g_failures > 0) break;   // 첫 실패에서 멈춘다(로그가 쏟아지지 않게)
+        if (g_failures > failuresBefore) break;   // 첫 실패에서 멈춘다(로그가 쏟아지지 않게)
     }
     CHECK(spawned > 200 && destroyed > 200 && refused > 200);          // 세 경로가 모두 실제로 쓰였다
     for (const auto& [n, t] : live) CHECK(f.Destroy(n.c_str()) == 1);
@@ -5543,10 +5544,406 @@ void Test_SpawnAndDestroyKeepEveryInvariantUnderRandomSequences()
     }
 }
 
+// ---- 비트맵 폰트(BDF)와 글자 그리기 ----
+// 작은 합성 BDF: 글꼴 높이 ascent 7 + descent 2 = 줄 높이 9. 글리프: 공백(폭 4), A(5x7, 폭 6), B(4x7, 폭 5), W(8x7, 폭 9), g(4x6, 기준선 아래 2줄, 폭 5),
+// 가(9x8, 폭 10), U+FFFD(5x5 마름모, 폭 6), .notdef(5x7 빈 네모, 폭 6).
+struct BdfGlyph {
+    std::string name;
+    int encoding, advance, w, h, xo, yo;
+    std::vector<std::string> rows;
+};
+
+std::string BdfText(const std::vector<BdfGlyph>& glyphs, int ascent = 7, int descent = 2)
+{
+    std::string s = "STARTFONT 2.1\nFONT -test-font\nSIZE 9 75 75\nFONTBOUNDINGBOX 10 9 0 -2\nSTARTPROPERTIES 2\nFONT_ASCENT " + std::to_string(ascent) +
+                    "\nFONT_DESCENT " + std::to_string(descent) + "\nENDPROPERTIES\nCHARS " + std::to_string(glyphs.size()) + "\n";
+    for (const BdfGlyph& g : glyphs) {
+        s += "STARTCHAR " + g.name + "\nENCODING " + std::to_string(g.encoding) + "\nSWIDTH 500 0\nDWIDTH " + std::to_string(g.advance) + " 0\nBBX " +
+             std::to_string(g.w) + " " + std::to_string(g.h) + " " + std::to_string(g.xo) + " " + std::to_string(g.yo) + "\nBITMAP\n";
+        for (const std::string& r : g.rows) s += r + "\n";
+        s += "ENDCHAR\n";
+    }
+    return s + "ENDFONT\n";
+}
+
+std::vector<BdfGlyph> TestGlyphs(bool withReplacementAndNotdef = true)
+{
+    std::vector<BdfGlyph> g = {
+        {"U+0020", 32, 4, 0, 0, 0, 0, {}},
+        {"U+0041", 65, 6, 5, 7, 0, 0, {"70", "88", "88", "F8", "88", "88", "88"}},
+        {"U+0042", 66, 5, 4, 7, 0, 0, {"F0", "90", "F0", "90", "90", "90", "F0"}},
+        {"U+0057", 87, 9, 8, 7, 0, 0, {"81", "81", "81", "99", "A5", "A5", "42"}},
+        {"U+0067", 103, 5, 4, 6, 1, -2, {"70", "90", "90", "70", "10", "E0"}},   // 왼쪽 위 모서리가 펜에서 1픽셀 오른쪽(xOffset 1)
+        {"U+AC00", 0xAC00, 10, 9, 8, 0, -1, {"FF80", "8080", "8080", "FF80", "0080", "0080", "0080", "FF80"}},
+    };
+    if (withReplacementAndNotdef) {
+        g.push_back({"U+FFFD", 0xFFFD, 6, 5, 5, 0, 0, {"20", "70", "F8", "70", "20"}});
+        g.push_back({".notdef", -1, 6, 5, 7, 0, 0, {"F8", "88", "88", "88", "88", "88", "F8"}});
+    }
+    return g;
+}
+
+struct FontHandle {
+    GgeFont* f = nullptr;
+    explicit FontHandle(const std::string& bdf)
+    {
+        f = gge_font_load_memory(bdf.data(), bdf.size());
+        if (!f) std::printf("  font load failed: %s\n", gge_last_error());
+        CHECK(f != nullptr);
+    }
+    ~FontHandle() { gge_font_destroy(f); }
+};
+
+struct Canvas {
+    int w, h;
+    std::vector<uint8_t> px;
+    Canvas(int width, int height) : w(width), h(height), px(static_cast<size_t>(width) * height * 4, 0x55) {}
+    int Stride() const { return w * 4; }
+    // '#': 색이 그려진 픽셀(기본 0x336699), '.': 손대지 않은 픽셀, '?': 그 밖
+    std::string Ascii(uint32_t rgb = 0x336699) const
+    {
+        std::string out;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const uint8_t* p = &px[(static_cast<size_t>(y) * w + x) * 4];
+                if (p[0] == (rgb & 0xFF) && p[1] == ((rgb >> 8) & 0xFF) && p[2] == ((rgb >> 16) & 0xFF) && p[3] == 255) out += '#';
+                else if (p[0] == 0x55 && p[1] == 0x55 && p[2] == 0x55 && p[3] == 0x55) out += '.';
+                else out += '?';
+            }
+            out += '\n';
+        }
+        return out;
+    }
+};
+
+std::string Rows(std::initializer_list<const char*> rows)
+{
+    std::string s;
+    for (const char* r : rows) { s += r; s += '\n'; }
+    return s;
+}
+
+int DrawText(const FontHandle& f, Canvas& c, const char* text, int x, int y, int maxWidth = 0, uint32_t rgb = 0x336699)
+{
+    return gge_font_draw_text(f.f, text, maxWidth, c.px.data(), c.w, c.h, c.Stride(), x, y, rgb);
+}
+
+void Test_BitmapFontParsesGlyphsMetricsAndDrawsExactPixels()
+{
+    FontHandle f(BdfText(TestGlyphs()));
+    if (!f.f) return;
+    int ascent = -1, descent = -1;
+    CHECK(gge_font_get_metrics(f.f, &ascent, &descent) == 1 && ascent == 7 && descent == 2);
+    CHECK(gge_font_has_glyph(f.f, 'A') == 1 && gge_font_has_glyph(f.f, 0xAC00) == 1 && gge_font_has_glyph(f.f, 0xFFFD) == 1);
+    CHECK(gge_font_has_glyph(f.f, 'Z') == 0 && gge_font_has_glyph(f.f, 0x1F600) == 0 && gge_font_has_glyph(f.f, 0xFFFFFFFFu) == 0);
+
+    // 'A'를 (2,1)에: 기준선 = 1 + 7, 비트맵 맨 위 줄 = 1. 비트맵과 한 픽셀도 다르지 않아야 한다.
+    Canvas c(10, 10);
+    CHECK(DrawText(f, c, "A", 2, 1) == 1);
+    CHECK(c.Ascii() == Rows({"..........", "...###....", "..#...#...", "..#...#...", "..#####...", "..#...#...", "..#...#...", "..#...#...", "..........", ".........."}));
+    // 그려진 픽셀의 바이트: B, G, R, 알파 255. 나머지 바이트는 그대로.
+    const uint8_t* lit = &c.px[(static_cast<size_t>(1) * 10 + 3) * 4];
+    CHECK(lit[0] == 0x99 && lit[1] == 0x66 && lit[2] == 0x33 && lit[3] == 255);
+
+    // 내려가는 글자 g: 비트맵 아래쪽 2줄이 기준선(y + 7) 아래로 나온다.
+    Canvas g(8, 10);
+    CHECK(DrawText(f, g, "g", 1, 0) == 1);
+    CHECK(g.Ascii() == Rows({"........", "........", "........", "...###..", "..#..#..", "..#..#..", "...###..", ".....#..", "..###...", "........"}));
+
+    // 두 글자: 펜이 advance(6)만큼 간다. 한글(9x8, 기준선 아래 1줄).
+    Canvas two(16, 10);
+    CHECK(DrawText(f, two, "AB", 0, 0) == 1);
+    CHECK(two.Ascii() == Rows({".###..####......","#...#.#..#......", "#...#.####......", "#####.#..#......", "#...#.#..#......", "#...#.#..#......", "#...#.####......", "................", "................", "................"}));
+    Canvas hangul(12, 10);
+    CHECK(DrawText(f, hangul, "가", 1, 0) == 1);
+    CHECK(hangul.Ascii() == Rows({".#########..", ".#.......#..", ".#.......#..", ".#########..", ".........#..", ".........#..", ".........#..", ".#########..", "............", "............"}));
+}
+
+void Test_BitmapFontRejectsMalformedFilesWithAReason()
+{
+    const std::string good = BdfText(TestGlyphs());
+    auto replace = [&](const std::string& from, const std::string& to) {
+        std::string s = good;
+        const size_t at = s.find(from);
+        CHECK(at != std::string::npos);
+        if (at != std::string::npos) s.replace(at, from.size(), to);
+        return s;
+    };
+    // from(포함)부터 until(포함)까지 지운다.
+    auto cut = [](std::string s, const std::string& from, const std::string& until) {
+        const size_t a = s.find(from);
+        CHECK(a != std::string::npos);
+        const size_t b = a == std::string::npos ? a : s.find(until, a);
+        CHECK(b != std::string::npos);
+        if (a != std::string::npos && b != std::string::npos) s.erase(a, b + until.size() - a);
+        return s;
+    };
+    struct Case { const char* what; std::string bdf; const char* reason; };
+    const Case cases[] = {
+        {"empty", "", "the font file is empty"},
+        {"no STARTFONT", "FONT x\nENDFONT\n", "must start with STARTFONT"},
+        {"truncated before ENDFONT", good.substr(0, good.size() - 8), "ends before ENDFONT"},
+        {"truncated inside a bitmap", good.substr(0, good.find("88\n88\n88\n") + 3), "ends inside a bitmap"},
+        {"truncated inside a glyph", good.substr(0, good.find("DWIDTH 6")), "ends inside the glyph"},
+        {"CHARS larger than the file has", replace("CHARS 8", "CHARS 9"), "CHARS declares 9 glyphs but the file has 7 with a character code (8 in all)"},
+        {"CHARS smaller than the file has", replace("CHARS 8", "CHARS 6"), "more glyphs than CHARS declares"},
+        {"CHARS too big", replace("CHARS 8", "CHARS 200001"), "CHARS 200001 is out of range"},
+        {"CHARS not a number", replace("CHARS 8", "CHARS x"), "CHARS must be an integer"},
+        {"no CHARS line", replace("CHARS 8\n", ""), "CHARS must come before the first glyph"},
+        {"bitmap row too short", replace("\n70\n88\n", "\n7\n88\n"), "hex digits, expected 2"},
+        {"no ascent and no bounding box", cut(cut(good, "FONTBOUNDINGBOX", "\n"), "STARTPROPERTIES", "ENDPROPERTIES\n"), "neither FONT_ASCENT/FONT_DESCENT nor FONTBOUNDINGBOX"},
+        {"bitmap row too long", replace("\n70\n88\n", "\n7000\n88\n"), "hex digits, expected 2"},
+        {"bitmap row not hex", replace("\n70\n88\n", "\nZZ\n88\n"), "must be hexadecimal"},
+        {"too many bitmap rows", replace("F8\n88\n88\n88\n", "F8\n88\n88\n88\n88\n88\n"), "expected ENDCHAR"},
+        {"too few bitmap rows", replace("\n70\n88\n88\nF8\n88\n88\n88\nENDCHAR", "\n70\n88\n88\nF8\n88\n88\nENDCHAR"), "hex digits, expected 2"},
+        {"negative BBX width", replace("BBX 5 7 0 0", "BBX -5 7 0 0"), "BBX width -5 is out of range"},
+        {"huge BBX width", replace("BBX 5 7 0 0", "BBX 65 7 0 0"), "BBX width 65 is out of range"},
+        {"huge BBX height", replace("BBX 5 7 0 0", "BBX 5 1234567890123 0 0"), "BBX height must be an integer"},
+        {"BBX height beyond the limit", replace("BBX 5 7 0 0", "BBX 5 99999999 0 0"), "BBX height 99999999 is out of range"},
+        {"huge DWIDTH", replace("DWIDTH 6 0\nBBX 5 7 0 0\nBITMAP\n70", "DWIDTH 257 0\nBBX 5 7 0 0\nBITMAP\n70"), "DWIDTH 257 is out of range"},
+        {"negative DWIDTH", replace("DWIDTH 6 0\nBBX 5 7 0 0\nBITMAP\n70", "DWIDTH -1 0\nBBX 5 7 0 0\nBITMAP\n70"), "DWIDTH -1 is out of range"},
+        {"duplicate encoding", replace("ENCODING 66", "ENCODING 65"), "duplicate glyph"},
+        {"encoding out of range", replace("ENCODING 66", "ENCODING 1114112"), "ENCODING 1114112 is out of range"},
+        {"surrogate encoding", replace("ENCODING 66", "ENCODING 55296"), "is a surrogate"},
+        {"missing BBX", replace("BBX 4 7 0 0\n", ""), "needs ENCODING, DWIDTH and BBX"},
+        {"missing ENCODING", replace("ENCODING 66\n", ""), "needs ENCODING, DWIDTH and BBX"},
+        {"glyph without ENDCHAR", replace("ENDCHAR\nSTARTCHAR U+0042", "STARTCHAR U+0042"), "expected ENDCHAR"},
+        {"glyph block restarts before BITMAP", replace("BITMAP\n70", "STARTCHAR U+0043\nBITMAP\n70"), "is not closed with ENDCHAR"},
+        {"control character", replace("SIZE 9 75 75", std::string("SIZE 9 75 \x01")), "control character"},
+    };
+    for (const Case& c : cases) {
+        GgeFont* font = gge_font_load_memory(c.bdf.data(), c.bdf.size());
+        if (font || !LastErrorHas(c.reason)) std::printf("  not rejected as expected: %s (error: %s)\n", c.what, gge_last_error());
+        CHECK(font == nullptr);
+        CHECK(LastErrorHas(c.reason));
+        gge_font_destroy(font);
+    }
+
+    // 높이가 없는 글꼴은 거부(ascent + descent == 0), ascent/descent가 없으면 FONTBOUNDINGBOX로 대신한다.
+    {
+        const std::string noMetric = BdfText(TestGlyphs(), 0, 0);
+        GgeFont* font = gge_font_load_memory(noMetric.data(), noMetric.size());
+        CHECK(font == nullptr && LastErrorHas("no line height"));
+        std::string fallback = good;
+        fallback.erase(fallback.find("STARTPROPERTIES 2\n"), std::string("STARTPROPERTIES 2\nFONT_ASCENT 7\nFONT_DESCENT 2\nENDPROPERTIES\n").size());
+        GgeFont* viaBox = gge_font_load_memory(fallback.data(), fallback.size());
+        int a = 0, d = 0;
+        CHECK(viaBox != nullptr && gge_font_get_metrics(viaBox, &a, &d) == 1 && a == 7 && d == 2);   // 상자 높이 9, y 오프셋 -2
+        gge_font_destroy(viaBox);
+    }
+    // 크기 한도(32MB 초과)와 없는 파일, null 인자.
+    {
+        const std::string big((32u << 20) + 1, ' ');   // 파일 크기 상한 32MB를 1바이트 넘는다
+        CHECK(gge_font_load_memory(big.data(), big.size()) == nullptr && LastErrorHas("too large"));
+        CHECK(gge_font_load("Z:\\no\\such\\font.bdf") == nullptr && LastErrorHas("cannot open font file"));
+        CHECK(gge_font_load(nullptr) == nullptr && LastErrorHas("cannot open font file"));
+        CHECK(gge_font_load_memory(nullptr, 5) == nullptr && LastErrorHas("null font data"));
+        CHECK(gge_font_load_memory(nullptr, 0) == nullptr && LastErrorHas("empty"));
+    }
+    // CHARS는 코드 포인트가 있는 글리프 수(7: 실제 Galmuri 파일이 이렇다)로 세어도, .notdef까지 전부(8) 세어도 받는다. 그 밖의 수는 거부한다.
+    for (int declared : {7, 8}) {
+        const std::string bdf = replace("CHARS 8", "CHARS " + std::to_string(declared));
+        GgeFont* font = gge_font_load_memory(bdf.data(), bdf.size());
+        CHECK(font != nullptr);
+        gge_font_destroy(font);
+    }
+    // 줄바꿈이 CRLF인 파일도 같은 결과다.
+    {
+        std::string crlf;
+        for (char ch : good) { if (ch == '\n') crlf += '\r'; crlf += ch; }
+        FontHandle f(crlf);
+        CHECK(f.f && gge_font_has_glyph(f.f, 'A') == 1);
+    }
+}
+
+void Test_TextMeasuringFollowsTheLineRules()
+{
+    FontHandle f(BdfText(TestGlyphs()));
+    if (!f.f) return;
+    auto measure = [&](const char* text, int maxWidth, int& w, int& h, int& n) { w = h = n = -1; CHECK(gge_font_measure_text(f.f, text, maxWidth, &w, &h, &n) == 1); };
+    int w, h, n;
+    measure("AB", 0, w, h, n);            CHECK(w == 11 && h == 9 && n == 1);          // 6 + 5, 줄 높이 9
+    measure("", 0, w, h, n);              CHECK(w == 0 && h == 0 && n == 0);
+    measure(nullptr, 0, w, h, n);         CHECK(w == 0 && h == 0 && n == 0);
+    measure("\t\r", 0, w, h, n);          CHECK(n == 0);                                // 제어 문자만: 줄이 없다
+    measure("A\tB\r", 0, w, h, n);        CHECK(w == 11 && n == 1);                     // 탭/CR은 무시
+    measure("A\nB", 0, w, h, n);          CHECK(w == 6 && h == 18 && n == 2);
+    measure("A\n", 0, w, h, n);           CHECK(n == 2 && h == 18);                     // 끝의 '\n'은 빈 마지막 줄
+    measure("\n", 0, w, h, n);            CHECK(n == 2 && w == 0);
+    measure("\n\n", 0, w, h, n);          CHECK(n == 3);
+    measure("ABABABABAB", 0, w, h, n);    CHECK(n == 1 && w == 55);                     // 폭 0 이하 = 줄바꿈 없음
+    measure("ABABABABAB", -5, w, h, n);   CHECK(n == 1);
+
+    // 폭에 맞춘 줄바꿈: 공백이 있으면 마지막 공백에서, 없으면 글자 경계에서.
+    measure("AB AB", 20, w, h, n);        CHECK(n == 2 && w == 11);                     // "AB"(11) + 공백(4) + A(6) = 21 > 20
+    measure("AB AB", 21, w, h, n);        CHECK(n == 2 && w == 11);                     // 21까지는 A에서 들어가지만 마지막 B에서 넘어 마지막 공백에서 끊는다
+    measure("AB AB", 26, w, h, n);        CHECK(n == 1 && w == 26);                     // 딱 맞으면(<= 폭) 한 줄
+    measure("ABABAB", 15, w, h, n);       CHECK(n == 3 && w == 11);                     // 공백 없음: 글자 경계에서
+    measure("AB A", 11, w, h, n);         CHECK(n == 2 && w == 11);                     // 넘는 자리의 공백은 사라진다: 줄 둘, 둘째 줄은 공백으로 시작하지 않는다
+    measure("AB ", 11, w, h, n);          CHECK(n == 1 && w == 11);                     // 줄 끝 공백이 사라져도 빈 줄이 생기지 않는다
+    measure("A B C", 6, w, h, n);         CHECK(n == 3);                                // 6 폭에 한 글자씩
+    measure("W", 5, w, h, n);             CHECK(n == 1 && w == 9);                      // 폭보다 넓은 글자 하나는 혼자 한 줄(무한 루프 없음)
+    measure("WW", 5, w, h, n);            CHECK(n == 2 && w == 9);
+    measure("가가가", 20, w, h, n);        CHECK(n == 2 && w == 20);                     // 10 + 10 = 20은 들어간다(넘어야 줄을 바꾼다)
+    measure("가가가", 19, w, h, n);        CHECK(n == 3 && w == 10);
+    measure("AAAA BBBB", 24, w, h, n);    CHECK(n == 2 && w == 24);                     // 24 + 4 > 24: 공백에서 끊는다. 둘째 줄 BBBB = 20
+    measure("ABAB\nAB", 8, w, h, n);      CHECK(n == 6);                                // 낱글자마다 한 줄(4) + '\n' 뒤의 AB도 폭 8에 한 글자씩(2)
+
+    // 줄바꿈된 결과를 실제로 그린다: "AB AB"를 폭 20으로 -> 줄 높이 9로 두 줄.
+    Canvas c(12, 20);
+    CHECK(DrawText(f, c, "AB AB", 0, 0, 20) == 1);
+    const std::string line = Rows({".###..####..", "#...#.#..#..","#...#.####..", "#####.#..#..", "#...#.#..#..", "#...#.#..#..", "#...#.####..", "............", "............"});
+    CHECK(c.Ascii() == line + line + Rows({"............", "............"}));
+}
+
+void Test_TextTreatsInvalidUtf8AndMissingGlyphsWithoutCrashing()
+{
+    FontHandle f(BdfText(TestGlyphs()));
+    FontHandle bare(BdfText(TestGlyphs(false)));   // U+FFFD도 .notdef도 없는 폰트
+    if (!f.f || !bare.f) return;
+    auto width = [&](const FontHandle& font, const char* text) { int w = -1, n = -1; CHECK(gge_font_measure_text(font.f, text, 0, &w, nullptr, &n) == 1); return w; };
+    // 있는 글자는 그대로: A 6, 한글 10. 폰트에 없는 유효한 글자(é, 이모지)는 .notdef(폭 6) 하나.
+    CHECK(width(f, "A") == 6 && width(f, "가") == 10);
+    CHECK(width(f, "\xC3\xA9") == 6);                // é U+00E9: 없음 -> .notdef
+    CHECK(width(f, "\xF0\x9F\x98\x80") == 6);        // 이모지(4바이트): .notdef 하나
+    CHECK(width(f, "Z") == 6);                       // 없는 ASCII도 같다
+    // 잘못된 UTF-8: WHATWG의 최대 부분 열 하나당 U+FFFD(폭 6) 하나.
+    CHECK(width(f, "\xFF") == 6);                    // 시작 바이트가 될 수 없는 값
+    CHECK(width(f, "\x80") == 6);                    // 단독 연속 바이트
+    CHECK(width(f, "\xC3") == 6);                    // 잘린 2바이트
+    CHECK(width(f, "\xE2\x82") == 6);                // 잘린 3바이트 = 하나
+    CHECK(width(f, "\xC0\x80") == 12);               // overlong: C0은 시작 불가, 80은 단독 -> 둘
+    CHECK(width(f, "\xE0\x80\x80") == 18);           // overlong 3바이트 -> 셋
+    CHECK(width(f, "\xED\xA0\x80") == 18);           // 서로게이트(U+D800) -> 셋
+    CHECK(width(f, "\xF4\x90\x80\x80") == 24);       // U+110000 -> 넷
+    CHECK(width(f, "A\xC3(") == 18);                 // A 6 + 깨진 C3 6 + '('(없는 글자 .notdef) 6: '('는 다시 읽는다
+    CHECK(width(f, "A\xFFZ") == 18);
+    // 폰트에 U+FFFD와 .notdef가 없으면 대체 글자는 폭 0의 빈 글리프다(크래시 없음, 줄 규칙 그대로).
+    CHECK(width(bare, "\xFF") == 0 && width(bare, "Z") == 0 && width(bare, "AZA") == 12);
+    // 같은 입력을 그려도 크래시 없이 끝난다(그릴 것이 없는 폰트 포함).
+    Canvas c(40, 20);
+    CHECK(DrawText(f, c, "A\xFF\xC3\xA9\xF0\x9F\x98\x80Z", 0, 0) == 1);
+    CHECK(gge_font_draw_text(bare.f, "A\xFFZ", 0, c.px.data(), c.w, c.h, c.Stride(), 0, 0, 0xFFFFFF) == 1);
+    // 깨진 글자는 .notdef가 아니라 U+FFFD 모양(마름모)으로 그려진다.
+    Canvas d(8, 10);
+    CHECK(DrawText(f, d, "\xFF", 0, 0) == 1);
+    CHECK(d.Ascii() == Rows({"........", "........", "..#.....", ".###....", "#####...", ".###....", "..#.....", "........", "........", "........"}));
+    // 문자열 한도: 1024바이트는 되고 1025바이트는 거부(버퍼 그대로).
+    const std::string ok(1024, 'A'), tooLong(1025, 'A');
+    CHECK(gge_font_measure_text(f.f, ok.c_str(), 0, nullptr, nullptr, nullptr) == 1);
+    Canvas e(8, 8);
+    CHECK(gge_font_measure_text(f.f, tooLong.c_str(), 0, nullptr, nullptr, nullptr) == 0 && LastErrorHas("too long"));
+    CHECK(DrawText(f, e, tooLong.c_str(), 0, 0) == 0 && e.Ascii() == Canvas(8, 8).Ascii());
+    // C 문자열이므로 NUL에서 끝난다. null 폰트/버퍼는 거부.
+    CHECK(width(f, "A\0B") == 6);
+    CHECK(gge_font_measure_text(nullptr, "A", 0, nullptr, nullptr, nullptr) == 0 && LastErrorHas("null font"));
+    CHECK(gge_font_draw_text(f.f, "A", 0, nullptr, 8, 8, 32, 0, 0, 0) == 0 && LastErrorHas("invalid pixel buffer"));
+    CHECK(gge_font_draw_text(f.f, "A", 0, e.px.data(), 8, 8, 31, 0, 0, 0) == 0 && LastErrorHas("invalid pixel buffer"));   // stride < width * 4
+    CHECK(gge_font_draw_text(f.f, "A", 0, e.px.data(), 0, 8, 32, 0, 0, 0) == 0);
+    CHECK(gge_font_get_metrics(nullptr, nullptr, nullptr) == 0 && gge_font_has_glyph(nullptr, 'A') == 0);
+}
+
+void Test_TextAndRectanglesAreClippedAtTheBufferEdges()
+{
+    FontHandle f(BdfText(TestGlyphs()));
+    if (!f.f) return;
+    // 왼쪽/위로 걸친 'A': 보이는 부분만 그려지고 나머지는 잘린다(x = -3, y = -2).
+    Canvas c(6, 6);
+    CHECK(DrawText(f, c, "A", -3, -2) == 1);
+    CHECK(c.Ascii() == Rows({".#....", "##....", ".#....", ".#....", ".#....", "......"}));
+    // 오른쪽/아래로 걸친 글자도 같다(버퍼 6x6, 'A'를 (4,3)에: 위쪽 세 줄, 왼쪽 두 열만 보인다).
+    Canvas r(6, 6);
+    CHECK(DrawText(f, r, "A", 4, 3) == 1);
+    CHECK(r.Ascii() == Rows({"......", "......", "......", ".....#", "....#.", "....#."}));
+    // 완전히 밖(극단 좌표 포함)은 아무것도 바꾸지 않고 실패도 아니다.
+    const int far[] = {100, -100, 2147483647, -2147483647 - 1};
+    for (int x : far)
+        for (int y : far) {
+            Canvas e(6, 6);
+            CHECK(DrawText(f, e, "AB가", x, y) == 1);
+            CHECK(e.Ascii() == Canvas(6, 6).Ascii());
+        }
+    // 사각형: 부분/완전 밖/극단 크기. 채운 범위 = 버퍼와 겹치는 부분.
+    Canvas rect(6, 4);
+    CHECK(gge_fill_rect_bgra(rect.px.data(), 6, 4, rect.Stride(), -2, 1, 4, 2, 0x336699, 255) == 1);
+    CHECK(rect.Ascii() == Rows({"......", "##....", "##....", "......"}));
+    Canvas huge(6, 4);
+    CHECK(gge_fill_rect_bgra(huge.px.data(), 6, 4, huge.Stride(), -2147483647 - 1, -2147483647 - 1, 2147483647, 2147483647, 0x336699, 255) == 1);
+    CHECK(huge.Ascii() == Canvas(6, 4).Ascii());   // [-2^31, -1]에 그려지므로 버퍼와 안 겹친다
+    Canvas whole(6, 4);
+    CHECK(gge_fill_rect_bgra(whole.px.data(), 6, 4, whole.Stride(), -5, -5, 2147483647, 2147483647, 0x336699, 255) == 1);
+    CHECK(whole.Ascii() == Rows({"######", "######", "######", "######"}));
+    Canvas out(6, 4);
+    CHECK(gge_fill_rect_bgra(out.px.data(), 6, 4, out.Stride(), 6, 0, 3, 3, 0x336699, 255) == 1 && out.Ascii() == Canvas(6, 4).Ascii());
+    // 크기가 다른 렌더 타깃에서도 같은 규칙(1x1, 가로로 긴 버퍼).
+    Canvas one(1, 1);
+    CHECK(gge_fill_rect_bgra(one.px.data(), 1, 1, one.Stride(), 0, 0, 5, 5, 0x336699, 255) == 1 && one.Ascii() == "#\n");
+    // 행 간격이 가로보다 큰 버퍼(stride): 패딩 바이트는 건드리지 않는다.
+    std::vector<uint8_t> padded(static_cast<size_t>(8 * 4 * 3), 0x55);
+    CHECK(gge_fill_rect_bgra(padded.data(), 4, 3, 8 * 4, 0, 0, 9, 9, 0x336699, 255) == 1);
+    for (int y = 0; y < 3; ++y)
+        for (int x = 0; x < 8; ++x) CHECK((padded[(static_cast<size_t>(y) * 8 + x) * 4] == 0x99) == (x < 4));
+
+    // 알파 혼합: 정수 식 (src*a + dst*(255-a) + 127) / 255. 알파 채널은 건드리지 않는다.
+    Canvas blend(2, 1);
+    for (int i = 0; i < 2; ++i) { blend.px[i * 4 + 0] = 100; blend.px[i * 4 + 1] = 200; blend.px[i * 4 + 2] = 50; blend.px[i * 4 + 3] = 77; }
+    CHECK(gge_fill_rect_bgra(blend.px.data(), 2, 1, blend.Stride(), 0, 0, 1, 1, 0xFF0000, 128) == 1);   // 빨강 R=255
+    CHECK(blend.px[0] == 50 && blend.px[1] == 100 && blend.px[2] == 153 && blend.px[3] == 77);        // B (0*128+100*127+127)/255, G, R
+    CHECK(blend.px[4] == 100 && blend.px[5] == 200 && blend.px[6] == 50);                             // 옆 픽셀은 그대로
+    CHECK(gge_fill_rect_bgra(blend.px.data(), 2, 1, blend.Stride(), 1, 0, 1, 1, 0xFF0000, 0) == 1 && blend.px[4] == 100);   // 알파 0 = 그리지 않음
+    CHECK(gge_fill_rect_bgra(blend.px.data(), 2, 1, blend.Stride(), 1, 0, 1, 1, 0xFF0000, 255) == 1 && blend.px[4] == 0 && blend.px[6] == 255 && blend.px[7] == 255);   // 255 = 덮어쓰기(알파 255)
+    CHECK(gge_fill_rect_bgra(blend.px.data(), 2, 1, blend.Stride(), 0, 0, 1, 1, 0, 256) == 0 && LastErrorHas("alpha must be 0..255"));
+    CHECK(gge_fill_rect_bgra(blend.px.data(), 2, 1, blend.Stride(), 0, 0, 1, 1, 0, -1) == 0);
+    CHECK(gge_fill_rect_bgra(blend.px.data(), 2, 1, blend.Stride(), 0, 0, 0, 1, 0, 255) == 0 && LastErrorHas("rectangle size must be positive"));
+    CHECK(gge_fill_rect_bgra(blend.px.data(), 2, 1, blend.Stride(), 0, 0, 1, -3, 0, 255) == 0);
+    CHECK(gge_fill_rect_bgra(nullptr, 2, 1, 8, 0, 0, 1, 1, 0, 255) == 0 && LastErrorHas("invalid pixel buffer"));
+}
+
+// 정상 폰트를 무작위로 망가뜨려(줄 삭제/복제, 바이트 바꾸기, 자르기, 쓰레기 끼우기) 읽어도 죽지 않고, 읽힌 폰트로 글자를 그려도 죽지 않는다.
+void Test_BitmapFontLoaderSurvivesRandomDamage()
+{
+    const std::string good = BdfText(TestGlyphs());
+    unsigned seed = 2024;
+    auto next = [&] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+    int accepted = 0, rejected = 0;
+    for (int round = 0; round < 600; ++round) {
+        std::string s = good;
+        const int edits = 1 + static_cast<int>(next() % 3);
+        for (int e = 0; e < edits && !s.empty(); ++e) {
+            const size_t at = next() % s.size();
+            switch (next() % 6) {
+                case 0: s[at] = static_cast<char>(next()); break;                                           // 바이트 바꾸기
+                case 1: s.erase(at, 1 + next() % 12); break;                                                // 잘라내기
+                case 2: s.resize(at); break;                                                                // 자르기
+                case 3: s.insert(at, std::string(1 + next() % 6, static_cast<char>(next() % 256))); break;  // 쓰레기 끼우기
+                case 4: { size_t b = s.rfind('\n', at); size_t eol = s.find('\n', at); if (b != std::string::npos && eol != std::string::npos) s.erase(b, eol - b); break; }   // 줄 삭제
+                case 5: { size_t b = s.rfind('\n', at); size_t eol = s.find('\n', at); if (b != std::string::npos && eol != std::string::npos) s.insert(b, s.substr(b, eol - b)); break; }   // 줄 복제
+            }
+        }
+        GgeFont* font = gge_font_load_memory(s.data(), s.size());
+        if (!font) {
+            CHECK(std::string(gge_last_error()).size() > 0);
+            ++rejected;
+            continue;
+        }
+        ++accepted;
+        Canvas c(30, 20);
+        CHECK(gge_font_draw_text(font, "ABg W\n가A\xFF", 25, c.px.data(), c.w, c.h, c.Stride(), -2, -1, 0xFFFFFF) == 1);
+        gge_font_destroy(font);
+    }
+    CHECK(accepted > 20 && rejected > 100);   // 두 경로가 모두 실제로 쓰였다
+}
+
 int main()
 {
     struct Case { const char* name; std::function<void()> fn; };
     const Case cases[] = {
+        {"BitmapFontParsesGlyphsMetricsAndDrawsExactPixels", Test_BitmapFontParsesGlyphsMetricsAndDrawsExactPixels},
+        {"BitmapFontRejectsMalformedFilesWithAReason", Test_BitmapFontRejectsMalformedFilesWithAReason},
+        {"TextMeasuringFollowsTheLineRules", Test_TextMeasuringFollowsTheLineRules},
+        {"TextTreatsInvalidUtf8AndMissingGlyphsWithoutCrashing", Test_TextTreatsInvalidUtf8AndMissingGlyphsWithoutCrashing},
+        {"TextAndRectanglesAreClippedAtTheBufferEdges", Test_TextAndRectanglesAreClippedAtTheBufferEdges},
+        {"BitmapFontLoaderSurvivesRandomDamage", Test_BitmapFontLoaderSurvivesRandomDamage},
         {"SpawnedObjectStartsFromTheBakedTemplateAndLooksLikeABakedCopy", Test_SpawnedObjectStartsFromTheBakedTemplateAndLooksLikeABakedCopy},
         {"DestroyedObjectsLeaveNoTrace_AndTheirNamesCanBeReused", Test_DestroyedObjectsLeaveNoTrace_AndTheirNamesCanBeReused},
         {"SpawnRejectsBadRequests_AndChangesNothing", Test_SpawnRejectsBadRequests_AndChangesNothing},

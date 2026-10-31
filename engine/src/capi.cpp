@@ -1,9 +1,11 @@
 #include <gge/gge.h>
 
 #include <cstring>
+#include <memory>
 #include <string>
 
 #include "error.h"
+#include "font.h"
 #include "mesh_io.h"
 #include "obj_loader.h"
 #include "renderer.h"
@@ -19,6 +21,10 @@ struct GgeRenderer {
 
 struct GgeWorld {
     gge::World impl;
+};
+
+struct GgeFont {
+    std::shared_ptr<const gge::Font> impl;   // 화면 항목(P3.2)이 같은 폰트를 공유하므로 핸들을 destroy해도 참조 중이면 살아 있다
 };
 
 struct GgeScene {
@@ -711,6 +717,87 @@ GGE_API int gge_scene_object_exists(const GgeScene* s, const char* node_name_utf
 }
 
 GGE_API int gge_scene_get_dynamic_node_count(const GgeScene* s) { return s->impl.DynamicNodeCount(); }
+
+// ---- 폰트와 글자 그리기 ----
+GGE_API GgeFont* gge_font_load(const char* path_utf8)
+{
+    try {
+        return new GgeFont{std::make_shared<const gge::Font>(gge::Font::LoadFile(path_utf8 ? path_utf8 : ""))};
+    } catch (const std::exception& e) {
+        gge::LastError() = e.what();
+        return nullptr;
+    }
+}
+
+GGE_API GgeFont* gge_font_load_memory(const void* data, size_t size)
+{
+    try {
+        if (!data && size > 0)
+            throw std::runtime_error("null font data");
+        return new GgeFont{std::make_shared<const gge::Font>(gge::Font::Parse(std::string_view(static_cast<const char*>(data), size)))};
+    } catch (const std::exception& e) {
+        gge::LastError() = e.what();
+        return nullptr;
+    }
+}
+
+GGE_API void gge_font_destroy(GgeFont* font) { delete font; }
+
+GGE_API int gge_font_get_metrics(const GgeFont* font, int* ascent, int* descent)
+{
+    if (!font)
+        return Guard([&]() -> int { throw std::runtime_error("null font"); });
+    if (ascent)
+        *ascent = font->impl->Ascent();
+    if (descent)
+        *descent = font->impl->Descent();
+    return 1;
+}
+
+GGE_API int gge_font_has_glyph(const GgeFont* font, uint32_t codepoint) { return font && font->impl->Find(codepoint) ? 1 : 0; }
+
+GGE_API int gge_font_measure_text(const GgeFont* font, const char* text_utf8, int max_width, int* width, int* height, int* lines)
+{
+    return Guard([&] {
+        if (!font)
+            throw std::runtime_error("null font");
+        const gge::TextLayout layout = gge::LayoutText(*font->impl, text_utf8 ? text_utf8 : "", max_width);
+        if (width)
+            *width = layout.width;
+        if (height)
+            *height = layout.height;
+        if (lines)
+            *lines = static_cast<int>(layout.lines.size());
+        return 1;
+    });
+}
+
+GGE_API int gge_font_draw_text(const GgeFont* font, const char* text_utf8, int max_width, uint8_t* bgra, int width, int height, int stride, int x, int y, uint32_t rgb)
+{
+    return Guard([&] {
+        if (!font)
+            throw std::runtime_error("null font");
+        if (!bgra || width <= 0 || height <= 0 || stride < width * 4)
+            throw std::runtime_error("invalid pixel buffer (need a pointer, positive size and stride >= width * 4)");
+        const gge::TextLayout layout = gge::LayoutText(*font->impl, text_utf8 ? text_utf8 : "", max_width);
+        gge::DrawLayout(*font->impl, layout, bgra, width, height, stride, x, y, rgb);
+        return 1;
+    });
+}
+
+GGE_API int gge_fill_rect_bgra(uint8_t* bgra, int width, int height, int stride, int x, int y, int rect_width, int rect_height, uint32_t rgb, int alpha)
+{
+    return Guard([&] {
+        if (!bgra || width <= 0 || height <= 0 || stride < width * 4)
+            throw std::runtime_error("invalid pixel buffer (need a pointer, positive size and stride >= width * 4)");
+        if (alpha < 0 || alpha > 255)
+            throw std::runtime_error("alpha must be 0..255");
+        if (rect_width <= 0 || rect_height <= 0)
+            throw std::runtime_error("rectangle size must be positive");
+        gge::FillRect(bgra, width, height, stride, x, y, rect_width, rect_height, rgb, alpha);
+        return 1;
+    });
+}
 
 GGE_API int gge_scene_get_node_slot_count(const GgeScene* s) { return s->impl.NodeSlotCount(); }
 

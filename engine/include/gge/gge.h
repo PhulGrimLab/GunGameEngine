@@ -1,4 +1,5 @@
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef GGE_EXPORTS
@@ -310,10 +311,36 @@ GGE_API int gge_scene_destroy_object(GgeScene* s, const char* instance_name_utf8
 GGE_API int gge_scene_object_exists(const GgeScene* s, const char* node_name_utf8);
 // 살아 있는 복제 노드 수(자손 포함).
 GGE_API int gge_scene_get_dynamic_node_count(const GgeScene* s);
-// 노드 슬롯 수(씬 파일의 노드 + 복제가 쓴 슬롯의 최대치). 지운 슬롯은 재사용되므로 씬 파일 노드 수 + 256(복제 노드 한도)을 넘어 늘지 않는다. 진단용.
+// 노드 슬롯 수(씬 파일의 노드 + 복제가 쓴 슬롯의 최대치). 지운 슬롯은 재사용되므로 씬 파일 노드 수 + 256(복제 노드 한도)을 넘어 늘지 않는다. 진단/테스트용이며 안정 API가 아니다.
 GGE_API int gge_scene_get_node_slot_count(const GgeScene* s);
 // 테스트 전용(안정 API 아님, 배포 빌드에서 제거/비활성 대상: doc/04 P10): 이후 spawn이 n번째(1부터) 렌더러 오브젝트를 만든 직후 실패하게 한다(-1 = 끔).
 // 중간 실패 되돌림 검증용이며 게임 코드가 쓸 일은 없다. C# 래퍼/스크립트 API에는 노출하지 않는다.
 GGE_API int gge_scene_set_spawn_failure_for_tests(GgeScene* s, int after_nodes);
+
+// ---- 비트맵 폰트와 글자 그리기(P3) ----
+// 폰트는 BDF 비트맵 파일(예: Galmuri11.bdf, 한글 완성형 11172자 포함)이고 글자는 1비트 픽셀 그대로 정수 좌표에 그린다. 그리기는 호출자가 준 BGRA 버퍼에
+// 정수 연산만으로 덮어쓰므로 어느 렌더 장치/프로세스에서나 바이트 단위로 같다. 렌더러의 화면에 올리는 항목은 P3.2에서 추가한다.
+// 폰트 핸들은 렌더러/씬과 독립이고, 핸들을 destroy해도 그 폰트를 참조 중인 화면 항목이 있으면 항목이 지워질 때까지 폰트는 살아 있다(참조 공유).
+typedef struct GgeFont GgeFont;
+// BDF 파일(UTF-8 경로)을 읽는다. 잘못된 파일(잘림, 글리프 수 불일치, 한도 초과(파일 32MB, 글리프 20만, 글리프 한 변 64px), 중복 인코딩 등)은 NULL이고 사유("font file 'x': line N: ...")는 gge_last_error.
+GGE_API GgeFont* gge_font_load(const char* path_utf8);
+// 메모리의 BDF 텍스트(NUL 불필요)를 읽는다. 규칙은 gge_font_load와 같다.
+GGE_API GgeFont* gge_font_load_memory(const void* data, size_t size);
+GGE_API void gge_font_destroy(GgeFont* font);
+// 줄 높이 = ascent + descent(픽셀). 각 포인터는 NULL 가능.
+GGE_API int gge_font_get_metrics(const GgeFont* font, int* ascent, int* descent);
+// 코드 포인트(유니코드 스칼라 값)의 글리프가 폰트에 있으면 1, 없으면 0.
+GGE_API int gge_font_has_glyph(const GgeFont* font, uint32_t codepoint);
+// UTF-8 글자를 줄로 나눠 크기를 잰다. 규칙(gge_font_draw_text와 같다): '\n'은 줄바꿈(N개면 N+1줄), 탭/CR/그 밖의 제어 문자는 무시, max_width > 0이면 그 폭을
+// 넘기 전에 줄을 바꾸고(줄 안의 마지막 공백에서, 공백이 없으면 글자 경계에서; 폭보다 넓은 글자 하나는 혼자 한 줄) 0 이하면 '\n'에서만 바꾼다. 잘못된 UTF-8은
+// U+FFFD 글자로, 폰트에 없는 글자는 폰트의 .notdef(빈 네모)로 보이며 폭/줄 규칙은 그대로다. 문자열은 1024바이트까지(초과는 0, 사유는 gge_last_error).
+// text가 NULL이면 빈 문자열(0줄). width/height/lines는 NULL 가능. 성공하면 1.
+GGE_API int gge_font_measure_text(const GgeFont* font, const char* text_utf8, int max_width, int* width, int* height, int* lines);
+// BGRA 버퍼(행 간격 stride 바이트, 픽셀당 4바이트)에 글자를 그린다. (x, y)는 첫 줄 윗변의 왼쪽 위이고 줄 높이는 ascent + descent다. 글자는 불투명 1비트이며
+// rgb는 0xRRGGBB. 버퍼 밖/음수 좌표/걸친 글자는 잘라서 그린다. 규칙과 한도는 gge_font_measure_text와 같고 실패하면 0(버퍼는 그대로).
+GGE_API int gge_font_draw_text(const GgeFont* font, const char* text_utf8, int max_width, uint8_t* bgra, int width, int height, int stride, int x, int y, uint32_t rgb);
+// BGRA 버퍼에 채운 사각형을 그린다. alpha 0..255(0은 아무것도 안 그림, 255는 덮어쓰기, 그 사이는 정수 혼합 (src*a + dst*(255-a) + 127) / 255). 버퍼 밖은 잘라서 그린다.
+// 범위 밖 alpha, 크기가 0 이하인 사각형, 잘못된 버퍼 크기는 0(버퍼는 그대로).
+GGE_API int gge_fill_rect_bgra(uint8_t* bgra, int width, int height, int stride, int x, int y, int rect_width, int rect_height, uint32_t rgb, int alpha);
 
 GGE_API const char* gge_last_error(void);
