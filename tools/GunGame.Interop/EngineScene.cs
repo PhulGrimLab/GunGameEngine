@@ -13,8 +13,20 @@ public readonly record struct SceneEventData(TriggerEventKind Kind, int Tag, str
 public sealed unsafe class EngineScene : IDisposable
 {
     private nint _handle;
+    private readonly bool _owned;
 
-    private EngineScene(nint handle) => _handle = handle;
+    private EngineScene(nint handle, bool owned = true)
+    {
+        _handle = handle;
+        _owned = owned;
+    }
+
+    /// <summary>
+    /// 이미 만들어진 네이티브 씬(예: 독립 플레이어가 호스팅한 .NET 스크립트가 받은 핸들)을 <b>빌려 쓴다</b>.
+    /// Dispose해도 네이티브 씬은 해제되지 않으며, 씬의 수명은 만든 쪽이 책임진다.
+    /// </summary>
+    public static EngineScene Attach(nint sceneHandle) =>
+        sceneHandle != 0 ? new EngineScene(sceneHandle, owned: false) : throw new ArgumentException("null scene handle", nameof(sceneHandle));
 
     /// <summary>.ggs 파일을 렌더러에 올린다. 렌더러의 조명/그림자 설정은 씬의 값으로 바뀐다.</summary>
     /// <exception cref="EngineException">파일을 읽을 수 없거나 형식/체크섬/내용이 잘못되었을 때(사유 포함).</exception>
@@ -85,13 +97,17 @@ public sealed unsafe class EngineScene : IDisposable
             throw new EngineException(Native.LastError());
     }
 
+    /// <summary>네이티브 씬 핸들(<see cref="Attach"/>와 짝). 해제된 씬이면 ObjectDisposedException.</summary>
+    public nint NativeHandle => Handle;
+
     private nint Handle => _handle != 0 ? _handle : throw new ObjectDisposedException(nameof(EngineScene));
 
     public void Dispose()
     {
         if (_handle == 0)
             return;
-        Native.gge_scene_destroy(_handle);
+        if (_owned)
+            Native.gge_scene_destroy(_handle);
         _handle = 0;
     }
 

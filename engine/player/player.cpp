@@ -11,6 +11,10 @@
 //   --frames N         헤드리스에서 진행할 프레임 수(기본 1, 프레임당 1/30초).
 //   --keys 스크립트     헤드리스 입력 대본: "D:60,W:30,DW:20,-:10" = 키 조합을 프레임 수만큼 누름(W A S D, '-'은 아무것도 안 누름).
 //   --screenshot 파일   헤드리스 마지막 프레임을 PPM(P6)으로 저장한다.
+//   --script 파일.dll   게임 스크립트(C#, GunGame.Scripting의 IGameScript)를 .NET 런타임을 띄워 실행한다. 이벤트/프레임마다 호출되고
+//                      엔진 쓰기 API(트리거 켜기/끄기, 텔레포트)와 오브젝트 알파로 게임을 바꾼다. 스크립트 예외는 사유를 출력하고 종료(코드 1).
+//   --script-type 이름  어셈블리에 스크립트가 여럿일 때 그 타입(전체/짧은 이름)만 실행한다(기본은 모두).
+//   --script-host-dir 폴더  GunGame.ScriptHost.dll이 있는 폴더(기본 <exe 폴더>\script_host; tools\GunGameTools.slnx 빌드가 채운다).
 //   --self-test        입력 매핑/대본 해석의 자체 검사를 하고 끝낸다.
 // 조작: WASD/방향키 또는 게임패드 왼쪽 스틱, Esc 종료. 입력은 활성 방 카메라 기준이다.
 #define NOMINMAX
@@ -24,8 +28,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
+
+#include "script_host.h"
 
 namespace {
 
@@ -144,6 +151,7 @@ struct Options {
     bool warp = false, retro = true, headless = false, selfTest = false;
     int frames = 1;
     std::string keys, screenshot;
+    std::wstring script, scriptType, scriptHostDir;   // --script / --script-type / --script-host-dir
 };
 
 std::string ToUtf8(const wchar_t* wide)
@@ -153,6 +161,16 @@ std::string ToUtf8(const wchar_t* wide)
     if (n > 1)
         WideCharToMultiByte(CP_UTF8, 0, wide, -1, s.data(), n, nullptr, nullptr);
     return s;
+}
+
+// 실행 파일이 있는 폴더(기본 스크립트 호스트 위치의 기준).
+std::wstring ExeDirectory()
+{
+    wchar_t path[MAX_PATH];
+    DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    std::wstring full(path, n < MAX_PATH ? n : 0);
+    size_t slash = full.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? L"." : full.substr(0, slash);
 }
 
 bool ParseSize(const std::string& text, int& w, int& h)
@@ -180,6 +198,14 @@ bool ParseOptions(int argc, wchar_t** argv, Options& o, std::string& error)
             }
             return ToUtf8(argv[++i]);
         };
+        // 경로는 UTF-16 그대로 받는다(.NET/hostfxr가 wchar_t 경로를 쓴다).
+        auto wideValue = [&](const char* name) -> std::wstring {
+            if (i + 1 >= argc) {
+                error = std::string(name) + " needs a value";
+                return {};
+            }
+            return argv[++i];
+        };
         if (a == "--warp") o.warp = true;
         else if (a == "--no-retro") o.retro = false;
         else if (a == "--headless") o.headless = true;
@@ -196,6 +222,9 @@ bool ParseOptions(int argc, wchar_t** argv, Options& o, std::string& error)
             if (!ParseSize(value("--size"), o.width, o.height)) { error = "--size must look like 320x240"; return false; }
         } else if (a == "--keys") o.keys = value("--keys");
         else if (a == "--screenshot") o.screenshot = value("--screenshot");
+        else if (a == "--script") o.script = wideValue("--script");
+        else if (a == "--script-type") o.scriptType = wideValue("--script-type");
+        else if (a == "--script-host-dir") o.scriptHostDir = wideValue("--script-host-dir");
         else if (!a.empty() && a[0] == '-') { error = "unknown option " + a; return false; }
         else if (o.scene.empty()) o.scene = a;
         else { error = "unexpected argument " + a; return false; }
@@ -203,7 +232,11 @@ bool ParseOptions(int argc, wchar_t** argv, Options& o, std::string& error)
             return false;
     }
     if (!o.selfTest && o.scene.empty()) {
-        error = "usage: gge_player <scene.ggs> [--scale N] [--size WxH] [--warp] [--no-retro] [--headless --frames N --keys D:60 --screenshot out.ppm]";
+        error = "usage: gge_player <scene.ggs> [--scale N] [--size WxH] [--warp] [--no-retro] [--script game.dll [--script-type Name]] [--headless --frames N --keys D:60 --screenshot out.ppm]";
+        return false;
+    }
+    if (o.script.empty() && (!o.scriptType.empty() || !o.scriptHostDir.empty())) {
+        error = "--script-type and --script-host-dir need --script";
         return false;
     }
     return true;
@@ -237,7 +270,9 @@ bool WritePpm(const std::string& path, const uint8_t* bgra, int width, int heigh
 struct Game {
     GgeRenderer* renderer = nullptr;
     GgeScene* scene = nullptr;
+    std::unique_ptr<gge_player::ScriptHost> script;   // --script를 줬을 때만
 
+    // 렌더러와 씬을 만들고, 스크립트가 있으면 .NET을 올려 OnStart까지 부른다.
     bool Start(const Options& o, std::string& error)
     {
         renderer = gge_renderer_create(o.width, o.height, o.warp ? 1 : 0);
@@ -246,26 +281,68 @@ struct Game {
             gge_renderer_set_retro(renderer, 1, kColorBitsRetro, 1, 1);
         scene = gge_scene_load(renderer, o.scene.c_str());
         if (!scene) { error = std::string("cannot load the scene: ") + gge_last_error(); return false; }
+        if (!o.script.empty()) {
+            gge_player::ScriptOptions options;
+            options.hostDir = o.scriptHostDir.empty() ? ExeDirectory() + L"\\script_host" : o.scriptHostDir;
+            options.assembly = o.script;
+            options.typeFilter = o.scriptType;
+            script = gge_player::ScriptHost::Create(options, renderer, o.width, o.height, scene, error);
+            if (!script) { error = "cannot start the script: " + error; return false; }
+            if (!script->Start(error)) { error = "script error: " + error; return false; }
+        }
         return true;
     }
     ~Game()
     {
+        script.reset();   // 스크립트(빌려 쓰는 핸들)가 씬/렌더러보다 먼저 끝나야 한다
         if (scene) gge_scene_destroy(scene);   // 씬은 렌더러보다 먼저
         if (renderer) gge_renderer_destroy(renderer);
     }
 };
 
-// 이벤트를 모두 꺼내 한 줄 글로 만든다("Enter Door 7, Exit Door 7").
-std::string DrainEvents(GgeScene* scene)
+// 한 프레임에 이벤트가 이만큼 넘게 나오면 스크립트가 무한히 이벤트를 만드는 것으로 보고 멈춘다(예: 두 방으로 번갈아 텔레포트).
+constexpr int kMaxEventsPerFrame = 1000;
+
+// 이벤트를 모두 꺼내 한 줄 글("Enter Door 7, Exit Door 7")로 events에 이어 붙이고 스크립트에 전달한다.
+// 스크립트가 만든 이벤트(텔레포트 등)까지 빌 때까지 반복한다. 실패하면 false(사유는 error).
+bool PumpEvents(Game& game, std::string& events, std::string& error)
 {
-    std::string text;
-    int kind = 0, tag = 0;
+    int handled = 0, kind = 0, tag = 0;
     const char* name = nullptr;
-    while (gge_scene_poll_event(scene, &kind, &tag, &name)) {
-        if (!text.empty()) text += ", ";
-        text += std::string(kind == GGE_TRIGGER_ENTER ? "Enter " : "Exit ") + name + " " + std::to_string(tag);
+    while (gge_scene_poll_event(game.scene, &kind, &tag, &name)) {
+        if (!events.empty()) events += ", ";
+        events += std::string(kind == GGE_TRIGGER_ENTER ? "Enter " : "Exit ") + name + " " + std::to_string(tag);
+        if (++handled > kMaxEventsPerFrame) {
+            error = "more than " + std::to_string(kMaxEventsPerFrame) + " trigger events in one frame (does a script keep moving the player between triggers?)";
+            return false;
+        }
+        if (game.script && !game.script->OnTrigger(kind, tag, name, error)) {
+            error = "script error: " + error;
+            return false;
+        }
     }
-    return text;
+    return true;
+}
+
+// 고정 타임스텝 한 걸음: 엔진 진행 -> 이벤트(스크립트 OnTrigger) -> 스크립트 OnUpdate -> 업데이트가 만든 이벤트.
+// 이번 걸음의 이벤트 글을 frameEvents에 담는다. 실패하면 false(사유는 error).
+bool StepFrame(Game& game, Axes axes, std::string& frameEvents, std::string& error)
+{
+    if (!gge_scene_step(game.scene, axes.x, axes.y, kFrameSeconds)) {
+        error = std::string("step failed: ") + gge_last_error();
+        return false;
+    }
+    if (!PumpEvents(game, frameEvents, error))
+        return false;
+    if (game.script) {
+        if (!game.script->OnUpdate(kFrameSeconds, error)) {
+            error = "script error: " + error;
+            return false;
+        }
+        if (!PumpEvents(game, frameEvents, error))
+            return false;
+    }
+    return true;
 }
 
 // ---- 헤드리스 ----
@@ -283,7 +360,11 @@ int RunHeadless(const Options& o)
         return 1;
     }
 
-    std::string events = DrainEvents(game.scene);
+    std::string events;
+    if (!PumpEvents(game, events, error)) {   // 시작할 때 이미 영역 안이면 그 Enter가 첫 이벤트
+        std::fprintf(stderr, "gge_player: %s\n", error.c_str());
+        return 1;
+    }
     size_t stepIndex = 0;
     int remainingInStep = script.empty() ? 0 : script[0].frames;
     for (int frame = 0; frame < o.frames; ++frame) {
@@ -294,15 +375,19 @@ int RunHeadless(const Options& o)
         Axes axes = stepIndex < script.size() ? script[stepIndex].axes : Axes{};
         if (stepIndex < script.size())
             --remainingInStep;
-        if (!gge_scene_step(game.scene, axes.x, axes.y, kFrameSeconds)) {
-            std::fprintf(stderr, "gge_player: step failed: %s\n", gge_last_error());
+        std::string frameEvents;
+        if (!StepFrame(game, axes, frameEvents, error)) {
+            std::fprintf(stderr, "gge_player: %s\n", error.c_str());
             return 1;
         }
-        std::string frameEvents = DrainEvents(game.scene);
         if (!frameEvents.empty())
             events += (events.empty() ? "" : ", ") + frameEvents;
     }
 
+    if (game.script && !gge_player::ScriptHost::VerifySingleEngineModule(error)) {   // 스크립트가 엔진을 둘로 가르지 않았는지
+        std::fprintf(stderr, "gge_player: %s\n", error.c_str());
+        return 1;
+    }
     if (!gge_renderer_render(game.renderer)) {
         std::fprintf(stderr, "gge_player: render failed: %s\n", gge_last_error());
         return 1;
@@ -401,7 +486,12 @@ int RunInteractive(const Options& o)
     ShowWindow(window.hwnd, SW_SHOW);
 
     Gamepad gamepad;
-    std::string lastEvent = DrainEvents(game.scene);
+    std::string lastEvent;
+    if (!PumpEvents(game, lastEvent, error)) {
+        MessageBoxA(nullptr, error.c_str(), "GunGame Player", MB_OK | MB_ICONERROR);
+        std::fprintf(stderr, "gge_player: %s\n", error.c_str());
+        return 1;
+    }
     auto updateTitle = [&] {
         std::string title = "GunGame Player";
         if (hasPlayer)
@@ -440,11 +530,12 @@ int RunInteractive(const Options& o)
                                                KeyDown('W') || KeyDown(VK_UP), KeyDown('S') || KeyDown(VK_DOWN))
                                 : Axes{};
             Axes axes = Combine(keyboard, gamepad.Read());
-            if (!gge_scene_step(game.scene, axes.x, axes.y, kFrameSeconds)) {
-                MessageBoxA(window.hwnd, gge_last_error(), "GunGame Player", MB_OK | MB_ICONERROR);
+            std::string events;
+            if (!StepFrame(game, axes, events, error)) {
+                MessageBoxA(window.hwnd, error.c_str(), "GunGame Player", MB_OK | MB_ICONERROR);
+                std::fprintf(stderr, "gge_player: %s\n", error.c_str());
                 return 1;
             }
-            std::string events = DrainEvents(game.scene);
             if (!events.empty()) {
                 lastEvent = events;
                 updateTitle();
@@ -464,6 +555,11 @@ int RunInteractive(const Options& o)
         } else {
             Sleep(1);
         }
+    }
+    if (game.script && !gge_player::ScriptHost::VerifySingleEngineModule(error)) {
+        MessageBoxA(nullptr, error.c_str(), "GunGame Player", MB_OK | MB_ICONERROR);
+        std::fprintf(stderr, "gge_player: %s\n", error.c_str());
+        return 1;
     }
     return 0;
 }

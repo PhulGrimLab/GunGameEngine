@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 독립 플레이어(gge_player.exe)가 hostfxr로 불러 쓰는 .NET 쪽 스크립트 호스트. 빌드 결과를 build\bin\script_host\에 모아 둔다. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PlatformTarget>x64</PlatformTarget>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
+    <GgeBinDir>$(MSBuildThisFileDirectory)..\..\build\bin\</GgeBinDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\GunGame.Scripting\GunGame.Scripting.csproj" />
+    <ProjectReference Include="..\GunGame.Interop\GunGame.Interop.csproj" />
+  </ItemGroup>
+
+  <!--
+    gge.dll은 일부러 복사하지 않는다: 이 폴더에 gge.dll이 있으면 .NET이 플레이어가 이미 올려 둔 것과 다른 두 번째 사본을 불러
+    엔진 상태가 둘로 갈라진다. 스크립트 호스트는 플레이어가 넘겨준 모듈 핸들로 같은 gge.dll을 쓴다(Entry.Initialize).
+  -->
+  <Target Name="CollectScriptHost" AfterTargets="Build">
+    <ItemGroup>
+      <ScriptHostFile Include="$(OutDir)*.dll;$(OutDir)*.pdb;$(OutDir)*.json" Exclude="$(OutDir)gge.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ScriptHostFile)" DestinationFolder="$(GgeBinDir)script_host\" />
+    <Delete Files="$(GgeBinDir)script_host\gge.dll" />
+  </Target>
+
+</Project>

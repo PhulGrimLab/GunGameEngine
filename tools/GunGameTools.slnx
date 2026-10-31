@@ -1,6 +1,9 @@
 <Solution>
   <Project Path="GunGame.Interop.Tests/GunGame.Interop.Tests.csproj" />
   <Project Path="GunGame.Interop/GunGame.Interop.csproj" />
+  <Project Path="GunGame.SampleScripts/GunGame.SampleScripts.csproj" />
+  <Project Path="GunGame.ScriptHost/GunGame.ScriptHost.csproj" />
+  <Project Path="GunGame.Scripting/GunGame.Scripting.csproj" />
   <Project Path="GunGameEditor.UiTests/GunGameEditor.UiTests.csproj" />
   <Project Path="GunGameEditor/GunGameEditor.csproj" />
 </Solution>

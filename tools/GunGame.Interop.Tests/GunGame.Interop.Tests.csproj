@@ -17,6 +17,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\GunGame.Interop\GunGame.Interop.csproj" />
+    <ProjectReference Include="..\GunGame.Scripting\GunGame.Scripting.csproj" />
+    <ProjectReference Include="..\GunGame.ScriptHost\GunGame.ScriptHost.csproj" />
+    <!-- 어셈블리 불러오기 테스트가 build\bin\scripts의 샘플 스크립트를 쓰므로 먼저 빌드되게만 한다(참조는 하지 않는다). -->
+    <ProjectReference Include="..\GunGame.SampleScripts\GunGame.SampleScripts.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>

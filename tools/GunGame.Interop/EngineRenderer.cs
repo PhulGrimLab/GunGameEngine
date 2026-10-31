@@ -11,6 +11,7 @@ public sealed class EngineException(string message) : Exception(message);
 public sealed unsafe class EngineRenderer : IDisposable
 {
     private nint _handle;
+    private readonly bool _owned = true;
 
     public int Width { get; }
     public int Height { get; }
@@ -244,15 +245,31 @@ public sealed unsafe class EngineRenderer : IDisposable
     {
         if (_handle != 0)
         {
-            Native.gge_renderer_destroy(_handle);
+            if (_owned)
+                Native.gge_renderer_destroy(_handle);
             _handle = 0;
         }
     }
 
+    /// <summary>
+    /// 이미 만들어진 네이티브 렌더러(독립 플레이어가 호스팅한 .NET 스크립트가 받은 핸들)를 <b>빌려 쓴다</b>.
+    /// Dispose해도 네이티브 렌더러는 해제되지 않는다. 크기는 만든 쪽이 알려 준 값이다.
+    /// </summary>
+    public static EngineRenderer Attach(nint rendererHandle, int width, int height) =>
+        rendererHandle != 0 ? new EngineRenderer(rendererHandle, width, height) : throw new ArgumentException("null renderer handle", nameof(rendererHandle));
+
+    private EngineRenderer(nint handle, int width, int height)
+    {
+        _handle = handle;
+        _owned = false;
+        Width = width;
+        Height = height;
+    }
+
     private nint Handle => _handle != 0 ? _handle : throw new ObjectDisposedException(nameof(EngineRenderer));
 
-    /// <summary>네이티브 렌더러 핸들(같은 어셈블리의 EngineScene이 쓴다). 해제된 렌더러면 ObjectDisposedException.</summary>
-    internal nint NativeHandle => Handle;
+    /// <summary>네이티브 렌더러 핸들(EngineScene이 쓰고, <see cref="Attach"/>와 짝이다). 해제된 렌더러면 ObjectDisposedException.</summary>
+    public nint NativeHandle => Handle;
 
     private static void Check(int result)
     {

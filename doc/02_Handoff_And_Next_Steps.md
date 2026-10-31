@@ -19,6 +19,7 @@ SIGNALIS 스타일(PS1풍 저해상도 3D, 고정 카메라, 3인칭 탐험/전�
 | 6+ | **게임플레이 편집 UI**: 방/충돌체/트리거/플레이어 추가·편집·이동·삭제, 방 카메라를 현재 뷰로 설정, 입력 검증 |
 | 7 | **조명/그림자/투명**: 앰비언트 + 방향광 + 점광원 8개, 오브젝트 알파 블렌딩 + 텍스처 알파 컷아웃, 바닥 평면 투영 그림자. 노드 알파/그림자 인스펙터, 씬 `lighting` 섹션, 에디터 Lighting/Light 항목 |
 | 7+ | **독립 플레이어**: 구운 씬 `.ggs`(에디터 Bake), 엔진 런타임 `gge_scene_*`, `gge_player.exe`(창, 키보드/XInput, 헤드리스) |
+| 8 | **C# 스크립팅**: 엔진 쓰기 API(`gge_scene_set_trigger_enabled`, `gge_scene_teleport_player`), 플레이어가 hostfxr로 .NET을 호스팅해 `IGameScript`(`--script game.dll`)를 실행. 상세는 `doc/01`의 "스크립팅" 절 |
 
 각 단계의 규약(데이터 형식, 이벤트 순서, 래치 규칙, 조명 공식, 그림자 제약, `.ggs` 형식)은 `doc/01_Development_Plan.md`가 기준이다.
 
@@ -31,8 +32,8 @@ SIGNALIS 스타일(PS1풍 저해상도 3D, 고정 카메라, 3인칭 탐험/전�
 
 ## 현재 테스트 (`build.cmd test`, 모두 통과)
 - C++ 엔진 `engine_tests`: **134개 케이스, 35833 체크**(골든 이미지 포함)
-- 플레이어 ctest 5개: `--self-test`, 헤드리스 걷기(이벤트/방 확인), **헤드리스 화면 = 엔진 골든(바이트 동일)**, 없는 씬/잘못된 대본 거부
-- C# `GunGame.Interop.Tests`: **230개**
+- 플레이어 ctest 18개(전체 ctest 19개): `--self-test`, 헤드리스 걷기(이벤트/방 확인), **헤드리스 화면 = 엔진 골든(바이트 동일)**, 없는 씬/잘못된 대본 거부, **스크립팅 13개**(실제 .NET 호스팅: 스크립트가 트리거를 끄고/텔레포트하고/`OnUpdate`로 움직이는 결과, 예외/폭주/없는 타입/생성자 예외/없는 어셈블리/없는 호스트/옵션 오류 거부, `gge.dll` 사본이 있는 호스트 폴더에서도 같은 모듈 사용)
+- C# `GunGame.Interop.Tests`: **244개**
 - 에디터 UI 입력 `GunGameEditor.UiTests`: **93개**
 - 뷰어 selftest: OK
 - 수동 도구(ctest 미등록): `build\bin\engine_bench.exe [--hw]`(프레임 비용, 기본 WARP: 평면 큐브 1000개 약 4.2~4.7ms, `--hw`는 하드웨어 GPU: 약 0.76ms), `tools/mutation/*`(뮤테이션/커버리지 하네스)
@@ -43,12 +44,17 @@ engine/            C++ 엔진 (DLL gge.dll)
   include/gge/gge.h  공개 C API (규약은 이 파일 주석이 기준)
   src/               renderer(조명/알파/그림자), animation, obj_loader, mesh_io, texture_loader(파일/메모리 디코딩),
                      world(방/입력/트리거), collision, polygon, scene_io(.ggs 읽기), scene(구운 씬 런타임), capi
-  player/player.cpp  독립 실행 플레이어 gge_player.exe (엔진 C API만 사용)
+  player/             독립 실행 플레이어 gge_player.exe: player.cpp(엔진 C API만 사용), script_host.*(hostfxr로 .NET 호스팅),
+                     expect_failure.cmake(ctest 헬퍼: 종료 코드 != 0 이면서 출력이 정규식에 맞아야 통과)
+  third_party/dotnet/ hostfxr.h, coreclr_delegates.h(.NET SDK에서 그대로 복사, MIT)
   tests/             engine_tests.cpp, engine_bench.cpp, golden/*.ppm
 tools/
   GunGame.Interop/       P/Invoke 래퍼(EngineRenderer, EngineWorld, EngineScene), 씬(Scene/: 문서, 직렬화, SceneSync,
                          GameplayData/GameplayEditing/GameplayOverlay/PlaySession, LightingData, SceneBaker), glTF(Gltf/), 애니메이션(Animation/)
   GunGame.Interop.Tests/ xUnit (GltfBuilder: 테스트용 glTF 생성기). *GapTests = 뮤테이션 생존 변이를 겨냥한 테스트
+  GunGame.Scripting/     스크립트 작성자가 참조하는 인터페이스(IGameScript, IScriptContext, TriggerEvent)
+  GunGame.ScriptHost/    플레이어가 hostfxr로 부르는 .NET 쪽(Entry = [UnmanagedCallersOnly] 진입점, ScriptRunner = 로직, ScriptContext)
+  GunGame.SampleScripts/ 스크립트 예제 + 플레이어 스크립팅 ctest용(DoorLock, ReturnToHall, PingPong 등). 결과는 build\bin\scripts
   GunGameEditor/         WPF 에디터 (GameplayInspector.cs, InspectorPanel.cs, SelfTest.cs = 화면 검증 하네스)
   GunGameEditor.UiTests/ 에디터 UI 입력 자동 테스트(xUnit, 아래 "에디터 UI 입력 테스트" 참고)
   mutation/              뮤테이션/커버리지 하네스 스크립트(doc/03 참고)
@@ -104,10 +110,12 @@ build.cmd            전체 빌드 + (test 인자 시) 전체 테스트
 - C# 뮤테이션의 남은 생존 변이 약 25개와 새 C++ 코드(렌더러 7단계 부분, `scene*.cpp`)의 뮤테이션 측정 결과는 `doc/03` 참고.
 
 ## 다음 단계 제안 (우선순위 순)
-### E. 8단계: C# 스크립팅(.NET 호스팅)
-트리거 이벤트가 이미 `tag`로 스크립트 연결 지점을 제공하고, 구운 씬 런타임이 `gge_scene_poll_event`로 이름 있는 이벤트를 내보낸다.
-- **완료(E-1, 엔진 쓰기 API)**: `gge_scene_set_trigger_enabled`(이름 기준, 같은 이름 전부, 없으면 실패)와 `gge_scene_teleport_player`(방 이동: 활성 방/카메라/트리거 즉시 갱신, 입력 방향 기준 해제, 방 밖/NaN/플레이어 없음은 거부)를 추가했고 C# `EngineScene.SetTriggerEnabled/TeleportPlayer` 래퍼가 있다. 오브젝트 알파/표시는 `gge_scene_find_object` + 렌더러 `gge_object_set_alpha`로 이미 가능하다. C++ 테스트 5개 + C# 테스트 6개, 결함 주입 C++ 6건/C# 4건 모두 검출.
-- **남은 것(E-2, 스크립트 호스트)**: 스크립트를 어디서 어떻게 돌릴지 정해야 한다 - (a) 독립 플레이어(C++)가 .NET을 호스팅(hostfxr) 하거나, (b) C# 플레이어/호스트가 `EngineScene` 래퍼 위에서 돌리거나, (c) 에디터 플레이 모드 안에서만 지원. 이벤트 -> 스크립트 핸들러 -> 위 API 호출 흐름의 테스트가 필요하다.
+### E. 스크립팅 확장 (8단계의 기본은 완료: 위 표와 `doc/01`의 "스크립팅" 절)
+8단계로 **이벤트 -> `IGameScript` -> 엔진 쓰기 API**의 한 바퀴는 돈다(독립 플레이어가 hostfxr로 .NET 호스팅). 아직 없는 것:
+- **스크립트가 할 수 있는 일이 적다**: 트리거 켜기/끄기, 플레이어 텔레포트, 노드 알파, 로그뿐이다. 오브젝트 이동/표시 토글/생성·삭제, 클립 재생 전환, 조명 변경, 사용자 이벤트/타이머, 상태 저장(세이브)이 필요하면 `gge_scene_*` 쓰기 API와 `IScriptContext`를 같이 넓힌다(오브젝트 이동은 지금도 `gge_scene_find_object` + 렌더러 API로 가능하지만 컨텍스트에 노출하지 않았다).
+- **에디터 플레이 모드는 스크립트를 실행하지 않는다**(독립 플레이어만). 에디터에서 스크립트를 보려면 C# `EngineScene`/`ScriptRunner` 조합으로 `PlaySession` 옆에 연결해야 한다(`ScriptRunner`는 이미 엔진 래퍼만으로 동작해 xUnit에서 그렇게 쓴다).
+- 스크립트 핫 리로드, 샌드박스(신뢰할 수 있는 스크립트만 가정), 한 프로세스에 스크립트 세션 하나, 배포 시 대상 PC의 .NET 10 런타임 필요(자체 포함 배포는 미구현).
+- 창 모드의 스크립트 오류는 메시지 상자 + 종료다(복구/계속 실행 없음).
 ### F. 성능/품질 병행 과제
 - 어댑터 선택 기능(예: `GGE_ADAPTER`)을 엔진에 추가해 Intel/AMD 각각에서 `test-gpu`와 `engine_bench --hw` 실행.
 - 실제 Blender `.glb`(스킨/애니메이션) 검증 파일 확보, 선택 하이라이트/기즈모/본 시각화, 뷰포트에서 방/영역 꼭짓점 끌기, CRT/노이즈 후처리.
