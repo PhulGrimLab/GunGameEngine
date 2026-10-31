@@ -4,7 +4,7 @@ using GunGame.Scripting;
 namespace GunGame.ScriptHost;
 
 /// <summary>스크립트에게 주는 <see cref="IScriptContext"/>: 엔진 씬/렌더러 래퍼에 그대로 위임한다. 구역은 인터페이스(IWorldApi/IObjectApi/IAnimationApi)와 같다.</summary>
-internal sealed class ScriptContext(EngineRenderer renderer, EngineScene scene, TextWriter log) : IScriptContext
+internal sealed class ScriptContext(EngineRenderer renderer, EngineScene scene, EngineFont? font, TextWriter log) : IScriptContext
 {
     // ---- IWorldApi ----
     public string ActiveRoomName => scene.ActiveRoomName;
@@ -132,6 +132,76 @@ internal sealed class ScriptContext(EngineRenderer renderer, EngineScene scene, 
     }
 
     public bool ObjectExists(string nodeName) => scene.ObjectExists(nodeName);
+
+    // ---- IUiApi ----
+    // 스크립트가 붙인 이름 -> 엔진 항목 ID. 같은 이름으로 다시 Show하면 그 항목을 제자리에서 고치고(그리는 순서 유지), Hide는 항목을 지우며 이름도 비운다(숨김 상태는 없다).
+    private enum UiKind { Text, Rect }
+
+    private readonly Dictionary<string, (int Id, UiKind Kind)> _ui = new(StringComparer.Ordinal);
+
+    private EngineFont Font => font ?? throw new InvalidOperationException("no font: start the player with --font file.bdf");
+
+    private static void RequireUiName(string name)
+    {
+        if (string.IsNullOrEmpty(name))
+            throw new ArgumentException("the ui item name must not be empty", nameof(name));
+    }
+
+    public void ShowText(string name, string text, int x, int y, uint rgb = 0xFFFFFF, int maxWidth = 0)
+    {
+        RequireUiName(name);
+        if (_ui.TryGetValue(name, out var item))
+        {
+            if (item.Kind != UiKind.Text)
+                throw new InvalidOperationException($"ui item '{name}' is a rectangle (use ShowRect, or HideRect first)");
+            renderer.SetUiText(item.Id, text);   // 실패할 수 있는 것(글자 한도)을 먼저 해서, 실패해도 항목은 그대로다
+            renderer.SetUiMaxWidth(item.Id, maxWidth);
+            renderer.SetUiPosition(item.Id, x, y);
+            renderer.SetUiColor(item.Id, rgb);
+            return;
+        }
+        _ui[name] = (renderer.CreateUiText(Font, text, x, y, maxWidth, rgb), UiKind.Text);
+    }
+
+    public void ShowRect(string name, int x, int y, int width, int height, uint rgb, int alpha = 255)
+    {
+        RequireUiName(name);
+        if (_ui.TryGetValue(name, out var item))
+        {
+            if (item.Kind != UiKind.Rect)
+                throw new InvalidOperationException($"ui item '{name}' is text (use ShowText, or HideText first)");
+            renderer.SetUiRect(item.Id, width, height, alpha);   // 검사가 있는 것을 먼저
+            renderer.SetUiPosition(item.Id, x, y);
+            renderer.SetUiColor(item.Id, rgb);
+            return;
+        }
+        _ui[name] = (renderer.CreateUiRect(x, y, width, height, rgb, alpha), UiKind.Rect);
+    }
+
+    public bool HideText(string name) => Hide(name, UiKind.Text);
+
+    public bool HideRect(string name) => Hide(name, UiKind.Rect);
+
+    private bool Hide(string name, UiKind kind)
+    {
+        if (string.IsNullOrEmpty(name) || !_ui.TryGetValue(name, out var item) || item.Kind != kind)
+            return false;
+        renderer.DestroyUi(item.Id);
+        _ui.Remove(name);
+        return true;
+    }
+
+    public void ClearUi()
+    {
+        renderer.ClearUi();
+        _ui.Clear();
+    }
+
+    public TextSize MeasureText(string text, int maxWidth = 0)
+    {
+        (int width, int height, int lines) = Font.Measure(text, maxWidth);
+        return new TextSize(width, height, lines);
+    }
 
     // ---- 로그 ----
     public void Log(string message) => log.WriteLine("[script] " + message);

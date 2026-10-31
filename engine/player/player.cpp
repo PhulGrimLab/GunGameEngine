@@ -16,6 +16,8 @@
 //                      엔진 쓰기 API(트리거 켜기/끄기, 텔레포트)와 오브젝트 알파로 게임을 바꾼다. 스크립트 예외는 사유를 출력하고 종료(코드 1).
 //   --script-type 이름  어셈블리에 스크립트가 여럿일 때 그 타입(전체/짧은 이름)만 실행한다(기본은 모두).
 //   --report-animation 노드  헤드리스 결과 한 줄 끝에 그 노드의 클립 재생 상태(클립 이름, playing/fading/loop/finished, 시간, 속도)를 붙인다.
+//   --font 파일.bdf    스크립트의 화면 글자(IUiApi)에 쓸 BDF 비트맵 폰트(예: Galmuri11.bdf). --script와 함께만 쓴다.
+//   --report-ui        헤드리스 결과 한 줄 끝에 화면 항목 수(ui=N)를 붙인다.
 //   --report-objects   헤드리스 결과 한 줄 끝에 살아 있는 동적 노드 수(dynamic=N)와 렌더러 오브젝트 수(objects=N)를 붙인다.
 //   --script-host-dir 폴더  GunGame.ScriptHost.dll이 있는 폴더(기본 <exe 폴더>\script_host; tools\GunGameTools.slnx 빌드가 채운다).
 //   --self-test        입력 매핑/대본 해석의 자체 검사를 하고 끝낸다.
@@ -188,6 +190,8 @@ struct Options {
     std::string keys, screenshot;
     std::wstring script, scriptType, scriptHostDir;   // --script / --script-type / --script-host-dir
     std::string reportAnimation;                      // --report-animation 노드: 헤드리스 결과 한 줄에 그 노드의 클립 재생 상태를 붙인다
+    std::string font;                                 // --font 파일.bdf: 스크립트의 화면 글자(IUiApi)에 쓸 비트맵 폰트(UTF-8 경로)
+    bool reportUi = false;                            // --report-ui: 헤드리스 결과 한 줄에 화면 항목 수(ui=N)를 붙인다
     bool reportObjects = false;                       // --report-objects: 헤드리스 결과 한 줄에 살아 있는 동적 노드 수(dynamic=N)와 렌더러 오브젝트 수(objects=N)를 붙인다
 };
 
@@ -261,6 +265,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options& o, std::string& error)
         else if (a == "--screenshot") o.screenshot = value("--screenshot");
         else if (a == "--report-animation") o.reportAnimation = value("--report-animation");
         else if (a == "--report-objects") o.reportObjects = true;
+        else if (a == "--report-ui") o.reportUi = true;
+        else if (a == "--font") o.font = value("--font");
         else if (a == "--script") o.script = wideValue("--script");
         else if (a == "--script-type") o.scriptType = wideValue("--script-type");
         else if (a == "--script-host-dir") o.scriptHostDir = wideValue("--script-host-dir");
@@ -276,6 +282,10 @@ bool ParseOptions(int argc, wchar_t** argv, Options& o, std::string& error)
     }
     if (o.script.empty() && (!o.scriptType.empty() || !o.scriptHostDir.empty())) {
         error = "--script-type and --script-host-dir need --script";
+        return false;
+    }
+    if (o.script.empty() && !o.font.empty()) {
+        error = "--font needs --script (only scripts draw text)";
         return false;
     }
     return true;
@@ -309,8 +319,9 @@ bool WritePpm(const std::string& path, const uint8_t* bgra, int width, int heigh
 struct Game {
     GgeRenderer* renderer = nullptr;
     GgeScene* scene = nullptr;
+    GgeFont* font = nullptr;                           // --font를 줬을 때만(화면 항목이 공유 참조하므로 렌더러보다 먼저 destroy해도 된다)
     std::unique_ptr<gge_player::ScriptHost> script;   // --script를 줬을 때만
-    unsigned heldActions = 0;                          // 지난 걸음에 눌려 있던 동작 버튼(새로 눌린 것을 가려내는 기준)
+    unsigned heldActions = 0;                         // 지난 걸음에 눌려 있던 동작 버튼(새로 눌린 것을 가려내는 기준)
 
     // 렌더러와 씬을 만들고, 스크립트가 있으면 .NET을 올려 OnStart까지 부른다.
     bool Start(const Options& o, std::string& error)
@@ -321,12 +332,16 @@ struct Game {
             gge_renderer_set_retro(renderer, 1, kColorBitsRetro, 1, 1);
         scene = gge_scene_load(renderer, o.scene.c_str());
         if (!scene) { error = std::string("cannot load the scene: ") + gge_last_error(); return false; }
+        if (!o.font.empty()) {
+            font = gge_font_load(o.font.c_str());
+            if (!font) { error = std::string("cannot load the font: ") + gge_last_error(); return false; }
+        }
         if (!o.script.empty()) {
             gge_player::ScriptOptions options;
             options.hostDir = o.scriptHostDir.empty() ? ExeDirectory() + L"\\script_host" : o.scriptHostDir;
             options.assembly = o.script;
             options.typeFilter = o.scriptType;
-            script = gge_player::ScriptHost::Create(options, renderer, o.width, o.height, scene, error);
+            script = gge_player::ScriptHost::Create(options, renderer, o.width, o.height, scene, font, error);
             if (!script) { error = "cannot start the script: " + error; return false; }
             if (!script->Start(error)) { error = "script error: " + error; return false; }
         }
@@ -337,6 +352,7 @@ struct Game {
         script.reset();   // 스크립트(빌려 쓰는 핸들)가 씬/렌더러보다 먼저 끝나야 한다
         if (scene) gge_scene_destroy(scene);   // 씬은 렌더러보다 먼저
         if (renderer) gge_renderer_destroy(renderer);
+        gge_font_destroy(font);   // 핸들만(화면 항목이 있었다면 렌더러와 함께 이미 정리됐다)
     }
 };
 
@@ -467,6 +483,11 @@ int RunHeadless(const Options& o)
         std::snprintf(text, sizeof text, " animation[%s]=%s playing=%d fading=%d loop=%d finished=%d time=%.3f speed=%.3f", o.reportAnimation.c_str(),
                       clip ? clip : "", playing, fading, loop, finished, time, speed);
         animation = text;
+    }
+    if (o.reportUi) {
+        char text[32];
+        std::snprintf(text, sizeof text, " ui=%d", gge_ui_get_count(game.renderer));
+        animation += text;
     }
     if (o.reportObjects) {
         char text[96];

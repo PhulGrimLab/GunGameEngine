@@ -131,7 +131,7 @@ bool IsSuccess(int32_t rc)
 
 // 관리 코드 진입점(GunGame.ScriptHost.Entry). 시그니처는 Entry.cs와 같아야 한다: nint = void*, char* = UTF-16 문자열(wchar_t).
 struct ScriptHost::Entries {
-    using InitializeFn = int(CORECLR_DELEGATE_CALLTYPE*)(void* ggeModule, void* renderer, int width, int height, void* scene,
+    using InitializeFn = int(CORECLR_DELEGATE_CALLTYPE*)(void* ggeModule, void* renderer, int width, int height, void* scene, void* font,
                                                          const wchar_t* scriptPath, const wchar_t* typeFilter);
     using StartFn = int(CORECLR_DELEGATE_CALLTYPE*)();
     using HandleTriggerFn = int(CORECLR_DELEGATE_CALLTYPE*)(int kind, int tag, const char* nameUtf8);
@@ -151,7 +151,7 @@ struct ScriptHost::Entries {
 };
 
 std::unique_ptr<ScriptHost> ScriptHost::Create(const ScriptOptions& options, GgeRenderer* renderer, int width, int height,
-                                               GgeScene* scene, std::string& error)
+                                               GgeScene* scene, GgeFont* font, std::string& error)
 {
     std::error_code ec;
     const fs::path hostAssembly = fs::path(options.hostDir) / kHostAssembly;
@@ -241,7 +241,7 @@ std::unique_ptr<ScriptHost> ScriptHost::Create(const ScriptOptions& options, Gge
         return nullptr;
     }
     const std::wstring absoluteAssembly = fs::absolute(options.assembly, ec).wstring();
-    if (!e.initialize(gge, renderer, width, height, scene, absoluteAssembly.c_str(), options.typeFilter.c_str())) {
+    if (!e.initialize(gge, renderer, width, height, scene, font, absoluteAssembly.c_str(), options.typeFilter.c_str())) {
         error = host->LastManagedError();
         return nullptr;
     }

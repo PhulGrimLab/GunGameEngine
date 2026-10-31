@@ -354,6 +354,8 @@ GGE_API int gge_ui_create_text(GgeRenderer* r, const GgeFont* font, const char* 
 GGE_API int gge_ui_create_rect(GgeRenderer* r, int x, int y, int width, int height, uint32_t rgb, int alpha);
 // 글자 항목의 글자를 바꾼다(사각형 항목이면 실패). text가 NULL이면 빈 문자열.
 GGE_API int gge_ui_set_text(GgeRenderer* r, int item_id, const char* text_utf8);
+// 글자 항목의 줄바꿈 폭을 바꾼다(0 이하 = '\n'에서만 줄을 바꾼다, 사각형 항목이면 실패).
+GGE_API int gge_ui_set_max_width(GgeRenderer* r, int item_id, int max_width);
 // 사각형 항목의 크기/알파를 바꾼다(글자 항목이면 실패). 체력 바 길이 같은 용도.
 GGE_API int gge_ui_set_rect(GgeRenderer* r, int item_id, int width, int height, int alpha);
 GGE_API int gge_ui_set_position(GgeRenderer* r, int item_id, int x, int y);

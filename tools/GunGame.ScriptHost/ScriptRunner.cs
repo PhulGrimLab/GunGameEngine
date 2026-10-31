@@ -28,12 +28,13 @@ public sealed class ScriptRunner
     public int ScriptCount => _scripts.Length;
 
     /// <summary>어셈블리에서 스크립트를 찾아 엔진 씬에 연결한다. 실패하면 <see cref="ScriptException"/>.</summary>
-    public static ScriptRunner Create(EngineRenderer renderer, EngineScene scene, string assemblyPath, string? typeFilter, TextWriter log) =>
-        Create(renderer, scene, LoadScripts(assemblyPath, typeFilter), log);
+    /// <param name="font">화면 글자(<see cref="IUiApi"/>)에 쓸 폰트. null이면 글자 API는 "no font" 오류를 던진다(사각형은 폰트 없이 된다).</param>
+    public static ScriptRunner Create(EngineRenderer renderer, EngineScene scene, string assemblyPath, string? typeFilter, TextWriter log, EngineFont? font = null) =>
+        Create(renderer, scene, LoadScripts(assemblyPath, typeFilter), log, font);
 
     /// <summary>이미 만든 스크립트 객체들을 엔진 씬에 연결한다(어셈블리를 거치지 않는 경우, 예: 테스트).</summary>
-    public static ScriptRunner Create(EngineRenderer renderer, EngineScene scene, IEnumerable<IGameScript> scripts, TextWriter log) =>
-        new(new ScriptContext(renderer, scene, log), scripts);
+    public static ScriptRunner Create(EngineRenderer renderer, EngineScene scene, IEnumerable<IGameScript> scripts, TextWriter log, EngineFont? font = null) =>
+        new(new ScriptContext(renderer, scene, font, log), scripts);
 
     /// <summary>
     /// 어셈블리의 공개 <see cref="IGameScript"/> 구현을 모두 만든다(타입 이름 순서). typeFilter가 있으면 전체 이름 또는 짧은 이름이 같은

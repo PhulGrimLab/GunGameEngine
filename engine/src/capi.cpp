@@ -824,6 +824,11 @@ GGE_API int gge_ui_set_text(GgeRenderer* r, int item_id, const char* text_utf8)
     return Guard([&] { r->impl.SetUiText(item_id, text_utf8 ? text_utf8 : ""); return 1; });
 }
 
+GGE_API int gge_ui_set_max_width(GgeRenderer* r, int item_id, int max_width)
+{
+    return Guard([&] { r->impl.SetUiMaxWidth(item_id, max_width); return 1; });
+}
+
 GGE_API int gge_ui_set_rect(GgeRenderer* r, int item_id, int width, int height, int alpha)
 {
     return Guard([&] { r->impl.SetUiRect(item_id, width, height, alpha); return 1; });

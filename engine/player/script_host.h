@@ -21,9 +21,10 @@ struct ScriptOptions {
 class ScriptHost {
 public:
     // 런타임을 올리고 스크립트를 불러 연결한다(OnStart는 Start에서). 실패하면 nullptr이고 사유가 error에 담긴다
-    // (.NET 런타임 없음, 호스트 파일 없음, 스크립트 불러오기 실패 등). renderer/scene은 호출자가 소유하며 이 객체보다 오래 살아야 한다.
+    // (.NET 런타임 없음, 호스트 파일 없음, 스크립트 불러오기 실패 등). renderer/scene/font는 호출자가 소유하며 이 객체보다 오래 살아야 한다.
+    // font는 화면 글자(IUiApi)에 쓸 폰트(없으면 nullptr: 글자 API는 "no font" 오류, 사각형은 폰트 없이 된다).
     static std::unique_ptr<ScriptHost> Create(const ScriptOptions& options, GgeRenderer* renderer, int width, int height,
-                                              GgeScene* scene, std::string& error);
+                                              GgeScene* scene, GgeFont* font, std::string& error);
     ~ScriptHost();
     ScriptHost(const ScriptHost&) = delete;
     ScriptHost& operator=(const ScriptHost&) = delete;

@@ -6045,6 +6045,13 @@ void Test_UiItemsKeepTheirOrderVisibilityAndAlpha()
     CHECK(CountExactPixels(base, 0xFFFFFF) == 0);              // 3D 장면에 순백이 없어야 아래 개수가 UI 픽셀만 센다
     const int label = gge_ui_create_text(s.r, f.f, "A", 0, 0, 0, 0xFFFFFF);
     CHECK(gge_ui_set_text(s.r, label, "B") == 1 && CountExactPixels(Render(s.r), 0xFFFFFF) == 20);   // B의 켜진 픽셀 20개
+    CHECK(gge_ui_set_text(s.r, label, "A B") == 1 && gge_ui_set_max_width(s.r, label, 8) == 1);   // 폭 8에 한 글자씩: 세 줄(A, B)이 겹치지 않고 아래로 쌓인다
+    const Image wrapped = Render(s.r);
+    CHECK(CountExactPixels(wrapped, 0xFFFFFF) == 18 + 20);
+    CHECK(gge_ui_set_max_width(s.r, label, 0) == 1);
+    CHECK(CountExactPixels(Render(s.r), 0xFFFFFF) == 38 && Render(s.r).bgra != wrapped.bgra);   // 줄바꿈이 없으면 같은 줄에 나란히
+    CHECK(gge_ui_set_max_width(s.r, glass, 5) == 0 && LastErrorHas("is a rectangle, not text"));
+    CHECK(gge_ui_set_max_width(s.r, 99, 5) == 0 && LastErrorHas("unknown ui item id 99"));
     CHECK(gge_ui_set_text(s.r, label, nullptr) == 1 && CountExactPixels(Render(s.r), 0xFFFFFF) == 0);
     CHECK(gge_ui_get_count(s.r) == 2 && gge_ui_clear(s.r) == 1 && gge_ui_get_count(s.r) == 0);
     CHECK(Render(s.r).bgra == base.bgra);                       // 지우면 3D 그대로

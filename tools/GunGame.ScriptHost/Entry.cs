@@ -16,14 +16,16 @@ public static unsafe class Entry
     private static ScriptRunner? s_runner;
     private static EngineRenderer? s_renderer;
     private static EngineScene? s_scene;
+    private static EngineFont? s_font;
     private static string s_lastError = "";
     private static nint s_ggeModule;
     private static bool s_resolverInstalled;
 
     /// <param name="ggeModule">플레이어가 이미 올려 둔 gge.dll의 모듈 핸들. 스크립트 쪽 P/Invoke가 같은 사본을 쓰게 한다.</param>
     /// <param name="typeFilter">null이거나 빈 문자열이면 어셈블리의 모든 스크립트.</param>
+    /// <param name="font">플레이어가 읽어 둔 폰트 핸들(없으면 0: 글자 API는 "no font" 오류). 빌려 쓰며 해제하지 않는다.</param>
     [UnmanagedCallersOnly]
-    public static int Initialize(nint ggeModule, nint renderer, int width, int height, nint scene, char* scriptPath, char* typeFilter) =>
+    public static int Initialize(nint ggeModule, nint renderer, int width, int height, nint scene, nint font, char* scriptPath, char* typeFilter) =>
         Run(() =>
         {
             if (s_runner is not null)
@@ -33,7 +35,8 @@ public static unsafe class Entry
             string? filter = typeFilter is null || *typeFilter == '\0' ? null : new string(typeFilter);
             s_renderer = EngineRenderer.Attach(renderer, width, height);
             s_scene = EngineScene.Attach(scene);
-            s_runner = ScriptRunner.Create(s_renderer, s_scene, path, filter, Console.Error);
+            s_font = font != 0 ? EngineFont.Attach(font) : null;
+            s_runner = ScriptRunner.Create(s_renderer, s_scene, path, filter, Console.Error, s_font);
         });
 
     [UnmanagedCallersOnly]
@@ -84,8 +87,10 @@ public static unsafe class Entry
         s_runner = null;
         s_scene?.Dispose();
         s_renderer?.Dispose();
+        s_font?.Dispose();
         s_scene = null;
         s_renderer = null;
+        s_font = null;
     }
 
     private static ScriptRunner Runner() => s_runner ?? throw new InvalidOperationException("the script session is not initialized");

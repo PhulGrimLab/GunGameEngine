@@ -159,6 +159,38 @@ gge_player_spawner_test(gge_player_spawner_destroys_nothing_when_nothing_was_spa
 gge_player_expect_failure(gge_player_spawner_flood_is_stopped_by_the_frame_limit
     "too many spawns in one frame .max 64."
     ${GGE_SPAWNER_SCENE} --headless --warp --frames 3 --keys E:1 --script ${GGE_SAMPLE_SCRIPTS} --script-type SpawnFlood)
+# 화면 위 글자/사각형(IUiApi): 직접 그린 5x7 시험용 폰트(assets/samples/pixel5x7.bdf) + HudDemo 스크립트. --report-ui가 화면 항목 수를 붙인다.
+set(GGE_TEST_FONT ${CMAKE_CURRENT_SOURCE_DIR}/../assets/samples/pixel5x7.bdf)
+function(gge_player_hud_test name frames keys regex)
+    add_test(NAME ${name}
+             COMMAND gge_player ${GGE_SPAWNER_SCENE} --headless --warp --frames ${frames} --keys ${keys} --report-ui --font ${GGE_TEST_FONT}
+                     --script ${GGE_SAMPLE_SCRIPTS} --script-type HudDemo)
+    set_tests_properties(${name} PROPERTIES PASS_REGULAR_EXPRESSION "${regex}")
+endfunction()
+# 시작할 때 글자 크기 "HELLO" = 폭 30(6x5) 높이 9 한 줄, 항목은 배경 + 글자 둘
+gge_player_hud_test(gge_player_hud_shows_text_and_rect 2 -:2 "measured 30x9x1[\r\n]+.*ui=2")
+# 상호작용: 같은 이름으로 다시 ShowText하면 제자리 갱신이라 항목 수는 그대로
+gge_player_hud_test(gge_player_hud_updates_text_in_place 3 E:1,-:2 "title changed[\r\n]+.*ui=2")
+# 취소: 글자 항목이 지워지고(true) 이미 지운 뒤에는 false, 배경은 남는다
+gge_player_hud_test(gge_player_hud_hides_text 3 Q:1,-:2 "title hidden: True, again: False[\r\n]+.*ui=1")
+# 화면 결과: 헤드리스 화면(160x120)이 골든과 바이트까지 같다(스크립트 -> 화면 항목 -> 플레이어 화면 전체 경로)
+add_test(NAME gge_player_hud_screenshot
+         COMMAND gge_player ${GGE_SPAWNER_SCENE} --headless --warp --size 160x120 --frames 2 --keys E:1,-:1 --font ${GGE_TEST_FONT}
+                 --script ${GGE_SAMPLE_SCRIPTS} --script-type HudDemo --screenshot ${CMAKE_BINARY_DIR}/player_hud.ppm)
+set_tests_properties(gge_player_hud_screenshot PROPERTIES FIXTURES_SETUP gge_player_hud_screenshot)
+add_test(NAME gge_player_hud_matches_golden
+         COMMAND ${CMAKE_COMMAND} -E compare_files ${CMAKE_BINARY_DIR}/player_hud.ppm ${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/player_hud_160x120.ppm)
+set_tests_properties(gge_player_hud_matches_golden PROPERTIES FIXTURES_REQUIRED gge_player_hud_screenshot)
+# 폰트 없이 글자 API를 쓰면 사유와 함께 멈춘다. --font만 주거나 잘못된 폰트 파일도 사유와 함께 거부한다.
+gge_player_expect_failure(gge_player_hud_text_needs_a_font
+    "no font: start the player with --font file.bdf"
+    ${GGE_SPAWNER_SCENE} --headless --warp --frames 1 --script ${GGE_SAMPLE_SCRIPTS} --script-type HudDemo)
+gge_player_expect_failure(gge_player_font_needs_a_script
+    "--font needs --script"
+    ${GGE_SPAWNER_SCENE} --headless --warp --frames 1 --font ${GGE_TEST_FONT})
+gge_player_expect_failure(gge_player_font_missing_file_is_rejected
+    "cannot load the font: cannot open font file"
+    ${GGE_SPAWNER_SCENE} --headless --warp --frames 1 --font ${CMAKE_BINARY_DIR}/no_such_font.bdf --script ${GGE_SAMPLE_SCRIPTS} --script-type HudDemo)
 # 스크립트 호스트 폴더에 gge.dll 사본이 있어도 .NET이 그걸 따로 불러 엔진 상태가 갈라지면 안 된다(플레이어가 올린 것을 그대로 쓴다).
 # 갈라지면 스크립트가 보는 씬이 달라 위 텔레포트/트리거 결과가 나오지 않거나 프로세스가 죽는다.
 add_test(NAME gge_player_script_decoy_host_setup

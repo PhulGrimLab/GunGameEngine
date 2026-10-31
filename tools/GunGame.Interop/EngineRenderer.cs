@@ -257,6 +257,38 @@ public sealed unsafe class EngineRenderer : IDisposable
 
     public int Stride => Width * 4;
 
+    // ---- 화면 위 항목(글자/사각형): 규칙은 gge.h의 gge_ui_*와 같다 ----
+    /// <summary>
+    /// 글자 항목을 만든다(ID 반환). 항목은 매 <see cref="Render"/>의 끝에서 3D와 PS1 후처리가 끝난 CPU 픽셀 위에 만든 순서대로 덮어 그려진다(PS1 효과를 받지 않는다).
+    /// 좌표는 렌더 타깃의 정수 픽셀(왼쪽 위 기준), 화면 밖이면 잘린다. maxWidth &gt; 0이면 그 폭에 맞춰 줄바꿈. 항목은 최대 64개이고 글자는 1024바이트까지이며
+    /// 넘으면 <see cref="EngineException"/>.
+    /// </summary>
+    public int CreateUiText(EngineFont font, string text, int x, int y, int maxWidth = 0, uint rgb = 0xFFFFFF) =>
+        CheckId(Native.gge_ui_create_text(Handle, font.NativeHandle, text, x, y, maxWidth, rgb));
+
+    /// <summary>채운 사각형 항목을 만든다. 크기는 0보다 커야 하고 alpha는 0..255(255 = 불투명, 그 사이는 정수 혼합).</summary>
+    public int CreateUiRect(int x, int y, int width, int height, uint rgb, int alpha = 255) =>
+        CheckId(Native.gge_ui_create_rect(Handle, x, y, width, height, rgb, alpha));
+
+    public void SetUiText(int itemId, string text) => Check(Native.gge_ui_set_text(Handle, itemId, text));
+
+    public void SetUiMaxWidth(int itemId, int maxWidth) => Check(Native.gge_ui_set_max_width(Handle, itemId, maxWidth));
+
+    public void SetUiRect(int itemId, int width, int height, int alpha) => Check(Native.gge_ui_set_rect(Handle, itemId, width, height, alpha));
+
+    public void SetUiPosition(int itemId, int x, int y) => Check(Native.gge_ui_set_position(Handle, itemId, x, y));
+
+    public void SetUiColor(int itemId, uint rgb) => Check(Native.gge_ui_set_color(Handle, itemId, rgb));
+
+    public void SetUiVisible(int itemId, bool visible) => Check(Native.gge_ui_set_visible(Handle, itemId, visible ? 1 : 0));
+
+    public void DestroyUi(int itemId) => Check(Native.gge_ui_destroy(Handle, itemId));
+
+    public void ClearUi() => Check(Native.gge_ui_clear(Handle));
+
+    /// <summary>살아 있는 화면 항목 수.</summary>
+    public int UiCount => Native.gge_ui_get_count(Handle);
+
     public void Dispose()
     {
         if (_handle != 0)
@@ -432,6 +464,39 @@ public sealed unsafe class EngineRenderer : IDisposable
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern byte* gge_renderer_get_pixels(nint renderer, out int width, out int height, out int stride);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_ui_create_text(nint renderer, nint font, [MarshalAs(UnmanagedType.LPUTF8Str)] string text, int x, int y, int maxWidth, uint rgb);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_ui_create_rect(nint renderer, int x, int y, int width, int height, uint rgb, int alpha);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_ui_set_text(nint renderer, int itemId, [MarshalAs(UnmanagedType.LPUTF8Str)] string text);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_ui_set_max_width(nint renderer, int itemId, int maxWidth);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_ui_set_rect(nint renderer, int itemId, int width, int height, int alpha);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_ui_set_position(nint renderer, int itemId, int x, int y);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_ui_set_color(nint renderer, int itemId, uint rgb);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_ui_set_visible(nint renderer, int itemId, int visible);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_ui_destroy(nint renderer, int itemId);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_ui_clear(nint renderer);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_ui_get_count(nint renderer);
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         private static extern nint gge_last_error();

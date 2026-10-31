@@ -954,6 +954,14 @@ void Renderer::SetUiText(int id, std::string text)
     item.text = std::move(text);
 }
 
+void Renderer::SetUiMaxWidth(int id, int maxWidth)
+{
+    UiItem& item = GetUi(id);
+    if (item.kind != UiKind::Text)
+        throw std::runtime_error("ui item " + std::to_string(id) + " is a rectangle, not text");
+    item.maxWidth = maxWidth;
+}
+
 void Renderer::SetUiRect(int id, int width, int height, int alpha)
 {
     UiItem& item = GetUi(id);

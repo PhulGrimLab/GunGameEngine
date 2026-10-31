@@ -169,6 +169,34 @@ public sealed class Spawner : IGameScript
     }
 }
 
+/// <summary>
+/// 화면 위 글자/사각형(assets/samples/pixel5x7.bdf 폰트): 시작할 때 반투명 대화창 배경과 "HELLO" 글자를 만들고 글자 크기를 잰다. 상호작용 버튼은 같은 이름으로 다시
+/// ShowText해(제자리 갱신) 글자를 바꾸고, 취소 버튼은 글자를 지운다(배경은 남는다). 대화창 배경을 글자에 맞추는 것이 MeasureText의 전형적인 쓰임이다.
+/// </summary>
+public sealed class HudDemo : IGameScript
+{
+    public void OnStart(IScriptContext context)
+    {
+        TextSize size = context.MeasureText("HELLO");
+        context.Log($"measured {size.Width}x{size.Height}x{size.Lines}");
+        context.ShowRect("panel", 2, 2, size.Width + 4, size.Height + 4, 0x203060, 160);   // 배경을 먼저(아래에 깔린다)
+        context.ShowText("title", "HELLO", 4, 4, 0xFFFF00);
+    }
+
+    public void OnAction(IScriptContext context, GameAction action)
+    {
+        if (action == GameAction.Interact)
+        {
+            context.ShowText("title", "HI!", 4, 4, 0x80FF80);
+            context.Log("title changed");
+        }
+        else if (action == GameAction.Cancel)
+        {
+            context.Log($"title hidden: {context.HideText("title")}, again: {context.HideText("title")}");
+        }
+    }
+}
+
 /// <summary>한 프레임에 한도(64)보다 많이 만들려고 한다(한도 초과가 사유와 함께 스크립트 예외가 되어 플레이어가 멈추는지 확인용).</summary>
 public sealed class SpawnFlood : IGameScript
 {

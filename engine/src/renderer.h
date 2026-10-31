@@ -153,6 +153,7 @@ public:
     int CreateUiText(std::shared_ptr<const Font> font, std::string text, int x, int y, int maxWidth, uint32_t rgb);
     int CreateUiRect(int x, int y, int width, int height, uint32_t rgb, int alpha);
     void SetUiText(int id, std::string text);           // 글자 항목만
+    void SetUiMaxWidth(int id, int maxWidth);           // 글자 항목만(줄바꿈 폭, 0 이하 = '\n'뿐)
     void SetUiRect(int id, int width, int height, int alpha);   // 사각형 항목만(체력 바 길이 같은 용도)
     void SetUiPosition(int id, int x, int y);
     void SetUiColor(int id, uint32_t rgb);

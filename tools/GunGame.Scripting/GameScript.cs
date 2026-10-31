@@ -180,12 +180,52 @@ public interface ISpawnApi
     bool ObjectExists(string nodeName);
 }
 
+/// <summary><see cref="IUiApi.MeasureText"/>의 결과: 가장 넓은 줄의 폭, 전체 높이(줄 수 x 줄 높이), 줄 수(픽셀). 빈 문자열은 모두 0.</summary>
+public readonly record struct TextSize(int Width, int Height, int Lines);
+
+/// <summary>
+/// 화면 위 글자와 사각형(HUD/대화창). 항목은 <b>이름</b>으로 가리키고(대소문자 구분), 3D가 모두 그려지고 PS1 후처리가 끝난 뒤 화면 픽셀에 만든 순서대로 덮어 그려진다
+/// (<b>PS1 효과를 받지 않는다</b>: 색이 요청한 그대로다). 좌표는 렌더 타깃의 정수 픽셀(왼쪽 위 기준, 해상도는 플레이어의 --size)이고 화면 밖이면 잘린다.
+/// 색은 0xRRGGBB. 글자는 BDF 비트맵 폰트(플레이어의 <c>--font 파일.bdf</c>)의 1비트 픽셀이고, 폰트에 없는 글자는 빈 네모, 잘못된 UTF-8은 대체 글자로 보이며
+/// 탭/CR 같은 제어 문자는 무시되고 '\n'은 줄바꿈이다. 글자는 1024 UTF-8 바이트까지, 항목은 모두 합쳐 64개까지다(넘으면 예외).
+/// 대화창은 <see cref="ShowRect"/>로 배경을 먼저, <see cref="ShowText"/>를 나중에 만들어 구성한다(타자기 효과 등은 스크립트가 글자를 늘려 가며 직접).
+/// </summary>
+public interface IUiApi
+{
+    /// <summary>
+    /// 이름의 글자 항목을 보인다: 없으면 만들고(그리는 순서 = 만든 순서), 있으면 <b>제자리에서</b> 글자/위치/색/폭을 고친다(순서 유지).
+    /// <paramref name="maxWidth"/> &gt; 0이면 그 픽셀 폭을 넘기 전에 줄바꿈(마지막 공백에서, 공백이 없으면 글자 경계에서), 0 이하면 '\n'에서만 줄을 바꾼다.
+    /// 이름이 비었거나, 그 이름이 사각형이거나, 폰트가 없거나(<c>--font</c> 없음), 글자가 1024바이트를 넘거나, 항목이 64개를 넘으면 예외(상태는 그대로).
+    /// </summary>
+    void ShowText(string name, string text, int x, int y, uint rgb = 0xFFFFFF, int maxWidth = 0);
+
+    /// <summary>글자 항목을 지우고 이름을 비운다. 그런 글자 항목이 없으면(사각형이거나 없는 이름) false.</summary>
+    bool HideText(string name);
+
+    /// <summary>
+    /// 이름의 채운 사각형을 보인다(<see cref="ShowText"/>와 같은 규칙). 크기는 0보다 커야 하고 alpha는 0..255(255 = 불투명, 0 = 안 보임, 그 사이는 정수 혼합:
+    /// 반투명 대화창 배경). 이름이 글자 항목이면 예외. 폰트는 필요 없다.
+    /// </summary>
+    void ShowRect(string name, int x, int y, int width, int height, uint rgb, int alpha = 255);
+
+    /// <summary>사각형 항목을 지우고 이름을 비운다. 그런 사각형이 없으면 false.</summary>
+    bool HideRect(string name);
+
+    /// <summary>모든 화면 항목을 지운다.</summary>
+    void ClearUi();
+
+    /// <summary>
+    /// 글자가 차지할 크기(그려지는 것과 같은 규칙: 줄바꿈, 대체 글자). 대화창 크기를 글자에 맞출 때 쓴다. 폰트가 없거나 글자가 1024바이트를 넘으면 예외.
+    /// </summary>
+    TextSize MeasureText(string text, int maxWidth = 0);
+}
+
 /// <summary>
 /// 스크립트가 게임 세계를 읽고 바꾸는 창구: <see cref="IWorldApi"/>(플레이어/방/트리거/충돌체) + <see cref="IObjectApi"/>(노드 변환/표시/알파) +
-/// <see cref="IAnimationApi"/>(클립 재생) + <see cref="ISpawnApi"/>(생성/삭제) + 로그. 호출은 모두 게임 스레드에서 이벤트/업데이트 처리 도중에 일어나며,
-/// 실패하면 예외를 던진다(스크립트가 예외를 처리하지 않으면 플레이어는 사유를 출력하고 종료한다).
+/// <see cref="IAnimationApi"/>(클립 재생) + <see cref="ISpawnApi"/>(생성/삭제) + <see cref="IUiApi"/>(화면 글자/사각형) + 로그. 호출은 모두 게임 스레드에서
+/// 이벤트/업데이트 처리 도중에 일어나며, 실패하면 예외를 던진다(스크립트가 예외를 처리하지 않으면 플레이어는 사유를 출력하고 종료한다).
 /// </summary>
-public interface IScriptContext : IWorldApi, IObjectApi, IAnimationApi, ISpawnApi
+public interface IScriptContext : IWorldApi, IObjectApi, IAnimationApi, ISpawnApi, IUiApi
 {
     /// <summary>플레이어 프로세스의 표준 오류에 "[script] 메시지"를 남긴다.</summary>
     void Log(string message);
