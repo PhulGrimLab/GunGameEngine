@@ -26,7 +26,8 @@ add_test(NAME engine_tests COMMAND engine_tests)
 add_executable(engine_bench tests/engine_bench.cpp)
 target_link_libraries(engine_bench PRIVATE gge)
 target_compile_options(engine_bench PRIVATE /W4 /utf-8)
-target_compile_definitions(engine_bench PRIVATE "GGE_SPAWNER_SCENE=\"${CMAKE_CURRENT_SOURCE_DIR}/../assets/samples/spawner.ggs\"")
+target_compile_definitions(engine_bench PRIVATE "GGE_SPAWNER_SCENE=\"${CMAKE_CURRENT_SOURCE_DIR}/../assets/samples/spawner.ggs\""
+                                                "GGE_GALMURI_FONT=\"${CMAKE_CURRENT_SOURCE_DIR}/../assets/external/galmuri/Galmuri11.bdf\"")
 
 # 독립 실행 플레이어: 구운 씬(.ggs)을 창에서 실행한다. 엔진 C API만 쓴다(gge.dll이 같은 폴더에 있어야 한다).
 # --script를 줄 때만 hostfxr로 .NET을 올린다(player/script_host.cpp). 관리 코드는 tools/ 빌드(build.cmd)가 build/bin/script_host에 모은다.
@@ -34,6 +35,16 @@ add_executable(gge_player player/player.cpp player/script_host.cpp)
 target_link_libraries(gge_player PRIVATE gge user32 gdi32 advapi32)
 target_compile_options(gge_player PRIVATE /W4 /utf-8)
 target_compile_definitions(gge_player PRIVATE _CRT_SECURE_NO_WARNINGS)
+# 기본 폰트: 플레이어가 실행 파일 옆에서 Galmuri11.bdf를 찾는다. 빌드가 폰트와 OFL 라이선스(저작권 표기 + 전문, 배포 시 함께 둬야 한다)를 복사해 둔다(원본 그대로).
+set(GGE_GALMURI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../assets/external/galmuri)
+add_custom_command(TARGET gge_player POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${GGE_GALMURI_DIR}/Galmuri11.bdf $<TARGET_FILE_DIR:gge_player>/Galmuri11.bdf
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${GGE_GALMURI_DIR}/LICENSE.txt $<TARGET_FILE_DIR:gge_player>/Galmuri11.LICENSE.txt
+    COMMENT "Copy Galmuri11.bdf and its OFL license next to gge_player")
+add_test(NAME gge_player_ships_the_font_and_its_license
+         COMMAND ${CMAKE_COMMAND} -E compare_files ${GGE_GALMURI_DIR}/Galmuri11.bdf $<TARGET_FILE_DIR:gge_player>/Galmuri11.bdf)
+add_test(NAME gge_player_ships_the_font_license_text
+         COMMAND ${CMAKE_COMMAND} -E compare_files ${GGE_GALMURI_DIR}/LICENSE.txt $<TARGET_FILE_DIR:gge_player>/Galmuri11.LICENSE.txt)
 
 # 플레이어 검증: 입력 매핑 자체 검사, 헤드리스로 구운 샘플을 걸어 화면을 골든과 비교, 잘못된 입력 거부.
 set(GGE_SAMPLE_SCENE ${CMAKE_CURRENT_SOURCE_DIR}/../assets/samples/play.ggs)

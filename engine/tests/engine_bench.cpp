@@ -4,6 +4,7 @@
 // 각 시나리오는 워밍업 후 프레임당 평균 ms를 출력한다.
 #include <gge/gge.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -188,6 +189,45 @@ void BenchSpawner()
     gge_renderer_destroy(r);
 }
 
+// 화면 위 글자: 64개 항목 x 한글/영문 섞인 100자(대화창 몇 개 + HUD보다 훨씬 많다)를 320x240 화면에 올린 프레임과 올리지 않은 프레임을 **번갈아** 재서(5라운드 중앙값)
+// 오버레이 비용(글자 해독 + 줄바꿈 + 픽셀 복사)만 본다. 항목은 숨기기/보이기로 켜고 끄므로 두 쪽의 3D와 장면이 완전히 같다.
+void BenchUi()
+{
+    GgeFont* font = gge_font_load(GGE_GALMURI_FONT);
+    if (!font) {
+        std::printf("  ui overlay                 : font load failed (%s)\n", gge_last_error());
+        return;
+    }
+    GgeRenderer* r = gge_renderer_create(320, 240, g_useWarp);
+    std::vector<float> v;
+    std::vector<uint32_t> idx;
+    MakeCube(v, idx);
+    int mesh = gge_mesh_create(r, v.data(), static_cast<int>(v.size() / 8), idx.data(), static_cast<int>(idx.size()));
+    for (int i = 0; i < 50; ++i) {
+        int obj = gge_object_create(r, mesh, 0, 0);
+        const float pos[3] = {static_cast<float>(i % 10) - 5, static_cast<float>(i / 10) - 2, 0}, rot[3] = {0.3f, 0.4f, 0}, scale[3] = {0.3f, 0.3f, 0.3f};
+        gge_object_set_transform(r, obj, pos, rot, scale);
+    }
+    gge_renderer_set_camera(r, 0, 0, 12, 0, 0, 0, 0.8f);
+    const char* text = "마을 사람: 여행자여, 이 마을에 온 것을 환영한다. 북쪽 문은 열쇠가 있어야 열린다네. Hello 123! 조심해서 다녀오게요.";   // 약 60 글자(한글+영문), 바이트는 100자 이상
+    std::vector<int> items;
+    for (int i = 0; i < 64; ++i)
+        items.push_back(gge_ui_create_text(r, font, text, 2, (i * 12) % 230, 316, 0xFFFFFF));
+    auto setVisible = [&](bool on) { for (int id : items) gge_ui_set_visible(r, id, on ? 1 : 0); };
+    std::vector<double> off, on;
+    for (int round = 0; round < 5; ++round) {
+        setVisible(false);
+        off.push_back(TimeRender(r));
+        setVisible(true);
+        on.push_back(TimeRender(r));
+    }
+    std::sort(off.begin(), off.end());
+    std::sort(on.begin(), on.end());
+    std::printf("  ui 64 items x ~60 glyphs    : %8.3f ms/frame (3D alone %8.3f, overlay +%.3f; median of 5 interleaved rounds, 320x240)\n", on[2], off[2], on[2] - off[2]);
+    gge_renderer_destroy(r);
+    gge_font_destroy(font);
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -201,5 +241,6 @@ int main(int argc, char** argv)
     std::printf("  hierarchy 100 chains x d20  : %8.3f ms/frame\n", BenchDeepHierarchy(100, 20));
     std::printf("  skinned  50 objs x 32 bones : %8.3f ms/frame\n", BenchSkinned(50, 32));
     BenchSpawner();
+    BenchUi();
     return 0;
 }
