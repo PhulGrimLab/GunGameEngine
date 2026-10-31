@@ -125,6 +125,22 @@ public sealed class GameplayEditorTests(UiHost host) : UiTestBase(host)
     });
 
     [Fact]
+    public void ColliderName_RejectsEmptyNames_BecauseScriptsAddressDoorsByName() => Ui(s =>
+    {
+        // 충돌체 이름은 스크립트가 문을 열고 닫는 열쇠다(빈 이름은 지정할 수 없다). 같은 이름을 여럿에 지으면 한꺼번에 켜고 끈다.
+        s.Click("Add Collider");
+        var c = (ColliderDef)s.SelectedGameplay!.Def;
+        Assert.Equal("Collider", c.Name);
+
+        s.TypeEnter(s.Field("Name"), "   ");
+        Assert.Equal("Rejected: name is empty", s.Status);
+        Assert.Equal("Collider", c.Name);
+
+        s.TypeEnter(s.Field("Name"), " Gate ");
+        Assert.Equal("Gate", c.Name);   // 앞뒤 공백은 잘린다
+    });
+
+    [Fact]
     public void ColliderMinMax_RejectsFlippedBox_AndMoveShiftsIt() => Ui(s =>
     {
         s.Click("Add Collider");

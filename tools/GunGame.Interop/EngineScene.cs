@@ -97,6 +97,98 @@ public sealed unsafe class EngineScene : IDisposable
             throw new EngineException(Native.LastError());
     }
 
+    /// <summary>
+    /// 이름이 같은 충돌체를 모두 켜거나 끄고(처음엔 모두 켜짐) 바뀐 개수를 돌려준다: 문을 열고 닫는 데 쓴다. 이름이 비어 있거나(이름 없는 충돌체는 지정할 수
+    /// 없다) 그 이름이 없으면 <see cref="EngineException"/>. 닫을 때 플레이어가 안에 겹쳐 있으면 다음 <see cref="Step"/>에서 가장 가까운 면 바깥으로 밀려난다.
+    /// </summary>
+    public int SetColliderEnabled(string colliderName, bool enabled)
+    {
+        int count = Native.gge_scene_set_collider_enabled(Handle, colliderName, enabled ? 1 : 0);
+        if (count == 0)
+            throw new EngineException(Native.LastError());
+        return count;
+    }
+
+    /// <summary>
+    /// 플레이어가 지금 그 이름의 트리거(여럿이면 어느 하나) 안에 있는가. 이벤트와 같은 시점의 상태라서, 트리거를 끄거나 켠 결과는
+    /// 다음 <see cref="Step"/>부터 보인다. 그 이름이 없으면 <see cref="EngineException"/>.
+    /// </summary>
+    public bool IsInsideTrigger(string triggerName)
+    {
+        int result = Native.gge_scene_is_inside_trigger(Handle, triggerName);
+        if (result < 0)
+            throw new EngineException(Native.LastError());
+        return result == 1;
+    }
+
+    /// <summary>이름이 같은 첫 노드의 부모 기준(로컬) 위치(마지막으로 설정한 값). 그런 노드가 없으면 null.</summary>
+    public Vec3? GetNodePosition(string nodeName)
+    {
+        float x, y, z;
+        return Native.gge_scene_get_node_position(Handle, nodeName, &x, &y, &z) == 0 ? null : new Vec3(x, y, z);
+    }
+
+    /// <summary>
+    /// 이름이 같은 첫 노드의 로컬 위치를 바꾼다(회전/크기 유지). 노드가 없거나, 값이 유한하지 않거나, 플레이어 노드면
+    /// <see cref="EngineException"/>(상태는 그대로). 플레이어는 <see cref="TeleportPlayer"/>로만 옮긴다.
+    /// </summary>
+    public void SetNodePosition(string nodeName, Vec3 position)
+    {
+        if (Native.gge_scene_set_node_position(Handle, nodeName, position.X, position.Y, position.Z) == 0)
+            throw new EngineException(Native.LastError());
+    }
+
+    /// <summary>
+    /// 이름이 같은 첫 노드의 로컬 회전(오일러 pitch X, yaw Y, roll Z, 라디안; 한 축 회전은 문제없고 여러 축을 섞으면 오일러의 짐벌 한계가 있다).
+    /// 그런 노드가 없으면 null.
+    /// </summary>
+    public Vec3? GetNodeRotation(string nodeName)
+    {
+        float x, y, z;
+        return Native.gge_scene_get_node_rotation(Handle, nodeName, &x, &y, &z) == 0 ? null : new Vec3(x, y, z);
+    }
+
+    /// <summary>위치와 같은 규칙: 노드가 없거나, 값이 유한하지 않거나, 플레이어 노드면 <see cref="EngineException"/>(상태는 그대로).</summary>
+    public void SetNodeRotation(string nodeName, Vec3 rotation)
+    {
+        if (Native.gge_scene_set_node_rotation(Handle, nodeName, rotation.X, rotation.Y, rotation.Z) == 0)
+            throw new EngineException(Native.LastError());
+    }
+
+    /// <summary>이름이 같은 첫 노드의 로컬 크기. 그런 노드가 없으면 null.</summary>
+    public Vec3? GetNodeScale(string nodeName)
+    {
+        float x, y, z;
+        return Native.gge_scene_get_node_scale(Handle, nodeName, &x, &y, &z) == 0 ? null : new Vec3(x, y, z);
+    }
+
+    /// <summary>위치와 같은 규칙. 크기 0은 받는다(납작해지거나, 세 축이 0이면 그려지지 않는다).</summary>
+    public void SetNodeScale(string nodeName, Vec3 scale)
+    {
+        if (Native.gge_scene_set_node_scale(Handle, nodeName, scale.X, scale.Y, scale.Z) == 0)
+            throw new EngineException(Native.LastError());
+    }
+
+    /// <summary>
+    /// 이름이 같은 첫 노드가 보이는가(처음엔 true). <b>그 노드 자신의 플래그만</b> 돌려준다: 부모가 숨겨져서 안 그려지는 중이어도 true일 수 있다.
+    /// 그런 노드가 없으면 null.
+    /// </summary>
+    public bool? IsNodeVisible(string nodeName)
+    {
+        int result = Native.gge_scene_get_node_visible(Handle, nodeName);
+        return result < 0 ? null : result == 1;
+    }
+
+    /// <summary>
+    /// 노드를 보이게/숨긴다. 숨기면 그 노드와 모든 자손이 그려지지 않고 그림자도 없다. 알파와 별개 상태다(다시 보이게 하면 알파 그대로).
+    /// 노드가 없으면 <see cref="EngineException"/>. 플레이어 노드도 숨길 수 있다.
+    /// </summary>
+    public void SetNodeVisible(string nodeName, bool visible)
+    {
+        if (Native.gge_scene_set_node_visible(Handle, nodeName, visible ? 1 : 0) == 0)
+            throw new EngineException(Native.LastError());
+    }
+
     /// <summary>네이티브 씬 핸들(<see cref="Attach"/>와 짝). 해제된 씬이면 ObjectDisposedException.</summary>
     public nint NativeHandle => Handle;
 
@@ -141,6 +233,36 @@ public sealed unsafe class EngineScene : IDisposable
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern int gge_scene_teleport_player(nint scene, float x, float z);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_set_collider_enabled(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string colliderName, int enabled);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_is_inside_trigger(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string triggerName);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_get_node_position(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string nodeName, float* x, float* y, float* z);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_set_node_position(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string nodeName, float x, float y, float z);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_get_node_rotation(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string nodeName, float* x, float* y, float* z);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_set_node_rotation(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string nodeName, float x, float y, float z);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_get_node_scale(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string nodeName, float* x, float* y, float* z);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_set_node_scale(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string nodeName, float x, float y, float z);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_get_node_visible(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string nodeName);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_set_node_visible(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string nodeName, int visible);
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         private static extern nint gge_last_error();

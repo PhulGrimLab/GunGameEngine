@@ -88,7 +88,9 @@ GGE_API int gge_object_destroy(GgeRenderer* r, int object_id);
 GGE_API int gge_object_set_parent(GgeRenderer* r, int object_id, int parent_id);
 GGE_API int gge_object_set_mesh(GgeRenderer* r, int object_id, int mesh_id);
 GGE_API int gge_object_set_texture(GgeRenderer* r, int object_id, int texture_id);
-// position/rotation/scale은 각각 float[3].
+// position/rotation/scale은 각각 float[3]. rotation은 오일러(pitch X, yaw Y, roll Z) 라디안. 비유한 값이 하나라도 있으면 실패하고 상태는 그대로다.
+// 크기 0(한 축이라도)은 유한하므로 받는다: 월드 행렬이 특이 행렬이라 법선은 여인수 행렬로 구하며, 그 축으로 납작해진 오브젝트가 아주 얇은 오브젝트와
+// 같은 조명으로 그려지고(테스트로 확인), 세 축이 모두 0이면 아무것도 그려지지 않는다.
 GGE_API int gge_object_set_transform(GgeRenderer* r, int object_id, const float* position,
                                      const float* rotation, const float* scale);
 GGE_API int gge_object_set_color(GgeRenderer* r, int object_id, float red, float green, float blue);
@@ -98,6 +100,11 @@ GGE_API int gge_object_set_color(GgeRenderer* r, int object_id, float red, float
 GGE_API int gge_object_set_alpha(GgeRenderer* r, int object_id, float alpha);
 // 그림자를 드리울지(gge_renderer_set_shadow가 켜져 있을 때). 기본은 0.
 GGE_API int gge_object_set_casts_shadow(GgeRenderer* r, int object_id, int casts);
+// 표시 여부(visible != 0이면 보임, 처음엔 보임). 숨기면 그 오브젝트와 모든 자손이 그려지지 않고 그림자도 드리우지 않으며 반투명 정렬에서도 빠진다.
+// 알파/그림자 설정과는 별개 상태라 다시 보이게 하면 그대로 돌아온다. 점광원은 오브젝트가 아니라 영향받지 않는다.
+GGE_API int gge_object_set_visible(GgeRenderer* r, int object_id, int visible);
+// 그 오브젝트 자신의 표시 플래그: 보임 1, 숨김 0, 알 수 없는 ID면 -1(부모가 숨겨졌는지는 보지 않는다).
+GGE_API int gge_object_is_visible(GgeRenderer* r, int object_id);
 
 // ---- 조명 ----
 // 밝기 = 앰비언트 + 방향광색 * max(0, N.-L) + 점광원 합. 점광원은 색 * max(0, N.l) * a^2, a = saturate(1 - 거리/범위).
@@ -157,6 +164,11 @@ GGE_API int gge_world_get_room_camera(const GgeWorld* w, int room_id, float* eye
 
 // 정적 장애물: 바닥(XZ 평면) 위 축 정렬 사각형. min < max이고 유한해야 한다. 성공하면 ID(>0)를 반환한다.
 GGE_API int gge_world_add_box_collider(GgeWorld* w, float min_x, float min_z, float max_x, float max_z);
+// 콜라이더를 켜거나 끈다(처음엔 모두 켜짐, enabled != 0이면 켬). 꺼진 콜라이더는 gge_world_move_circle이 없는 것으로 본다. 켜는 순간 안에
+// 겹쳐 있던 이동체는 다음 gge_world_move_circle(이동량 0이어도)에서 가장 가까운 면 바깥으로 밀려난다. 알 수 없는 ID면 0.
+GGE_API int gge_world_set_collider_enabled(GgeWorld* w, int collider_id, int enabled);
+// 콜라이더가 켜져 있으면 1, 꺼져 있으면 0, 알 수 없는 ID면 -1(gge_last_error에 사유).
+GGE_API int gge_world_is_collider_enabled(const GgeWorld* w, int collider_id);
 
 // 반지름 radius인 원형 이동체를 (x,z)에서 (dx,dz)만큼 움직이고, 장애물에 막히면 벽을 따라 미끄러진 최종 위치를
 // out_xz(float[2])에 쓴다. 이동은 작은 걸음으로 나뉘어 얇은 벽을 통과하지 않는다. 시작 위치가 장애물과 겹쳐 있으면
@@ -230,5 +242,29 @@ GGE_API int gge_scene_set_trigger_enabled(GgeScene* s, const char* trigger_name_
 // 플레이어를 바닥 위치 (x,z)로 즉시 옮긴다(문/방 이동). 활성 방, 카메라, 트리거(이벤트는 poll로)가 새 위치로 갱신되고 방향은 그대로다.
 // 플레이어가 없거나, 값이 유한하지 않거나, 어떤 방에도 속하지 않으면 0(상태는 그대로). 충돌체 안인지는 검사하지 않는다. 성공하면 1.
 GGE_API int gge_scene_teleport_player(GgeScene* s, float x, float z);
+// 이름이 같은 충돌체를 모두 켜거나 끈다(enabled != 0이면 켬, 처음엔 모두 켜짐): 문을 열고 닫는 데 쓴다. 바뀐 충돌체 수(>0)를 반환하고, 그 이름이
+// 없거나 이름이 비어 있으면 0(gge_last_error에 사유; 이름은 대소문자를 구분하고 .ggs version 1 파일의 충돌체는 이름이 없어 지정할 수 없다).
+// 닫을 때 플레이어가 안에 겹쳐 있으면 다음 gge_scene_step에서 가장 가까운 면 바깥으로 밀려난다(얇은 문이 방 경계에 걸치면 반대편으로 나갈 수 있다).
+GGE_API int gge_scene_set_collider_enabled(GgeScene* s, const char* collider_name_utf8, int enabled);
+// 플레이어가 지금 그 이름의 트리거(여럿이면 어느 하나) 안에 있으면 1, 밖이면 0, 그 이름이 없으면 -1(gge_last_error에 사유).
+// 이벤트와 같은 시점의 상태다: 마지막 gge_scene_step/텔레포트 기준이고, 트리거를 끄거나 켠 결과는 다음 gge_scene_step부터 보인다
+// (끈 트리거는 그때부터 밖).
+GGE_API int gge_scene_is_inside_trigger(const GgeScene* s, const char* trigger_name_utf8);
+// 이름이 같은 첫 노드의 부모 기준(로컬) 위치를 읽는다(마지막으로 설정한 값, 처음엔 구운 값). 없으면 0. 각 포인터는 NULL 가능.
+GGE_API int gge_scene_get_node_position(const GgeScene* s, const char* node_name_utf8, float* x, float* y, float* z);
+// 그 노드의 로컬 위치를 바꾼다(회전/크기 유지). 노드가 없거나, 값이 유한하지 않거나, 플레이어 노드면 0(상태는 그대로, 플레이어는
+// gge_scene_teleport_player로만 옮긴다). 성공하면 1.
+GGE_API int gge_scene_set_node_position(GgeScene* s, const char* node_name_utf8, float x, float y, float z);
+// 이름이 같은 첫 노드의 로컬 회전(오일러 pitch X, yaw Y, roll Z, 라디안)과 로컬 크기. 읽기는 없으면 0, 쓰기는 위치와 같은 규칙:
+// 노드가 없거나, 비유한 값이거나, 플레이어 노드면 0(상태는 그대로). 성공하면 1.
+GGE_API int gge_scene_get_node_rotation(const GgeScene* s, const char* node_name_utf8, float* x, float* y, float* z);
+GGE_API int gge_scene_set_node_rotation(GgeScene* s, const char* node_name_utf8, float x, float y, float z);
+GGE_API int gge_scene_get_node_scale(const GgeScene* s, const char* node_name_utf8, float* x, float* y, float* z);
+GGE_API int gge_scene_set_node_scale(GgeScene* s, const char* node_name_utf8, float x, float y, float z);
+// 이름이 같은 첫 노드의 표시 여부(처음엔 보임). 숨기면 그 노드와 모든 자손이 그려지지 않고 그림자도 없다. 알파와 별개 상태라 다시 보이게 하면
+// 알파는 그대로다. 읽기는 보임 1 / 숨김 0 / 없는 노드 -1(gge_last_error에 사유). 쓰기는 없는 노드면 0. 플레이어 노드도 숨길 수 있다
+// (위치/회전/크기와 달리 플레이어 규칙과 충돌하지 않는다: 컷신/퇴장 연출용).
+GGE_API int gge_scene_get_node_visible(const GgeScene* s, const char* node_name_utf8);
+GGE_API int gge_scene_set_node_visible(GgeScene* s, const char* node_name_utf8, int visible);
 
 GGE_API const char* gge_last_error(void);

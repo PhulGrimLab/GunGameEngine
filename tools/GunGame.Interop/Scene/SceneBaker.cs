@@ -15,7 +15,8 @@ public sealed class BakeException(string message, Exception? inner = null) : Exc
 /// </summary>
 public static class SceneBaker
 {
-    public const uint Version = 1;
+    /// <summary>쓰는 형식 버전. 정책: 쓰기는 항상 최신, 엔진 로더는 1..Version을 읽는다(버전 1 = 충돌체에 이름 없음).</summary>
+    public const uint Version = 2;
 
     private const int FloatsPerVertex = 8;
     private const int GgmHeaderBytes = 12;
@@ -306,6 +307,7 @@ public static class SceneBaker
         w.Write((uint)gameplay.Colliders.Count);
         foreach (ColliderDef c in gameplay.Colliders)
         {
+            WriteString(w, c.Name);   // version 2부터: 이름(스크립트가 이름으로 켜고 끈다). 같은 이름 여럿 가능
             w.Write(c.MinX);
             w.Write(c.MinZ);
             w.Write(c.MaxX);

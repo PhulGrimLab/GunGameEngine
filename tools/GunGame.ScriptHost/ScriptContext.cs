@@ -12,7 +12,54 @@ internal sealed class ScriptContext(EngineRenderer renderer, EngineScene scene, 
 
     public void SetTriggerEnabled(string triggerName, bool enabled) => scene.SetTriggerEnabled(triggerName, enabled);
 
+    public void SetColliderEnabled(string colliderName, bool enabled) => scene.SetColliderEnabled(colliderName, enabled);
+
     public void TeleportPlayer(float x, float z) => scene.TeleportPlayer(x, z);
+
+    public bool IsPlayerInside(string triggerName) => scene.IsInsideTrigger(triggerName);
+
+    public (float X, float Y, float Z)? GetObjectPosition(string nodeName) =>
+        scene.GetNodePosition(nodeName) is { } p ? (p.X, p.Y, p.Z) : null;
+
+    public bool SetObjectPosition(string nodeName, float x, float y, float z)
+    {
+        if (scene.GetNodePosition(nodeName) is null)
+            return false;
+        scene.SetNodePosition(nodeName, new Vec3(x, y, z));
+        return true;
+    }
+
+    public bool SetObjectVisible(string nodeName, bool visible)
+    {
+        if (scene.IsNodeVisible(nodeName) is null)
+            return false;
+        scene.SetNodeVisible(nodeName, visible);
+        return true;
+    }
+
+    public bool? IsObjectVisible(string nodeName) => scene.IsNodeVisible(nodeName);
+
+    public (float X, float Y, float Z)? GetObjectRotation(string nodeName) =>
+        scene.GetNodeRotation(nodeName) is { } r ? (r.X, r.Y, r.Z) : null;
+
+    public bool SetObjectRotation(string nodeName, float x, float y, float z)
+    {
+        if (scene.GetNodeRotation(nodeName) is null)
+            return false;
+        scene.SetNodeRotation(nodeName, new Vec3(x, y, z));
+        return true;
+    }
+
+    public (float X, float Y, float Z)? GetObjectScale(string nodeName) =>
+        scene.GetNodeScale(nodeName) is { } s ? (s.X, s.Y, s.Z) : null;
+
+    public bool SetObjectScale(string nodeName, float x, float y, float z)
+    {
+        if (scene.GetNodeScale(nodeName) is null)
+            return false;
+        scene.SetNodeScale(nodeName, new Vec3(x, y, z));
+        return true;
+    }
 
     public bool SetObjectAlpha(string nodeName, float alpha)
     {

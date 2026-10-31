@@ -314,9 +314,13 @@ public class BakedSceneTests
         Assert.Contains("not a GGS1 scene file", Load(good[..10]));
         Assert.Contains("not a GGS1 scene file", Load([.. "GGM1"u8.ToArray(), .. good[4..]]));
 
-        byte[] wrongVersion = (byte[])good.Clone();
-        BitConverter.GetBytes(2u).CopyTo(wrongVersion, 4);
-        Assert.Contains("unsupported scene version 2", Load(wrongVersion));
+        // 지원 범위는 1..2다(2는 현재 형식, 1은 이름 없는 충돌체의 옛 형식). 범위 바로 밖(0, 3)은 사유와 함께 거부한다.
+        foreach (uint version in new[] { 0u, 3u })
+        {
+            byte[] wrongVersion = (byte[])good.Clone();
+            BitConverter.GetBytes(version).CopyTo(wrongVersion, 4);
+            Assert.Contains($"unsupported scene version {version} (supported 1..2)", Load(wrongVersion));
+        }
 
         byte[] flipped = (byte[])good.Clone();
         flipped[good.Length / 2] ^= 0x40;
@@ -335,13 +339,16 @@ public class BakedSceneTests
         Assert.Contains("too many textures", Load(Resealed(b => BitConverter.GetBytes(0xFFFFFFFFu).CopyTo(b, 8))));
     }
 
-    [Fact]
-    public void Loader_SurvivesRandomDamageThatKeepsTheChecksumValid()
+    [Theory]
+    [InlineData(1)]   // 보존한 옛 형식 샘플(assets/samples/play_v1.ggs): 이름 없는 충돌체 레코드를 읽는 경로
+    [InlineData(2)]   // 현재 SceneBaker가 만드는 형식: 충돌체 이름 문자열을 읽는 경로
+    public void Loader_SurvivesRandomDamageThatKeepsTheChecksumValid(int version)
     {
         // 본문을 무작위로 망가뜨리고 체크섬을 다시 맞춰, 구조 검증과 엔진의 값 검증이 어떤 입력에도 죽거나 멈추지 않는지 본다.
         // 허용되는 결과는 "정상 로드" 또는 사유가 있는 EngineException뿐이다.
         using var assets = new TestAssets();
-        byte[] good = SceneBaker.BakeToBytes(PlaySamples.Load());
+        byte[] good = version == 1 ? File.ReadAllBytes(Path.Combine(SamplesDir(), "play_v1.ggs")) : SceneBaker.BakeToBytes(PlaySamples.Load());
+        Assert.Equal((uint)version, BitConverter.ToUInt32(good, 4));   // 시드가 정말 그 버전의 파일이다
         var random = new Random(20240607);
         using var renderer = new EngineRenderer(64, 48, useWarp: true);
         string path = assets.Path_("fuzz.ggs");

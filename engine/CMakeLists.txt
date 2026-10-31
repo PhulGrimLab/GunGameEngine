@@ -78,6 +78,45 @@ add_test(NAME gge_player_script_update_runs_every_frame
          COMMAND gge_player ${GGE_SAMPLE_SCENE} --headless --warp --frames 40 --script ${GGE_SAMPLE_SCRIPTS} --script-type TeleportAfterOneSecond)
 set_tests_properties(gge_player_script_update_runs_every_frame PROPERTIES
     PASS_REGULAR_EXPRESSION "player=.4.000, 0.000. yaw=0.000 room=Annex events=.Enter StartPad 1, Exit StartPad 1, Enter Door 7.[\r\n]")
+# 동작 버튼: 누른 프레임에 한 번만 전달된다(E를 2프레임 눌러도 한 번, EQ를 함께 누르면 각각 한 번, 순서는 Interact -> Cancel -> Menu).
+add_test(NAME gge_player_script_actions_arrive_once_per_press
+         COMMAND gge_player ${GGE_SAMPLE_SCENE} --headless --warp --frames 10 --keys E:2,-:1,Q:1,M:1,EQ:3
+                 --script ${GGE_SAMPLE_SCRIPTS} --script-type LogActions)
+set_tests_properties(gge_player_script_actions_arrive_once_per_press PROPERTIES
+    PASS_REGULAR_EXPRESSION "action Interact[\r\n]+.script. action Cancel[\r\n]+.script. action Menu[\r\n]+.script. action Interact[\r\n]+.script. action Cancel[\r\n]+frames=10 ")
+# 상호작용으로 퍼즐 장치를 움직인다: Door 영역 안(61프레임째 x=2.1)에서 E를 누르면 기둥이 올라간다.
+add_test(NAME gge_player_script_interact_inside_a_trigger_moves_an_object
+         COMMAND gge_player ${GGE_SAMPLE_SCENE} --headless --warp --frames 62 --keys D:61,E:1
+                 --script ${GGE_SAMPLE_SCRIPTS} --script-type OpenWithInteract)
+set_tests_properties(gge_player_script_interact_inside_a_trigger_moves_an_object PROPERTIES
+    PASS_REGULAR_EXPRESSION "opened: Pillar y 0.5 -> 3.5")
+# 같은 스크립트라도 Door 밖에서는 아무 일도 없다.
+add_test(NAME gge_player_script_interact_outside_the_trigger_does_nothing
+         COMMAND gge_player ${GGE_SAMPLE_SCENE} --headless --warp --frames 5 --keys E:1
+                 --script ${GGE_SAMPLE_SCRIPTS} --script-type OpenWithInteract)
+set_tests_properties(gge_player_script_interact_outside_the_trigger_does_nothing PROPERTIES
+    PASS_REGULAR_EXPRESSION "frames=5 player=.-4.000, 0.000. yaw=0.000 room=Hall events=.Enter StartPad 1.[\r\n]"
+    FAIL_REGULAR_EXPRESSION "opened")
+# 열쇠로 잠긴 문(assets/samples/locked_door.ggs + LockedDoor 스크립트): 스크립트가 이름 있는 충돌체 "Door"를 끄고 켠다.
+set(GGE_LOCKED_DOOR_SCENE ${CMAKE_CURRENT_SOURCE_DIR}/../assets/samples/locked_door.ggs)
+# 열쇠를 줍고(KeyPad) 문 앞(DoorPad)에서 상호작용하면 문이 열려 Annex까지 걸어 들어간다.
+add_test(NAME gge_player_locked_door_opens_with_the_key
+         COMMAND gge_player ${GGE_LOCKED_DOOR_SCENE} --headless --warp --frames 113 --keys S:40,E:1,DW:31,E:1,D:40
+                 --script ${GGE_SAMPLE_SCRIPTS} --script-type LockedDoor)
+set_tests_properties(gge_player_locked_door_opens_with_the_key PROPERTIES
+    PASS_REGULAR_EXPRESSION "picked up the key[\r\n]+.script. the door opens[\r\n]+frames=113 player=.2.192, -0.192. yaw=1.571 room=Annex events=.Enter KeyPad 10, Exit KeyPad 10, Enter DoorPad 11, Exit DoorPad 11.")
+# 열쇠 없이 문 앞에서 상호작용하면 잠겨 있고, 계속 걸어도 문(x=-1 - 반지름 0.4)에 막힌다.
+add_test(NAME gge_player_locked_door_stays_locked_without_the_key
+         COMMAND gge_player ${GGE_LOCKED_DOOR_SCENE} --headless --warp --frames 72 --keys DS:31,E:1,D:40
+                 --script ${GGE_SAMPLE_SCRIPTS} --script-type LockedDoor)
+set_tests_properties(gge_player_locked_door_stays_locked_without_the_key PROPERTIES
+    PASS_REGULAR_EXPRESSION "the door is locked[\r\n]+frames=72 player=.-1.400, 0.192. yaw=1.571 room=Hall events=.Enter DoorPad 11.")
+set_tests_properties(gge_player_locked_door_stays_locked_without_the_key PROPERTIES FAIL_REGULAR_EXPRESSION "the door opens")
+# 대조군: 스크립트가 없어도 문이 막는다(막는 것은 충돌체이고, 여는 것은 스크립트다).
+add_test(NAME gge_player_locked_door_blocks_without_any_script
+         COMMAND gge_player ${GGE_LOCKED_DOOR_SCENE} --headless --warp --frames 80 --keys DS:31,D:49)
+set_tests_properties(gge_player_locked_door_blocks_without_any_script PROPERTIES
+    PASS_REGULAR_EXPRESSION "frames=80 player=.-1.400, 0.192. yaw=1.571 room=Hall events=.Enter DoorPad 11.")
 # 스크립트 호스트 폴더에 gge.dll 사본이 있어도 .NET이 그걸 따로 불러 엔진 상태가 갈라지면 안 된다(플레이어가 올린 것을 그대로 쓴다).
 # 갈라지면 스크립트가 보는 씬이 달라 위 텔레포트/트리거 결과가 나오지 않거나 프로세스가 죽는다.
 add_test(NAME gge_player_script_decoy_host_setup

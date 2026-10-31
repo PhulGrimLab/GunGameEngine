@@ -25,16 +25,18 @@ public sealed class PlaySession : IDisposable
     private readonly EngineWorld _world;
     private readonly List<RoomDef> _rooms;
     private readonly List<TriggerDef> _triggers;
+    private readonly List<ColliderDef> _colliders;
     private readonly float _radius;
     private readonly float _speed;
     private readonly List<PlayEvent> _pending = [];
 
-    private PlaySession(EngineWorld world, SceneNode player, PlayerDef def, Vec2 spawn, List<RoomDef> rooms, List<TriggerDef> triggers)
+    private PlaySession(EngineWorld world, SceneNode player, PlayerDef def, Vec2 spawn, List<RoomDef> rooms, List<TriggerDef> triggers, List<ColliderDef> colliders)
     {
         _world = world;
         PlayerNode = player;
         _rooms = rooms;
         _triggers = triggers;
+        _colliders = colliders;
         _radius = def.Radius;
         _speed = def.Speed;
         Position = spawn;
@@ -90,7 +92,7 @@ public sealed class PlaySession : IDisposable
             if (world.UpdateActiveRoom(spawn.X, spawn.Z) == 0)
                 throw new PlayException($"the player spawn ({spawn.X}, {spawn.Z}) is outside every room");
 
-            var session = new PlaySession(world, node, def, spawn, [.. data.Rooms], [.. data.Triggers]);
+            var session = new PlaySession(world, node, def, spawn, [.. data.Rooms], [.. data.Triggers], [.. data.Colliders]);
             session.UpdateTriggers();  // 트리거 안에서 시작하면 첫 Step의 결과에 Enter가 실린다
             return session;
         }
@@ -99,6 +101,23 @@ public sealed class PlaySession : IDisposable
             world.Dispose();
             throw;
         }
+    }
+
+    /// <summary>
+    /// 이름이 같은 충돌체를 모두 켜거나 끄고 바뀐 개수를 돌려준다(엔진 런타임 gge_scene_set_collider_enabled와 같은 규칙: 처음엔 모두 켜짐, 이름은 대소문자
+    /// 구분, 닫을 때 안에 겹쳐 있으면 다음 <see cref="Step"/>에서 밀려난다). 이름이 비어 있거나 그 이름이 없으면 <see cref="ArgumentException"/>.
+    /// </summary>
+    public int SetColliderEnabled(string colliderName, bool enabled)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(colliderName);   // null은 ArgumentNullException, 비면 ArgumentException(엔진 런타임의 "빈 이름은 지정할 수 없음"과 같은 규칙)
+        int count = 0;
+        for (int i = 0; i < _colliders.Count; i++)
+            if (_colliders[i].Name == colliderName)
+            {
+                _world.SetColliderEnabled(i + 1, enabled);   // 월드의 콜라이더 ID는 씬의 순서 + 1
+                count++;
+            }
+        return count > 0 ? count : throw new ArgumentException($"no collider named '{colliderName}'", nameof(colliderName));
     }
 
     /// <summary>한 프레임을 진행한다. 입력은 오른쪽+/화면 위쪽+ 축(-1..1)이고 dt는 초다.

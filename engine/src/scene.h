@@ -50,6 +50,30 @@ public:
     // 이벤트는 World::SetTriggerEnabled 규칙대로 다음 Step에서 나온다(안에 있는 채로 끄면 Exit, 다시 켜면 Enter).
     int SetTriggerEnabled(const std::string& name, bool enabled);
 
+    // 이름이 같은 충돌체를 모두 켜거나 끄고 바뀐(찾은) 개수를 반환한다. 없으면 0. 빈 이름은 "이름 없음"이라 지정할 수 없다(호출자가 거부한다).
+    int SetColliderEnabled(const std::string& name, bool enabled);
+
+    // 지금 플레이어가 이름이 같은 트리거 중 하나 안에 있는가(마지막 갱신 기준: 끄거나 켠 결과는 다음 Step부터). 그런 이름이 없으면 예외.
+    bool IsInsideTrigger(const std::string& name) const;
+
+    // 이름이 같은 첫 노드의 부모 기준(로컬) 위치. 마지막으로 설정한 값(처음에는 구운 값)이다. 없으면 false.
+    bool GetNodePosition(const std::string& nodeName, DirectX::XMFLOAT3& out) const;
+    // 이름이 같은 첫 노드의 로컬 위치를 바꾼다(회전/크기는 그대로). 그런 노드가 없거나, 값이 유한하지 않거나,
+    // 플레이어 노드면 예외(플레이어는 TeleportPlayer/이동으로만 움직인다). 상태는 바뀌지 않는다.
+    void SetNodePosition(const std::string& nodeName, DirectX::XMFLOAT3 position);
+
+    // 로컬 회전(오일러 pitch X, yaw Y, roll Z, 라디안: 렌더러/씬 파일과 같은 규약)과 로컬 크기. 읽기는 없으면 false.
+    // 쓰기는 위치와 같은 규칙: 없는 노드/비유한 값/플레이어 노드는 예외(상태 그대로).
+    bool GetNodeRotation(const std::string& nodeName, DirectX::XMFLOAT3& out) const;
+    void SetNodeRotation(const std::string& nodeName, DirectX::XMFLOAT3 rotation);
+    bool GetNodeScale(const std::string& nodeName, DirectX::XMFLOAT3& out) const;
+    void SetNodeScale(const std::string& nodeName, DirectX::XMFLOAT3 scale);
+
+    // 이름이 같은 첫 노드의 표시 여부(처음엔 true). 숨기면 그 노드와 모든 자손이 그려지지 않고 그림자도 없다. 알파와 별개 상태다(다시 켜면
+    // 알파는 그대로). 읽기는 없으면 false, 쓰기는 없는 노드면 예외. 플레이어 노드도 숨길 수 있다(위치/회전/크기와 달리 플레이어 규칙과 충돌하지 않는다).
+    bool GetNodeVisible(const std::string& nodeName, bool& out) const;
+    void SetNodeVisible(const std::string& nodeName, bool visible);
+
     // 플레이어를 바닥 위치 (x,z)로 즉시 옮긴다(문/방 이동용). 입력 방향 기준을 비우고(카메라 컷 보정 해제), 활성 방과
     // 트리거를 새 위치로 갱신하며 렌더러 카메라/플레이어 변환에 바로 반영한다. 방향(yaw)은 그대로다.
     // 플레이어가 없거나, 값이 유한하지 않거나, 어떤 방에도 속하지 않으면 예외(상태는 바뀌지 않는다).
@@ -57,6 +81,9 @@ public:
     void TeleportPlayer(float x, float z);
 
 private:
+    // 이름이 같은 첫 노드의 번호. 없거나 플레이어 노드면 예외(위치/회전/크기 쓰기 전용: 플레이어는 이동 규칙이 정한다).
+    size_t EditableNodeIndex(const std::string& nodeName) const;
+
     struct Animated {
         int object = 0;
         int clip = 0;  // 렌더러 클립 ID

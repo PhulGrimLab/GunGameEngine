@@ -32,6 +32,8 @@ public:
     bool Start(std::string& error);
     // 트리거 이벤트 하나를 스크립트의 OnTrigger로 넘긴다. kind는 GGE_TRIGGER_ENTER/EXIT. name은 UTF-8.
     bool OnTrigger(int kind, int tag, const char* name, std::string& error);
+    // 새로 눌린 동작 버튼 하나를 스크립트의 OnAction으로 넘긴다. action은 1 = Interact, 2 = Cancel, 3 = Menu.
+    bool OnAction(int action, std::string& error);
     // 프레임마다: 스크립트의 OnUpdate(고정 타임스텝).
     bool OnUpdate(float deltaSeconds, std::string& error);
 

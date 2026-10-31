@@ -65,10 +65,14 @@ public class ScriptRunnerTests
         public void OnUpdate(IScriptContext context, float deltaSeconds) => calls.Add($"{name}.update {deltaSeconds:0.000}");
     }
 
-    private sealed class Lambda(Action<IScriptContext>? start = null, Action<IScriptContext, TriggerEvent>? trigger = null) : IGameScript
+    private sealed class Lambda(
+        Action<IScriptContext>? start = null,
+        Action<IScriptContext, TriggerEvent>? trigger = null,
+        Action<IScriptContext, GameAction>? action = null) : IGameScript
     {
         public void OnStart(IScriptContext context) => start?.Invoke(context);
         public void OnTrigger(IScriptContext context, TriggerEvent e) => trigger?.Invoke(context, e);
+        public void OnAction(IScriptContext context, GameAction a) => action?.Invoke(context, a);
     }
 
     private static string SampleScriptsDll()
@@ -172,6 +176,72 @@ public class ScriptRunnerTests
         Assert.True(found);
         Assert.False(missing);
         Assert.NotEqual(opaque, rig.Frame());
+    }
+
+    [Fact]
+    public void Actions_AreDeliveredToEveryScript_InOrder_AfterStart()
+    {
+        using var rig = new Rig();
+        var seen = new List<string>();
+        ScriptRunner runner = rig.Runner(
+            new Lambda(action: (_, a) => seen.Add($"A:{a}")),
+            new Lambda(action: (_, a) => seen.Add($"B:{a}")));
+        Assert.Throws<InvalidOperationException>(() => runner.HandleAction(GameAction.Interact));   // Start 전에는 거부
+        runner.Start();
+        runner.HandleAction(GameAction.Interact);
+        runner.HandleAction(GameAction.Cancel);
+        Assert.Equal(["A:Interact", "B:Interact", "A:Cancel", "B:Cancel"], seen);
+    }
+
+    [Fact]
+    public void InteractInsideATrigger_MovesAnObject_OnTheRealScene()
+    {
+        using var rig = new Rig();
+        rig.Scene.TeleportPlayer(4, 0);   // Door 안
+        rig.Drain();
+        byte[] before = rig.Frame();
+        ScriptRunner runner = rig.Runner(new Lambda(action: (c, a) =>
+        {
+            if (a != GameAction.Interact || !c.IsPlayerInside("Door"))
+                return;
+            (float X, float Y, float Z) p = c.GetObjectPosition("Pillar")!.Value;
+            Assert.True(c.SetObjectPosition("Pillar", p.X, p.Y + 3, p.Z));
+        }));
+        runner.Start();
+        runner.HandleAction(GameAction.Cancel);                       // 다른 버튼은 아무것도 안 한다
+        Assert.Equal(new Vec3(-2, 0.5f, 2), rig.Scene.GetNodePosition("Pillar"));
+        runner.HandleAction(GameAction.Interact);
+        Assert.Equal(new Vec3(-2, 3.5f, 2), rig.Scene.GetNodePosition("Pillar"));
+        Assert.NotEqual(before, rig.Frame());
+    }
+
+    [Fact]
+    public void Context_ObjectPosition_ReportsUnknownNodes_AndRejectsThePlayerNode()
+    {
+        using var rig = new Rig();
+        (float X, float Y, float Z)? read = (9, 9, 9);
+        bool moved = true;
+        rig.Runner(new Lambda(start: c =>
+        {
+            read = c.GetObjectPosition("NoSuchNode");
+            moved = c.SetObjectPosition("NoSuchNode", 0, 0, 0);
+        })).Start();
+        Assert.Null(read);
+        Assert.False(moved);
+
+        ScriptException ex = Assert.Throws<ScriptException>(rig.Runner(new Lambda(start: c => c.SetObjectPosition("Hero", 0, 0, 0))).Start);
+        Assert.Contains("is the player", ex.Message);
+    }
+
+    [Fact]
+    public void Context_IsPlayerInside_ReportsTriggersAndRejectsUnknownNames()
+    {
+        using var rig = new Rig();
+        (bool Pad, bool Door) inside = default;
+        rig.Runner(new Lambda(start: c => inside = (c.IsPlayerInside("StartPad"), c.IsPlayerInside("Door")))).Start();
+        Assert.Equal((true, false), inside);
+        ScriptException ex = Assert.Throws<ScriptException>(rig.Runner(new Lambda(start: c => c.IsPlayerInside("Nope"))).Start);
+        Assert.Contains("no trigger named 'Nope'", ex.Message);
     }
 
     [Fact]

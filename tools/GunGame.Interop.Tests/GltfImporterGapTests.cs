@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -255,13 +256,100 @@ public class GltfImporterGapTests
     }
 
     [Fact]
-    public void ArmatureWarning_IsReportedOnceForTheRootBoneOnly()
+    public void ArmatureTransform_AddsExactlyOneBone_NotOnePerDescendant_AndNoWarning()
     {
         using var assets = new TestAssets();
         ImportedModel model = GltfImporter.Import(new GltfBuilder { ArmatureTranslation = [5, 0, 0] }.Write(assets.Directory, "arm"));
 
-        // 루트가 아닌 본의 조상(루트 본, 아르마추어)도 비항등 변환을 갖지만, 변환이 무시되는 것은 루트 본 위쪽뿐이라 경고는 한 번이다.
-        Assert.Single(model.Warnings, w => w.Contains("armature node has a non-identity transform"));
+        // 루트가 아닌 본의 조상(루트 본, 아르마추어)도 비항등 변환을 갖지만, 합성 본이 필요한 것은 루트 본 위쪽뿐이라 한 개다(3 + 1).
+        Assert.Equal(4, model.Skeleton!.BoneCount);
+        Assert.Empty(model.Warnings);
+
+        // 항등 아마추어는 합성 본이 없다.
+        Assert.Equal(3, GltfImporter.Import(new GltfBuilder().Write(assets.Directory, "plain")).Skeleton!.BoneCount);
+    }
+
+    [Fact]
+    public void BoneLimit_CountsTheSyntheticArmatureBone_SoAnArmatureModelMayHaveAtMost63Joints()
+    {
+        using var assets = new TestAssets();
+        ImportedModel atLimit = GltfImporter.Import(new GltfBuilder { Bones = 63, ArmatureTranslation = [0, 1, 0] }.Write(assets.Directory, "b63"));
+        Assert.Equal(64, atLimit.Skeleton!.BoneCount);   // 63개 + 합성 본 = 한도 안
+
+        string reason = Reason(new GltfBuilder { Bones = 64, ArmatureTranslation = [0, 1, 0] }.Write(assets.Directory, "b64"));
+        Assert.Contains("64 joints plus 1 for the armature transform", reason);
+        Assert.Contains("at most 64", reason);
+    }
+
+    // 첫 실제 조인트(본 0)가 클립으로 움직이게 한 모델: 정점 0(가중치 있음 = 본 0에 100%)과 "가중치 없음"이 같은 위치여야 한다.
+    private static GltfBuilder SpinningFirstBone(float[]? armature, int unweightedVertex)
+    {
+        var builder = new GltfBuilder { ArmatureTranslation = armature, UnweightedVertex = unweightedVertex };
+        builder.Animations.Clear();
+        builder.KeyedAnimations.Add(("spin0", [0f, 1f], [(0, [0f, 1f])]));   // 본 0이 Z축으로 0 -> 1라디안
+        return builder;
+    }
+
+    [Theory]
+    [InlineData(false)]   // 아마추어 없음: 첫 실제 조인트가 본 0이라 엔진 규약("본 0에 고정")과 같다
+    [InlineData(true)]    // 아마추어 있음: 본 0은 합성 본이므로 임포터가 첫 실제 조인트(본 1)에 묶어야 한다
+    public void UnweightedVertices_MoveWithTheFirstRealJoint_AtRestAndWhileAnimated(bool withArmature)
+    {
+        using var assets = new TestAssets();
+        float[]? armature = withArmature ? [0f, 5, 0] : null;
+        ImportedModel weighted = GltfImporter.Import(SpinningFirstBone(armature, -1).Write(assets.Directory, "weighted" + withArmature));
+        ImportedModel unweighted = GltfImporter.Import(SpinningFirstBone(armature, 0).Write(assets.Directory, "unweighted" + withArmature));
+
+        int firstReal = withArmature ? 1 : 0;
+        Assert.Equal<uint>([(uint)firstReal, 0, 0, 0], unweighted.Joints![..4]);
+        Assert.Equal([1f, 0, 0, 0], unweighted.Weights![..4]);
+
+        foreach ((int? clip, float time) in new (int?, float)[] { (null, 0f), (0, 0.5f), (0, 1f) })
+        {
+            Vector3[] expected = RealGltfModelTests.EnginePositions(weighted, clip, time);
+            Vector3[] actual = RealGltfModelTests.EnginePositions(unweighted, clip, time);
+            for (int v = 0; v < expected.Length; v++)
+                Assert.True(Vector3.Distance(expected[v], actual[v]) < 1e-4f, $"vertex {v} at clip {clip} t={time}: expected {expected[v]}, got {actual[v]}");
+        }
+    }
+
+    [Fact]
+    public void NonFiniteJointWeights_AreRejectedWithAReason()
+    {
+        using var assets = new TestAssets();
+        string reason = Reason(new GltfBuilder { NonFiniteWeight = true }.Write(assets.Directory, "nan_weight"));
+        Assert.Contains("vertex 0 has a non-finite joint weight", reason);
+    }
+
+    [Fact]
+    public void ArmatureTransformWithShear_IsRejectedWithAReason()
+    {
+        using var assets = new TestAssets();
+        string path = Patched(assets, new GltfBuilder(), "shear_armature", d =>
+        {
+            // 회전한 노드(아르마추어) 위에 비균등 스케일 노드: 월드 = 회전 x 스케일은 전단이라 이동/회전/크기로 나타낼 수 없다.
+            JsonArray nodes = d["nodes"]!.AsArray();
+            nodes[0]!["rotation"] = new JsonArray(0f, 0f, 0.38268343f, 0.9238795f);
+            int scaler = nodes.Count;
+            nodes.Add(JsonNode.Parse("""{"name":"Scaler","scale":[2,1,1],"children":[0]}"""));
+            d["scenes"]![0]!["nodes"]![0] = scaler;
+        });
+        string reason = Reason(path);
+        Assert.Contains("cannot be expressed as translation/rotation/scale", reason);
+        Assert.Contains("apply it in the modeling tool", reason);
+    }
+
+    [Fact]
+    public void AnimationOnTheArmatureNode_IsReportedNotSilentlyDropped()
+    {
+        // Blender가 오브젝트(아마추어) 애니메이션을 내보내면 채널이 조인트가 아닌 노드를 가리킨다. 정적 월드만 쓰므로 경고로 알려야 한다.
+        using var assets = new TestAssets();
+        string path = Patched(assets, new GltfBuilder(), "armature_anim", d =>
+            d["animations"]![0]!["channels"]![0]!["target"]!["node"] = 0);   // 노드 0 = 아르마추어
+        ImportedModel model = GltfImporter.Import(path);
+        Assert.Contains(model.Warnings, w => w.Contains("not a joint"));
+        Assert.Empty(model.Clips);
+        Assert.Contains(model.Warnings, w => w.Contains("no usable channels"));
     }
 
     // ---- 프리미티브 ----

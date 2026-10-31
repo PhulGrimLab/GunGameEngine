@@ -9,7 +9,7 @@
 #include "renderer.h"  // kMaxPointLights
 
 // .ggs 형식 (리틀 엔디언, 문자열 = uint32 바이트 수 + UTF-8):
-//   char[4] "GGS1"; uint32 version(=1)
+//   char[4] "GGS1"; uint32 version(=2; 1도 읽는다: 충돌체에 이름이 없고 이름은 빈 문자열이 된다)
 //   uint32 textureCount; 각 { uint32 byteLength; bytes[] }                       // 이미지 파일 원본
 //   uint32 meshCount; 각 {
 //       uint8 skinned; uint32 vertexCount; uint32 indexCount;
@@ -25,7 +25,7 @@
 //   lighting: float ambient[3], sunDirection[3], sunColor[3]; uint32 pointCount; 각 { float position[3], color[3], range };
 //             uint8 shadowEnabled; float shadowPlaneY, shadowOpacity
 //   uint32 roomCount; 각 { string name; uint32 vertexCount; float[vertexCount*2] polygon; float eye[3], target[3], fov }
-//   uint32 colliderCount; 각 { float minX, minZ, maxX, maxZ }
+//   uint32 colliderCount; 각 { [version 2부터: string name;] float minX, minZ, maxX, maxZ }   // 같은 이름 여럿 가능(스크립트가 한꺼번에 켜고 끈다)
 //   uint32 triggerCount; 각 { string name; uint32 vertexCount; float[vertexCount*2] polygon; int32 tag }
 //   uint8 hasPlayer; hasPlayer면 { int32 node; uint8 hasSpawn; float spawn[2]; float radius; float speed }
 //   uint32 crc32  // 이 앞의 모든 바이트의 CRC-32(IEEE)
@@ -35,7 +35,8 @@ namespace gge {
 namespace {
 
 constexpr char kMagic[4] = {'G', 'G', 'S', '1'};
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;       // 쓰는 쪽(에디터 SceneBaker)이 만드는 버전
+constexpr uint32_t kMinVersion = 1;    // 읽을 수 있는 가장 낮은 버전
 constexpr uint64_t kMaxFileSize = 1ull << 31;  // 2 GiB
 constexpr uint32_t kMaxTextures = 1u << 16;
 constexpr uint32_t kMaxMeshes = 1u << 16;
@@ -197,8 +198,8 @@ SceneData ParseScene(const uint8_t* data, size_t size)
         throw std::runtime_error("not a GGS1 scene file");
     uint32_t version;
     std::memcpy(&version, data + 4, 4);
-    if (version != kVersion)
-        throw std::runtime_error("unsupported scene version " + std::to_string(version) + " (expected " + std::to_string(kVersion) + ")");
+    if (version < kMinVersion || version > kVersion)
+        throw std::runtime_error("unsupported scene version " + std::to_string(version) + " (supported " + std::to_string(kMinVersion) + ".." + std::to_string(kVersion) + ")");
     uint32_t storedCrc;
     std::memcpy(&storedCrc, data + size - kTrailerBytes, 4);
     if (Crc32(data, size - kTrailerBytes) != storedCrc)
@@ -276,9 +277,11 @@ SceneData ParseScene(const uint8_t* data, size_t size)
         scene.rooms.push_back(std::move(room));
     }
 
-    uint32_t colliders = in.Count("colliders", kMaxGameplayItems, 16);
+    uint32_t colliders = in.Count("colliders", kMaxGameplayItems, version >= 2 ? 20 : 16);
     for (uint32_t i = 0; i < colliders; ++i) {
         SceneColliderData c;
+        if (version >= 2)
+            c.name = in.ReadString("collider name");
         c.minX = in.Read<float>("collider");
         c.minZ = in.Read<float>("collider");
         c.maxX = in.Read<float>("collider");

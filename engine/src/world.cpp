@@ -67,7 +67,31 @@ int World::AddBoxCollider(float minX, float minZ, float maxX, float maxZ)
         throw std::runtime_error("box collider needs min < max on both axes");
     }
     _boxes.push_back({minX, minZ, maxX, maxZ});
+    _boxEnabled.push_back(1);
+    _activeBoxes.push_back(_boxes.back());
     return static_cast<int>(_boxes.size());
+}
+
+void World::SetColliderEnabled(int colliderId, bool enabled)
+{
+    if (colliderId < 1 || static_cast<size_t>(colliderId) > _boxes.size()) {
+        throw std::runtime_error("unknown collider id " + std::to_string(colliderId));
+    }
+    _boxEnabled[static_cast<size_t>(colliderId) - 1] = enabled ? 1 : 0;
+    _activeBoxes.clear();
+    for (size_t i = 0; i < _boxes.size(); ++i) {
+        if (_boxEnabled[i] != 0) {
+            _activeBoxes.push_back(_boxes[i]);
+        }
+    }
+}
+
+bool World::IsColliderEnabled(int colliderId) const
+{
+    if (colliderId < 1 || static_cast<size_t>(colliderId) > _boxes.size()) {
+        throw std::runtime_error("unknown collider id " + std::to_string(colliderId));
+    }
+    return _boxEnabled[static_cast<size_t>(colliderId) - 1] != 0;
 }
 
 Vec2 World::MoveCircle(float x, float z, float dx, float dz, float radius) const
@@ -84,7 +108,7 @@ Vec2 World::MoveCircle(float x, float z, float dx, float dz, float radius) const
     if (std::sqrt(dx * dx + dz * dz) > kMaxMoveSteps * radius * 0.5f) {
         throw std::runtime_error("move distance is too large for the given radius");
     }
-    return gge::MoveCircle(_boxes, {x, z}, {dx, dz}, radius);
+    return gge::MoveCircle(_activeBoxes, {x, z}, {dx, dz}, radius);
 }
 
 int World::FindRoom(float x, float z) const

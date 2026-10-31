@@ -154,9 +154,14 @@ public class SceneAnimationTests
     [Fact]
     public void ImportWarnings_AreSurfaced()
     {
-        using var f = new Fixture(configure: b => b.ArmatureTranslation = [0, 3, 0]);
-        Assert.Contains(f.Sync.Warnings, w => w.Contains("armature"));
+        using var f = new Fixture(configure: b => b.SecondSkin = true);
+        Assert.Contains(f.Sync.Warnings, w => w.Contains("multiple skins"));
         Assert.Empty(f.Sync.Errors);
+
+        // 아마추어 변환은 이제 반영되므로 경고가 아니다.
+        using var moved = new Fixture(configure: b => b.ArmatureTranslation = [0, 3, 0]);
+        Assert.Empty(moved.Sync.Warnings);
+        Assert.Empty(moved.Sync.Errors);
     }
 
     [Fact]

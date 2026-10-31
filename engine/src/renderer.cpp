@@ -614,6 +614,10 @@ void Renderer::SetObjectTexture(int id, int texture)
 void Renderer::SetObjectTransform(int id, XMFLOAT3 position, XMFLOAT3 rotation, XMFLOAT3 scale)
 {
     Object& o = Get(id);
+    // 비유한 값은 행렬과 법선이 NaN이 되어 화면이 깨지므로 받지 않는다(상태는 그대로).
+    for (const XMFLOAT3* v : {&position, &rotation, &scale})
+        if (!std::isfinite(v->x) || !std::isfinite(v->y) || !std::isfinite(v->z))
+            throw std::runtime_error("object transform must be finite");
     o.position = position;
     o.rotation = rotation;
     o.scale = scale;
@@ -629,6 +633,21 @@ void Renderer::SetObjectAlpha(int id, float alpha)
 }
 
 void Renderer::SetObjectCastsShadow(int id, bool casts) { Get(id).castsShadow = casts; }
+
+void Renderer::SetObjectVisible(int id, bool visible) { Get(id).visible = visible; }
+
+bool Renderer::IsObjectVisible(int id) { return Get(id).visible; }
+
+bool Renderer::EffectivelyVisible(const Object& o) const
+{
+    if (o.visibleStamp == renderStamp_)
+        return o.effectivelyVisible;
+    // 부모는 이번 렌더에서 한 번만 계산된다(CachedWorldMatrix와 같은 방식). 숨긴 조상이 있으면 자손은 계산 없이 false가 된다.
+    const bool visible = o.visible && (o.parent == 0 || EffectivelyVisible(objects_.at(o.parent)));
+    o.effectivelyVisible = visible;
+    o.visibleStamp = renderStamp_;
+    return visible;
+}
 
 namespace {
 
@@ -714,6 +733,29 @@ XMMATRIX Renderer::LocalMatrix(const Object& o) const
            XMMatrixTranslation(o.position.x, o.position.y, o.position.z);
 }
 
+namespace {
+
+// 이보다 행렬식이 작으면 한 축 이상이 (거의) 0으로 눌린 크기라서 역행렬이 NaN이 되거나 폭발한다.
+constexpr float kMinNormalMatrixDeterminant = 1e-10f;
+
+// 법선을 월드로 옮기는 행렬(셰이더에서 정규화한다). 보통은 월드 행렬의 역전치. 크기가 0인 축이 있어 특이 행렬이면 여인수 행렬을 쓴다:
+// 여인수(행 벡터 = 나머지 두 행의 외적)는 특이 행렬에서도 정의되고, 납작해진 면의 법선이 눌린 축 방향으로 남는다(역전치는 det배 곱하면 같다).
+// 특이하지 않은 행렬에는 기존 계산을 그대로 써서 렌더 결과(골든)가 바뀌지 않는다.
+XMMATRIX NormalMatrix(const XMMATRIX& world)
+{
+    XMVECTOR determinant;
+    XMMATRIX inverse = XMMatrixInverse(&determinant, world);
+    if (std::fabs(XMVectorGetX(determinant)) >= kMinNormalMatrixDeterminant)
+        return XMMatrixTranspose(inverse);
+    XMMATRIX cofactor = XMMatrixIdentity();
+    cofactor.r[0] = XMVector3Cross(world.r[1], world.r[2]);
+    cofactor.r[1] = XMVector3Cross(world.r[2], world.r[0]);
+    cofactor.r[2] = XMVector3Cross(world.r[0], world.r[1]);
+    return cofactor;
+}
+
+}  // namespace
+
 XMMATRIX Renderer::CachedWorldMatrix(const Object& o) const
 {
     if (o.worldStamp == renderStamp_) {
@@ -737,7 +779,7 @@ void Renderer::DrawObject(const Object& object, const XMMATRIX& view, const XMMA
     // HLSL은 cbuffer 행렬을 열 우선으로 읽으므로, 행 벡터용 XM 행렬을 그대로 올리면 mul(M, v)가 올바른 전치가 된다.
     XMStoreFloat4x4(&c.viewProj, view * proj);
     XMStoreFloat4x4(&c.world, world);
-    XMStoreFloat4x4(&c.normalMatrix, XMMatrixTranspose(XMMatrixInverse(nullptr, world)));
+    XMStoreFloat4x4(&c.normalMatrix, NormalMatrix(world));
     c.lightDir = {lighting_.direction.x, lighting_.direction.y, lighting_.direction.z, 0};
     c.color = {object.color.x, object.color.y, object.color.z, object.alpha};
     c.retro = {retro_.vertexSnap ? 1.0f : 0.0f,
@@ -809,7 +851,7 @@ void Renderer::Render()
     // 그림자를 반투명보다 먼저 그리므로 반투명 물체가 그림자 위에 올바르게 섞인다.
     std::vector<std::pair<float, const Object*>> translucent;
     for (const auto& [id, object] : objects_) {
-        if (object.mesh == 0 || object.alpha <= 0)
+        if (object.mesh == 0 || object.alpha <= 0 || !EffectivelyVisible(object))
             continue;
         if (object.alpha >= 1) {
             DrawObject(object, view, proj, false);
@@ -825,7 +867,7 @@ void Renderer::Render()
         context_->OMSetBlendState(alphaBlend_.Get(), nullptr, 0xFFFFFFFF);
         context_->RSSetState(shadowRasterizer_.Get());
         for (const auto& [id, object] : objects_)
-            if (object.mesh != 0 && object.castsShadow && object.alpha > 0)
+            if (object.mesh != 0 && object.castsShadow && object.alpha > 0 && EffectivelyVisible(object))
                 DrawObject(object, view, proj, true);
     }
 

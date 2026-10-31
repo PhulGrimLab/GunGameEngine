@@ -1569,6 +1569,71 @@ void Test_ColliderAndMoveRejectBadInput()
     gge_world_destroy(w);
 }
 
+// ---- 콜라이더 켜기/끄기(문) ----
+void Test_WorldColliderEnableRules()
+{
+    GgeWorld* w = gge_world_create();
+    CHECK(gge_world_add_box_collider(w, 2, -5, 3, 5) == 1);
+    CHECK(gge_world_is_collider_enabled(w, 1) == 1);                          // 처음엔 켜짐
+    CHECK(std::fabs(Move(w, 0, 0, 5, 0, 0.5f).x - 1.5f) < 1e-3f);             // 켜진 벽은 막는다(반지름 0.5 -> x=1.5)
+
+    CHECK(gge_world_set_collider_enabled(w, 1, 0) == 1);
+    CHECK(gge_world_is_collider_enabled(w, 1) == 0);
+    CHECK(std::fabs(Move(w, 0, 0, 5, 0, 0.5f).x - 5.0f) < 1e-4f);             // 끄면 지나간다
+    CHECK(gge_world_set_collider_enabled(w, 1, 0) == 1);                      // 이미 꺼져 있어도 성공하고 변화가 없다(멱등)
+    CHECK(std::fabs(Move(w, 0, 0, 5, 0, 0.5f).x - 5.0f) < 1e-4f);
+    CHECK(gge_world_set_collider_enabled(w, 1, 1) == 1);
+    CHECK(gge_world_set_collider_enabled(w, 1, 7) == 1);                      // 0이 아니면 켬
+    CHECK(gge_world_is_collider_enabled(w, 1) == 1);
+    CHECK(std::fabs(Move(w, 0, 0, 5, 0, 0.5f).x - 1.5f) < 1e-3f);
+
+    for (int id : {0, -1, 2, 1000}) {                                         // 알 수 없는 ID: 0 / -1과 사유, 상태는 그대로
+        CHECK(gge_world_set_collider_enabled(w, id, 0) == 0);
+        CHECK(std::strstr(gge_last_error(), "unknown collider id") != nullptr);
+        CHECK(gge_world_is_collider_enabled(w, id) == -1);
+    }
+    CHECK(gge_world_is_collider_enabled(w, 1) == 1);
+
+    // 꺼진 동안 안에 있으면 그대로이고, 켜는 순간 겹쳐 있으면 이동량 0이어도 가장 가까운 면 바깥으로 밀려난다(왼쪽 면까지 0.3 < 오른쪽 0.7).
+    CHECK(gge_world_set_collider_enabled(w, 1, 0) == 1);
+    CHECK(std::fabs(Move(w, 2.3f, 0, 0, 0, 0.5f).x - 2.3f) < 1e-5f);
+    CHECK(gge_world_set_collider_enabled(w, 1, 1) == 1);
+    CHECK(std::fabs(Move(w, 2.3f, 0, 0, 0, 0.5f).x - 1.5f) < 1e-3f);
+    gge_world_destroy(w);
+}
+
+void Test_ColliderStateStaysConsistentAcrossTogglesAndAdds()
+{
+    // 상태가 세 벌(전체/켜짐 표시/켜진 것만)이라, 끄기/켜기/추가를 섞은 뒤에도 결과가 "지금 켜진 것만으로 새로 만든 월드"와 같아야 한다.
+    const float boxes[5][4] = {{2, -5, 3, 5}, {-3, -5, -2, 5}, {-5, 2, 5, 3}, {-5, -3, 5, -2}, {6, 6, 7, 7}};
+    struct Op { bool add; int index; int enabled; };   // add면 boxes[index]를 추가, 아니면 ID index + 1을 켜기/끄기
+    const Op ops[] = {{true, 0, 0}, {true, 1, 0}, {false, 0, 0}, {true, 2, 0}, {false, 1, 0}, {false, 0, 1}, {true, 3, 0}, {false, 2, 0},
+                      {false, 1, 1}, {false, 0, 0}, {true, 4, 0}, {false, 3, 0}, {false, 2, 1}, {false, 0, 1}, {false, 4, 0}};
+    const float probes[][4] = {{0, 0, 5, 0}, {0, 0, -5, 0}, {0, 0, 0, 5}, {0, 0, 0, -5}, {2.5f, 0, 0, 0}, {-2.5f, 0, 0, 0},
+                               {0, 2.5f, 0, 0}, {0, -2.5f, 0, 0}, {6.5f, 6.5f, 0, 0}, {4, 4, -3, -3}};
+    GgeWorld* w = gge_world_create();
+    bool enabled[5] = {};
+    int added = 0;
+    for (const Op& op : ops) {
+        if (op.add) {
+            CHECK(gge_world_add_box_collider(w, boxes[op.index][0], boxes[op.index][1], boxes[op.index][2], boxes[op.index][3]) == added + 1);
+            enabled[added++] = true;
+        } else {
+            CHECK(gge_world_set_collider_enabled(w, op.index + 1, op.enabled) == 1);
+            enabled[op.index] = op.enabled != 0;
+        }
+        GgeWorld* fresh = gge_world_create();
+        for (int i = 0; i < added; ++i)
+            if (enabled[i]) gge_world_add_box_collider(fresh, boxes[i][0], boxes[i][1], boxes[i][2], boxes[i][3]);
+        for (const auto& p : probes) {
+            P2 a = Move(w, p[0], p[1], p[2], p[3], 0.5f), b = Move(fresh, p[0], p[1], p[2], p[3], 0.5f);
+            CHECK(std::fabs(a.x - b.x) < 1e-5f && std::fabs(a.z - b.z) < 1e-5f);
+        }
+        gge_world_destroy(fresh);
+    }
+    gge_world_destroy(w);
+}
+
 void Test_FreeMovementIsUnchanged()
 {
     GgeWorld* w = gge_world_create();
@@ -3420,6 +3485,11 @@ struct SpecTrigger {
     int tag = 0;
 };
 
+struct SpecCollider {
+    std::string name;   // version 1 파일에는 쓰이지 않는다
+    float minX, minZ, maxX, maxZ;
+};
+
 // 메시 0 = 정면 사각형(정적), 메시 1 = 3본 체인에 묶인 띠(스킨, 클립 "bend" 하나).
 struct Spec {
     std::vector<std::vector<uint8_t>> textures;
@@ -3428,7 +3498,9 @@ struct Spec {
     std::string clipName = "bend";
     int pointLights = 0;
     std::vector<SpecRoom> rooms;
+    std::vector<SpecCollider> colliders;
     std::vector<SpecTrigger> triggers;
+    uint32_t version = 2;       // 쓰는 .ggs 버전: 2 = 현재(충돌체 이름 있음), 1 = 옛 형식(이름 없음, 읽기 호환 확인용)
     bool hasPlayer = false;
     int playerNode = 0;
     bool hasSpawn = false;
@@ -3471,7 +3543,7 @@ std::vector<uint8_t> Serialize(const Spec& spec)
 {
     GgsWriter w;
     w.Raw("GGS1", 4);
-    w.U32(1);
+    w.U32(spec.version);
     w.U32(static_cast<uint32_t>(spec.textures.size()));
     for (const auto& t : spec.textures) { w.U32(static_cast<uint32_t>(t.size())); w.Raw(t.data(), t.size()); }
 
@@ -3526,7 +3598,11 @@ std::vector<uint8_t> Serialize(const Spec& spec)
         w.Str(r.name); w.U32(static_cast<uint32_t>(r.polygon.size() / 2)); w.Floats(r.polygon);
         w.Vec3(r.eye[0], r.eye[1], r.eye[2]); w.Vec3(r.target[0], r.target[1], r.target[2]); w.F(r.fov);
     }
-    w.U32(0);  // colliders
+    w.U32(static_cast<uint32_t>(spec.colliders.size()));
+    for (const SpecCollider& c : spec.colliders) {
+        if (spec.version >= 2) w.Str(c.name);
+        w.F(c.minX); w.F(c.minZ); w.F(c.maxX); w.F(c.maxZ);
+    }
     w.U32(static_cast<uint32_t>(spec.triggers.size()));
     for (const SpecTrigger& t : spec.triggers) {
         w.Str(t.name); w.U32(static_cast<uint32_t>(t.polygon.size() / 2)); w.Floats(t.polygon); w.I32(t.tag);
@@ -3956,6 +4032,24 @@ void Test_SceneSetTriggerEnabledAffectsEveryTriggerWithTheName()
     gge_renderer_destroy(r);
 }
 
+void Test_SceneInsideTriggerQueryCoversEveryTriggerWithTheName()
+{
+    // 같은 이름 둘 중 하나만 안이어도 "안", 둘 다 밖이면 "밖".
+    fs::path bmp = TempDir() / "scene_inside.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+    Spec spec = RoomWithPlayerSpec(bmp);
+    spec.triggers = {{"Near", Square(0, 0, 2), 1}, {"Near", Square(6, 6, 1), 2}, {"Far", Square(6, 6, 1), 3}, {"Far", Square(-6, -6, 1), 4}};
+
+    GgeRenderer* r = NewRenderer(160, 120);
+    GgeScene* scene = gge_scene_load(r, WriteScene("inside.ggs", Serialize(spec)).string().c_str());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+    CHECK(gge_scene_is_inside_trigger(scene, "Near") == 1);   // 첫째는 안, 둘째는 밖
+    CHECK(gge_scene_is_inside_trigger(scene, "Far") == 0);    // 둘 다 밖
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(r);
+}
+
 void Test_SceneTeleportPlayerSwitchesRoomsAndCameraImmediately()
 {
     GgeRenderer* r = NewRenderer(160, 120);
@@ -4038,6 +4132,471 @@ void Test_SceneTeleportPlayerResetsTheHeldInputDirection()
     gge_renderer_destroy(r);
 }
 
+// ---- 크기 0(특이 행렬)과 비유한 변환 ----
+void Test_ZeroScaleObjectsRenderLikeVeryThinOnes_AndNeverTouchOtherObjects()
+{
+    // 크기가 한 축이라도 0이면 월드 행렬이 특이 행렬이라 법선 행렬(역전치)이 정의되지 않는다. 화면이 깨지지 않고(= 아주 얇은 오브젝트와 같은 화면),
+    // 세 축이 0이면 아무것도 그려지지 않으며(= 숨긴 것과 같은 화면), 다른 오브젝트의 픽셀은 그대로여야 한다.
+    GgeRenderer* r = NewRenderer(160, 120);
+    int cube = CubeMesh(r);
+    gge_renderer_set_camera(r, 0, 6, 6, 0, 0, 0, 0.8f);
+    const float sunDirection[3] = {0, -1, -0.3f}, sunColor[3] = {0.8f, 0.8f, 0.8f};
+    gge_renderer_set_directional_light(r, sunDirection, sunColor);
+    gge_renderer_set_ambient(r, 0.2f, 0.2f, 0.2f);
+    int reference = gge_object_create(r, cube, 0, 0), probe = gge_object_create(r, cube, 0, 0);
+    Place(r, reference, -2, 0.5f, 0, 0.5f);
+    auto place = [&](float sx, float sy, float sz) {
+        const float p[3] = {2, 0.5f, 0}, rot[3] = {0.3f, 0.5f, 0.2f}, s[3] = {sx, sy, sz};   // 회전해 두어 축 정렬 우연에 기대지 않는다
+        CHECK(gge_object_set_transform(r, probe, p, rot, s) == 1);
+    };
+
+    CHECK(gge_object_set_visible(r, probe, 0) == 1);
+    const Image hidden = Render(r);
+    CHECK(gge_object_set_visible(r, probe, 1) == 1);
+
+    const float thin = 1e-4f, big = 0.6f;
+    const float cases[][3] = {{big, 0, big}, {0, big, big}, {big, big, 0}};
+    for (const auto& c : cases) {
+        place(c[0] == 0 ? thin : c[0], c[1] == 0 ? thin : c[1], c[2] == 0 ? thin : c[2]);
+        const Image thinImage = Render(r);
+        place(c[0], c[1], c[2]);
+        const Image flat = Render(r);
+        // 0 축 = 아주 얇은 축: NaN/깨진 조명 없음. 두께 1e-4인 판의 옆면이 가장자리에서 픽셀 한두 개를 더 그릴 수는 있어 몇 픽셀까지 허용한다
+        // (깨졌을 때는 수백 픽셀이 달랐다: 법선 행렬이 NaN이면 판 윗면 전체가 틀어진다).
+        const int garbled = DifferingPixels(thinImage, flat);
+        if (garbled > 4) std::printf("  zero axis case (%g, %g, %g): %d pixels differ from the very thin object\n", c[0], c[1], c[2], garbled);
+        CHECK(garbled <= 4);
+        CHECK(DifferingPixels(hidden, thinImage) > 20);               // (공허한 비교가 아니도록) 얇아도 화면에 그려진다
+        for (int y = 0; y < flat.height; ++y)
+            for (int x = 0; x < flat.width / 2 - 8; ++x)              // 왼쪽 절반 = 다른 오브젝트: 그대로
+                CHECK(flat.At(x, y) == hidden.At(x, y));
+    }
+    place(0, 0, 0);
+    CHECK(DifferingPixels(hidden, Render(r)) == 0);                   // 세 축 0이면 아무것도 그려지지 않는다
+    gge_renderer_destroy(r);
+}
+
+// 같은 장면에서 오브젝트를 "아예 없는 것"으로 만드는 기준: 알파 0은 본체도 그림자도 그리지 않는다(이미 있던 규칙).
+void SetAbsent(GgeRenderer* r, int obj, bool absent) { CHECK(gge_object_set_alpha(r, obj, absent ? 0.0f : 1.0f) == 1); }
+
+void Test_ObjectVisibilityIsIndependentOfAlpha_AndHidesSubtreeShadowAndSorting()
+{
+    GgeRenderer* r = NewRenderer(160, 120);
+    int cube = CubeMesh(r);
+    gge_renderer_set_camera(r, 0, 6, 6, 0, 0, 0, 0.8f);
+    const float sunDirection[3] = {0.4f, -1, -0.3f}, sunColor[3] = {0.8f, 0.8f, 0.8f};
+    gge_renderer_set_directional_light(r, sunDirection, sunColor);
+    gge_renderer_set_ambient(r, 0.2f, 0.2f, 0.2f);
+    CHECK(gge_renderer_set_shadow(r, 1, 0.0f, 0.6f) == 1);
+    int floor = gge_object_create(r, cube, 0, 0);
+    {
+        const float p[3] = {0, -0.5f, 0}, rot[3] = {0, 0, 0}, s[3] = {8, 0.5f, 8};
+        CHECK(gge_object_set_transform(r, floor, p, rot, s) == 1);
+    }
+    auto at = [&](int obj, float x, float y, float z, float scale) {
+        const float p[3] = {x, y, z}, rot[3] = {0, 0.4f, 0}, s[3] = {scale, scale, scale};
+        CHECK(gge_object_set_transform(r, obj, p, rot, s) == 1);
+    };
+
+    // (A) 알파와 별개 상태: 반투명 오브젝트를 숨겼다 켜면 같은 반투명으로 돌아온다. 숨긴 화면 = 알파 0 화면(그림자까지 없다).
+    int solid = gge_object_create(r, cube, 0, 0);
+    at(solid, 1.5f, 0.6f, 0, 0.6f);
+    CHECK(gge_object_set_casts_shadow(r, solid, 1) == 1);
+    CHECK(gge_object_set_alpha(r, solid, 0.5f) == 1);
+    CHECK(gge_object_is_visible(r, solid) == 1);                      // 처음엔 보임
+    const Image visible = Render(r);
+    CHECK(gge_object_set_visible(r, solid, 0) == 1);
+    CHECK(gge_object_is_visible(r, solid) == 0);
+    const Image hidden = Render(r);
+    CHECK(gge_object_set_visible(r, solid, 7) == 1);                  // 0이 아니면 보임
+    CHECK(Render(r).bgra == visible.bgra);                            // 알파 0.5가 그대로 유지됐다
+    CHECK(gge_object_set_alpha(r, solid, 0.0f) == 1);
+    CHECK(hidden.bgra == Render(r).bgra);                             // 숨김 = 알파 0과 같은 화면(본체도 그림자도 없다)
+    CHECK(DifferingPixels(visible, hidden) > 150);                    // 본체와 그림자가 실제로 사라졌다(공허한 비교가 아니다)
+    CHECK(gge_object_set_alpha(r, solid, 1.0f) == 1);
+    CHECK(gge_object_set_casts_shadow(r, solid, 0) == 1);
+    SetAbsent(r, solid, true);
+
+    // (B) 자손까지 숨긴다. 자식 자신의 플래그는 그대로다.
+    int parent = gge_object_create(r, cube, 0, 0);
+    int child = gge_object_create(r, cube, 0, parent);
+    at(parent, -2, 0.6f, 0, 0.5f);
+    {
+        const float p[3] = {4, 0, 0}, rot[3] = {0, 0, 0}, s[3] = {1, 1, 1};   // 부모 기준 로컬: 월드 (0, 0.6, 0)
+        CHECK(gge_object_set_transform(r, child, p, rot, s) == 1);
+    }
+    CHECK(gge_object_set_casts_shadow(r, parent, 1) == 1);
+    CHECK(gge_object_set_casts_shadow(r, child, 1) == 1);
+    const Image both = Render(r);
+    SetAbsent(r, parent, true); SetAbsent(r, child, true);
+    const Image none = Render(r);
+    SetAbsent(r, parent, false); SetAbsent(r, child, false);
+    CHECK(DifferingPixels(both, none) > 150);
+
+    CHECK(gge_object_set_visible(r, parent, 0) == 1);
+    CHECK(gge_object_is_visible(r, parent) == 0 && gge_object_is_visible(r, child) == 1);   // 자식 자신의 플래그는 보임 그대로
+    CHECK(Render(r).bgra == none.bgra);                                // 부모를 숨기면 자식도 안 그려진다(그림자 포함)
+    CHECK(gge_object_set_visible(r, parent, 1) == 1);
+    CHECK(Render(r).bgra == both.bgra);                                // 다시 켜면 둘 다 돌아온다
+    CHECK(gge_object_set_visible(r, child, 0) == 1);                   // 자식만 숨기기
+    const Image childHidden = Render(r);
+    SetAbsent(r, child, true);
+    CHECK(Render(r).bgra == childHidden.bgra);                         // = 자식만 알파 0
+    SetAbsent(r, child, false);
+    CHECK(gge_object_set_visible(r, child, 1) == 1);
+    CHECK(Render(r).bgra == both.bgra);
+    SetAbsent(r, parent, true); SetAbsent(r, child, true);
+
+    // (C) 반투명 정렬에서 빠진다: 겹친 반투명 둘 중 하나를 숨기면 그 하나만 알파 0인 화면과 같다.
+    int near = gge_object_create(r, cube, 0, 0), far = gge_object_create(r, cube, 0, 0);
+    at(far, 0, 0.6f, -0.3f, 0.7f);
+    at(near, 0.3f, 0.6f, 0.4f, 0.7f);
+    CHECK(gge_object_set_alpha(r, near, 0.5f) == 1);
+    CHECK(gge_object_set_alpha(r, far, 0.5f) == 1);
+    const Image overlapped = Render(r);
+    CHECK(gge_object_set_visible(r, near, 0) == 1);
+    const Image nearHidden = Render(r);
+    CHECK(gge_object_set_alpha(r, near, 0.0f) == 1);
+    CHECK(Render(r).bgra == nearHidden.bgra);
+    CHECK(DifferingPixels(overlapped, nearHidden) > 20);
+
+    // (D) 알 수 없는 오브젝트
+    CHECK(gge_object_set_visible(r, 9999, 0) == 0);
+    CHECK(gge_object_is_visible(r, 9999) == -1);
+    CHECK(std::strstr(gge_last_error(), "unknown object id 9999") != nullptr);
+    gge_renderer_destroy(r);
+}
+
+void Test_ObjectTransformRejectsNonFiniteValuesAndKeepsTheOldOne()
+{
+    GgeRenderer* r = NewRenderer(64, 48);
+    int cube = CubeMesh(r);
+    int obj = gge_object_create(r, cube, 0, 0);
+    gge_renderer_set_camera(r, 0, 3, 6, 0, 0.5f, 0, 0.8f);
+    Place(r, obj, 0.5f, 0.5f, 0);
+    const Image before = Render(r);
+
+    const float nan = std::nanf(""), inf = INFINITY;
+    const float good[3] = {1, 1, 1}, zero[3] = {0, 0, 0};
+    struct Bad { const float* position; const float* rotation; const float* scale; };
+    float badPosition[3] = {1, nan, 0}, badRotation[3] = {0, 0, inf}, badScale[3] = {-inf, 1, 1};
+    for (const Bad& b : {Bad{badPosition, zero, good}, Bad{zero, badRotation, good}, Bad{zero, zero, badScale}}) {   // 한 값만 비유한
+        CHECK(gge_object_set_transform(r, obj, b.position, b.rotation, b.scale) == 0);
+        CHECK(std::strstr(gge_last_error(), "must be finite") != nullptr);
+        CHECK(Render(r).bgra == before.bgra);                          // 실패해도 이전 변환이 그대로다
+    }
+    CHECK(gge_object_set_transform(r, obj, zero, zero, good) == 1);   // 유한하면 받는다
+    CHECK(Render(r).bgra != before.bgra);
+    gge_renderer_destroy(r);
+}
+
+// ---- 상호작용 퍼즐용: 노드 위치 읽기/쓰기, 영역 안에 있는지 묻기 ----
+void Test_SceneNodePositionCanBeReadMovedAndRestored()
+{
+    GgeRenderer* r = NewRenderer(160, 120);
+    GgeScene* scene = gge_scene_load(r, SamplePlayScene().string().c_str());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+    DrainEvents(scene);
+
+    float x = 0, y = 0, z = 0;
+    CHECK(gge_scene_get_node_position(scene, "Pillar", &x, &y, &z) == 1);
+    CHECK(x == -2.0f && y == 0.5f && z == 2.0f);                         // 구운 값
+    CHECK(gge_scene_get_node_position(scene, "Pillar", nullptr, nullptr, nullptr) == 1);
+    CHECK(gge_scene_get_node_position(scene, "Nope", &x, &y, &z) == 0);
+    CHECK(std::string(gge_last_error()).find("no node named 'Nope'") != std::string::npos);
+    CHECK(gge_scene_get_node_position(scene, nullptr, &x, &y, &z) == 0);
+
+    const Image before = Render(r);
+    CHECK(gge_scene_set_node_position(scene, "Pillar", 3, 1, -1) == 1);
+    CHECK(gge_scene_get_node_position(scene, "Pillar", &x, &y, &z) == 1 && x == 3.0f && y == 1.0f && z == -1.0f);
+    CHECK(Render(r).bgra != before.bgra);                                // 기둥이 실제로 옮겨졌다
+    CHECK(gge_scene_set_node_position(scene, "Pillar", -2, 0.5f, 2) == 1);
+    CHECK(Render(r).bgra == before.bgra);                                // 제자리로 돌리면 같은 화면(회전/크기가 유지된다)
+
+    // 실패는 아무것도 바꾸지 않는다.
+    CHECK(gge_scene_set_node_position(scene, "Nope", 0, 0, 0) == 0);
+    CHECK(std::string(gge_last_error()).find("no node named 'Nope'") != std::string::npos);
+    CHECK(gge_scene_set_node_position(scene, nullptr, 0, 0, 0) == 0);
+    CHECK(gge_scene_set_node_position(scene, "Pillar", std::nanf(""), 0, 0) == 0);
+    CHECK(std::string(gge_last_error()).find("finite") != std::string::npos);
+    CHECK(gge_scene_set_node_position(scene, "Pillar", 0, INFINITY, 0) == 0);
+    CHECK(gge_scene_set_node_position(scene, "Hero", 0, 0, 0) == 0);     // 플레이어 노드는 텔레포트로만
+    CHECK(std::string(gge_last_error()).find("is the player") != std::string::npos);
+    gge_scene_get_node_position(scene, "Pillar", &x, &y, &z);
+    CHECK(x == -2.0f && y == 0.5f && z == 2.0f);
+    CHECK(Render(r).bgra == before.bgra);
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(r);
+}
+
+bool NearVec(const float* v, float x, float y, float z) { return std::fabs(v[0] - x) < 1e-5f && std::fabs(v[1] - y) < 1e-5f && std::fabs(v[2] - z) < 1e-5f; }
+
+void Test_SceneNodeRotationScaleAndVisibilityFollowThePositionRules()
+{
+    GgeRenderer* r = NewRenderer(160, 120);
+    GgeScene* scene = gge_scene_load(r, SamplePlayScene().string().c_str());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+    DrainEvents(scene);
+    const Image hall = Render(r);   // 기둥(Pillar)이 보이는 Hall 화면
+    float v[3] = {9, 9, 9};
+
+    // 보이기/숨기기: 플래그 읽기/쓰기, 화면 반영, 기둥만 사라진다.
+    CHECK(gge_scene_get_node_visible(scene, "Pillar") == 1);
+    CHECK(gge_scene_set_node_visible(scene, "Pillar", 0) == 1);
+    CHECK(gge_scene_get_node_visible(scene, "Pillar") == 0);
+    const Image pillarHidden = Render(r);
+    CHECK(DifferingPixels(hall, pillarHidden) > 30);
+    CHECK(gge_scene_set_node_visible(scene, "Pillar", 1) == 1);
+    CHECK(Render(r).bgra == hall.bgra);
+
+    // 회전: 읽기/쓰기/되돌리기(회전만 바뀌고 위치/크기는 그대로).
+    CHECK(gge_scene_get_node_rotation(scene, "Pillar", &v[0], &v[1], &v[2]) == 1 && NearVec(v, 0, 0, 0));
+    CHECK(gge_scene_set_node_rotation(scene, "Pillar", 0, 0.7f, 0.2f) == 1);
+    CHECK(gge_scene_get_node_rotation(scene, "Pillar", &v[0], &v[1], &v[2]) == 1 && NearVec(v, 0, 0.7f, 0.2f));
+    CHECK(gge_scene_get_node_position(scene, "Pillar", &v[0], &v[1], &v[2]) == 1 && NearVec(v, -2, 0.5f, 2));
+    CHECK(gge_scene_get_node_scale(scene, "Pillar", &v[0], &v[1], &v[2]) == 1 && NearVec(v, 0.5f, 0.5f, 0.5f));
+    CHECK(DifferingPixels(hall, Render(r)) > 20);
+    CHECK(gge_scene_set_node_rotation(scene, "Pillar", 0, 0, 0) == 1);
+    CHECK(Render(r).bgra == hall.bgra);
+
+    // 크기: 읽기/쓰기. 0은 받고(세 축 0이면 숨긴 화면과 같다), 되돌리면 원래 화면이다.
+    CHECK(gge_scene_set_node_scale(scene, "Pillar", 1, 1, 1) == 1);
+    CHECK(gge_scene_get_node_scale(scene, "Pillar", &v[0], &v[1], &v[2]) == 1 && NearVec(v, 1, 1, 1));
+    CHECK(DifferingPixels(hall, Render(r)) > 20);
+    CHECK(gge_scene_set_node_scale(scene, "Pillar", 0, 0, 0) == 1);
+    CHECK(gge_scene_get_node_scale(scene, "Pillar", &v[0], &v[1], &v[2]) == 1 && NearVec(v, 0, 0, 0));
+    CHECK(Render(r).bgra == pillarHidden.bgra);
+    CHECK(gge_scene_set_node_scale(scene, "Pillar", 0.5f, 0.5f, 0.5f) == 1);
+    CHECK(Render(r).bgra == hall.bgra);
+
+    // 실패는 사유와 함께 0/-1이고 아무것도 바꾸지 않는다.
+    const float nan = std::nanf(""), inf = INFINITY;
+    CHECK(gge_scene_get_node_rotation(scene, "Nope", &v[0], &v[1], &v[2]) == 0 && std::string(gge_last_error()).find("no node named 'Nope'") != std::string::npos);
+    CHECK(gge_scene_get_node_scale(scene, "Nope", &v[0], &v[1], &v[2]) == 0);
+    CHECK(gge_scene_get_node_visible(scene, "Nope") == -1 && std::string(gge_last_error()).find("no node named 'Nope'") != std::string::npos);
+    CHECK(gge_scene_get_node_visible(scene, nullptr) == -1);
+    CHECK(gge_scene_set_node_rotation(scene, "Nope", 0, 0, 0) == 0);
+    CHECK(gge_scene_set_node_scale(scene, "Nope", 1, 1, 1) == 0);
+    CHECK(gge_scene_set_node_visible(scene, "Nope", 0) == 0 && std::string(gge_last_error()).find("no node named 'Nope'") != std::string::npos);
+    CHECK(gge_scene_set_node_rotation(scene, "Pillar", nan, 0, 0) == 0 && std::string(gge_last_error()).find("rotation must be finite") != std::string::npos);
+    CHECK(gge_scene_set_node_scale(scene, "Pillar", 1, inf, 1) == 0 && std::string(gge_last_error()).find("scale must be finite") != std::string::npos);
+    CHECK(gge_scene_set_node_rotation(scene, "Hero", 0, 1, 0) == 0 && std::string(gge_last_error()).find("is the player") != std::string::npos);   // 플레이어는 회전/크기를 스크립트가 못 바꾼다
+    CHECK(gge_scene_set_node_scale(scene, "Hero", 2, 2, 2) == 0 && std::string(gge_last_error()).find("is the player") != std::string::npos);
+    CHECK(Render(r).bgra == hall.bgra);
+
+    // 플레이어는 숨길 수 있다(컷신/퇴장): 숨긴 채로도 걷고 이벤트가 나온다.
+    CHECK(gge_scene_set_node_visible(scene, "Hero", 0) == 1 && gge_scene_get_node_visible(scene, "Hero") == 0);
+    const Image heroHidden = Render(r);
+    CHECK(DifferingPixels(hall, heroHidden) > 5);
+    CHECK(gge_scene_step(scene, 1, 0, 1.0f / 30) == 1);
+    float x = 0;
+    gge_scene_get_player(scene, &x, nullptr, nullptr);
+    CHECK(x > -4.0f);
+    CHECK(gge_scene_set_node_visible(scene, "Hero", 1) == 1);
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(r);
+}
+
+void Test_SceneNodeWritesTouchOnlyTheFirstNodeWithTheName()
+{
+    fs::path bmp = TempDir() / "scene_dup.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+    Spec spec = RoomWithPlayerSpec(bmp);
+    SpecNode left, right;
+    left.name = right.name = "Dup";
+    left.mesh = right.mesh = 0;
+    left.pos[0] = -2; left.pos[1] = 1;
+    right.pos[0] = 2; right.pos[1] = 1;
+    spec.nodes.push_back(left);
+    spec.nodes.push_back(right);
+
+    GgeRenderer* r = NewRenderer(160, 120);
+    GgeScene* scene = gge_scene_load(r, WriteScene("dup.ggs", Serialize(spec)).string().c_str());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+    const int first = gge_scene_find_object(scene, "Dup");
+    CHECK(first > 0);
+    const Image before = Render(r);
+    auto rightHalfSame = [&](const Image& now) {
+        for (int y = 0; y < now.height; ++y)
+            for (int x = now.width / 2 + 4; x < now.width; ++x)
+                if (now.At(x, y) != before.At(x, y)) return false;
+        return true;
+    };
+
+    CHECK(gge_scene_set_node_rotation(scene, "Dup", 0, 1.0f, 0) == 1);
+    Image now = Render(r);
+    CHECK(DifferingPixels(before, now) > 10 && rightHalfSame(now));              // 왼쪽 노드만 돌아갔다
+    CHECK(gge_scene_set_node_rotation(scene, "Dup", 0, 0, 0) == 1);
+    CHECK(gge_scene_set_node_scale(scene, "Dup", 2, 2, 2) == 1);
+    now = Render(r);
+    CHECK(DifferingPixels(before, now) > 10 && rightHalfSame(now));              // 왼쪽 노드만 커졌다
+    CHECK(gge_scene_set_node_scale(scene, "Dup", 1, 1, 1) == 1);
+
+    CHECK(gge_scene_set_node_visible(scene, "Dup", 0) == 1);
+    CHECK(gge_object_is_visible(r, first) == 0);
+    CHECK(gge_object_is_visible(r, first + 1) == 1);                             // 같은 이름의 두 번째 노드는 그대로 보인다
+    CHECK(gge_scene_get_node_visible(scene, "Dup") == 0);                        // 읽기도 첫 노드
+    now = Render(r);
+    CHECK(DifferingPixels(before, now) > 10 && rightHalfSame(now));
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(r);
+}
+
+void Test_SceneAnswersWhetherThePlayerIsInsideATrigger()
+{
+    GgeRenderer* r = NewRenderer(160, 120);
+    GgeScene* scene = gge_scene_load(r, SamplePlayScene().string().c_str());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+    DrainEvents(scene);
+
+    CHECK(gge_scene_is_inside_trigger(scene, "StartPad") == 1);          // 스폰이 StartPad 안
+    CHECK(gge_scene_is_inside_trigger(scene, "Door") == 0);
+    CHECK(gge_scene_is_inside_trigger(scene, "Nope") == -1);             // 0(밖)과 구별되는 실패
+    CHECK(std::string(gge_last_error()).find("no trigger named 'Nope'") != std::string::npos);
+    CHECK(gge_scene_is_inside_trigger(scene, nullptr) == -1);
+
+    CHECK(gge_scene_teleport_player(scene, 4, 0) == 1);                  // 텔레포트도 바로 반영된다
+    CHECK(gge_scene_is_inside_trigger(scene, "StartPad") == 0);
+    CHECK(gge_scene_is_inside_trigger(scene, "Door") == 1);
+    CHECK(gge_scene_set_trigger_enabled(scene, "Door", 0) == 1);
+    CHECK(gge_scene_is_inside_trigger(scene, "Door") == 1);              // 이벤트와 같은 시점: 다음 step까지는 그대로
+    gge_scene_step(scene, 0, 0, 0);
+    CHECK(gge_scene_is_inside_trigger(scene, "Door") == 0);              // 꺼진 트리거는 안에 있어도 밖으로 본다(Exit와 함께)
+    CHECK(DrainEvents(scene) == "Exit StartPad 1, Enter Door 7, Exit Door 7");
+    CHECK(gge_scene_set_trigger_enabled(scene, "Door", 1) == 1);
+    gge_scene_step(scene, 0, 0, 0);
+    CHECK(gge_scene_is_inside_trigger(scene, "Door") == 1);              // 다시 켜면 Enter와 함께 안
+    CHECK(DrainEvents(scene) == "Enter Door 7");
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(r);
+}
+
+// 방 하나(-10..10)에서 오른쪽(+X)으로 걸으면 두 겹 문 "Gate"(x 2..3, 이름이 같은 둘)에 막히고, 더 가면 "Wall"(x 6..7)에 막힌다.
+Spec GateSpec(const fs::path& bmp, uint32_t version = 2)
+{
+    Spec s = RoomWithPlayerSpec(bmp);
+    s.version = version;
+    s.colliders = {{"Gate", 2, -10, 2.5f, 10}, {"Gate", 2.5f, -10, 3, 10}, {"Wall", 6, -10, 7, 10}};
+    return s;
+}
+
+float WalkRight(GgeScene* scene, int frames)
+{
+    for (int i = 0; i < frames; ++i) gge_scene_step(scene, 1, 0, 1.0f / 30);
+    float x = 0;
+    gge_scene_get_player(scene, &x, nullptr, nullptr);
+    return x;
+}
+
+void Test_SceneNamedCollidersOpenAndCloseLikeADoor()
+{
+    fs::path bmp = TempDir() / "scene_gate.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+    GgeRenderer* r = NewRenderer(96, 72);
+    GgeScene* scene = gge_scene_load(r, WriteScene("gate.ggs", Serialize(GateSpec(bmp))).string().c_str());
+    if (!scene) std::printf("  load failed: %s\n", gge_last_error());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+
+    CHECK(std::fabs(WalkRight(scene, 60) - 1.6f) < 1e-3f);                   // 닫힌 문에 막힌다(문 x=2 - 반지름 0.4)
+    CHECK(gge_scene_set_collider_enabled(scene, "Gate", 0) == 2);            // 같은 이름 둘 다 열린다
+    CHECK(std::fabs(WalkRight(scene, 100) - 5.6f) < 1e-3f);                  // 문을 지나 "Wall"에는 여전히 막힌다(이름이 다르면 안 건드린다)
+
+    // 열린 문 안으로 들어가 서 있다가 닫으면 가장 가까운 면 바깥으로 밀려난다(입력이 0인 프레임에서도).
+    CHECK(gge_scene_teleport_player(scene, 2.2f, 0) == 1);
+    CHECK(gge_scene_set_collider_enabled(scene, "Gate", 1) == 2);
+    CHECK(gge_scene_step(scene, 0, 0, 1.0f / 30) == 1);
+    float x = 0, z = 9;
+    gge_scene_get_player(scene, &x, &z, nullptr);
+    CHECK(x <= 1.6f + 1e-3f && std::fabs(z) < 1e-5f);
+    CHECK(std::fabs(WalkRight(scene, 30) - 1.6f) < 1e-3f);                   // 다시 닫힌 문에 막힌다
+
+    CHECK(gge_scene_set_collider_enabled(scene, "Gate", 0) == 2);
+    CHECK(gge_scene_set_collider_enabled(scene, "Gate", 0) == 2);            // 이미 열려 있어도 성공(멱등), 개수는 같다
+    CHECK(WalkRight(scene, 30) > 3.5f);
+
+    // 실패는 사유와 함께 0이고 아무것도 바꾸지 않는다.
+    CHECK(gge_scene_set_collider_enabled(scene, "", 0) == 0);
+    CHECK(std::string(gge_last_error()).find("must not be empty") != std::string::npos);
+    CHECK(gge_scene_set_collider_enabled(scene, nullptr, 0) == 0);
+    CHECK(std::string(gge_last_error()).find("must not be empty") != std::string::npos);
+    CHECK(gge_scene_set_collider_enabled(scene, "Nope", 0) == 0);
+    CHECK(std::string(gge_last_error()).find("no collider named 'Nope'") != std::string::npos);
+    CHECK(gge_scene_set_collider_enabled(scene, "gate", 0) == 0);            // 이름은 대소문자를 구분한다
+    CHECK(WalkRight(scene, 100) > 5.5f);                                     // Gate는 여전히 열려 있다
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(r);
+}
+
+void Test_SceneVersion1FilesHaveUnnamedCollidersThatStillBlock()
+{
+    fs::path bmp = TempDir() / "scene_gate1.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+    GgeRenderer* r = NewRenderer(96, 72);
+    GgeScene* scene = gge_scene_load(r, WriteScene("gate_v1.ggs", Serialize(GateSpec(bmp, 1))).string().c_str());
+    if (!scene) std::printf("  load failed: %s\n", gge_last_error());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+    CHECK(std::fabs(WalkRight(scene, 60) - 1.6f) < 1e-3f);                   // 이름은 없어도 충돌은 그대로 동작한다
+    CHECK(gge_scene_set_collider_enabled(scene, "Gate", 0) == 0);            // 이름이 없으므로 지정할 수 없다
+    CHECK(std::string(gge_last_error()).find("no collider named 'Gate'") != std::string::npos);
+    CHECK(gge_scene_set_collider_enabled(scene, "", 0) == 0);                // 빈 이름 = "이름 없음"을 가리킬 수도 없다
+    CHECK(std::string(gge_last_error()).find("must not be empty") != std::string::npos);
+    CHECK(std::fabs(WalkRight(scene, 30) - 1.6f) < 1e-3f);
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(r);
+}
+
+void Test_BakedVersion1SampleLoadsAndBehavesLikeTheCurrentSample()
+{
+    // assets/samples/play_v1.ggs는 형식 version 1 시절의 play.ggs를 그대로 보존한 파일이다(재생성하지 않는다). 현재 play.ggs(version 2)와
+    // 헤더 버전만 다르고 같은 게임이어야 한다.
+    fs::path v1Path = fs::path(GGE_TEST_DATA_DIR) / "../../assets/samples/play_v1.ggs";
+    std::vector<uint8_t> v1Bytes = ReadFileBytes(v1Path), v2Bytes = ReadFileBytes(SamplePlayScene());
+    CHECK(v1Bytes.size() > 8 && v2Bytes.size() > 8);
+    uint32_t v1Version = 0, v2Version = 0;
+    if (v1Bytes.size() > 8) std::memcpy(&v1Version, v1Bytes.data() + 4, 4);
+    if (v2Bytes.size() > 8) std::memcpy(&v2Version, v2Bytes.data() + 4, 4);
+    CHECK(v1Version == 1 && v2Version == 2);
+
+    GgeRenderer* r1 = NewRenderer(96, 72);
+    GgeRenderer* r2 = NewRenderer(96, 72);
+    GgeScene* v1 = gge_scene_load(r1, v1Path.string().c_str());
+    GgeScene* v2 = gge_scene_load(r2, SamplePlayScene().string().c_str());
+    if (!v1) std::printf("  v1 load failed: %s\n", gge_last_error());
+    CHECK(v1 != nullptr && v2 != nullptr);
+    if (!v1 || !v2) { gge_renderer_destroy(r1); gge_renderer_destroy(r2); return; }
+
+    std::string events1 = DrainEvents(v1), events2 = DrainEvents(v2);
+    for (int i = 0; i < 200; ++i) {
+        gge_scene_step(v1, 1, 0, 1.0f / 30);
+        gge_scene_step(v2, 1, 0, 1.0f / 30);
+        std::string e1 = DrainEvents(v1), e2 = DrainEvents(v2);
+        if (!e1.empty()) events1 += (events1.empty() ? "" : ", ") + e1;
+        if (!e2.empty()) events2 += (events2.empty() ? "" : ", ") + e2;
+    }
+    CHECK(events1 == events2 && events1 == "Enter StartPad 1, Exit StartPad 1, Enter Door 7, Exit Door 7");
+    float x1 = 0, z1 = 0, x2 = 0, z2 = 0;
+    gge_scene_get_player(v1, &x1, &z1, nullptr);
+    gge_scene_get_player(v2, &x2, &z2, nullptr);
+    CHECK(x1 == x2 && z1 == z2 && std::fabs(x1 - 5.6f) < 1e-3f);             // 같은 동쪽 벽에서 멈춘다
+    CHECK(std::strcmp(gge_scene_active_room_name(v1), gge_scene_active_room_name(v2)) == 0);
+
+    // 이름은 version 2에만 있다: 샘플의 충돌체 "Pillar"/"WallEast"는 v2에서만 켜고 끌 수 있다.
+    CHECK(gge_scene_set_collider_enabled(v1, "Pillar", 0) == 0);
+    CHECK(gge_scene_set_collider_enabled(v2, "Pillar", 0) == 1);
+    CHECK(gge_scene_set_collider_enabled(v2, "WallEast", 0) == 1);
+    CHECK(WalkRight(v2, 100) > 6.2f);                                        // 동쪽 벽을 열면 방 밖(x > 6)으로 나간다
+    gge_scene_destroy(v1);
+    gge_scene_destroy(v2);
+    gge_renderer_destroy(r1);
+    gge_renderer_destroy(r2);
+}
+
 void Test_GoldenPlaySceneFromTheBakedSample()
 {
     GgeRenderer* r = NewRenderer(320, 240);
@@ -4053,11 +4612,11 @@ void Test_GoldenPlaySceneFromTheBakedSample()
 
 // ---- .ggs 로더의 한도/경계 (외부 파일을 읽는 코드라 "경계 바로 안/밖"을 개수와 길이마다 확인한다) ----
 // 파일 앞부분(텍스처 0, 메시 0, 노드 0, 기본 조명)까지 쓴 작성기. 이어서 방/충돌체/트리거 개수 등을 직접 쓴다.
-GgsWriter PrefixUpToLighting()
+GgsWriter PrefixUpToLighting(uint32_t version = 2)
 {
     GgsWriter w;
     w.Raw("GGS1", 4);
-    w.U32(1);
+    w.U32(version);
     w.U32(0);  // textures
     w.U32(0);  // meshes
     w.U32(0);  // nodes
@@ -4105,14 +4664,21 @@ void Test_SceneCountLimitsAreCheckedAtTheirBoundaries()
             expect("point lights", TryLoad(r, "limit.ggs", w.Sealed()), n == 8u ? "truncated while reading point lights" : "too many point lights");
         }
         // 방/충돌체/트리거: 앞 절을 정상으로 채우고 해당 개수만 쓴다.
-        auto afterLighting = [&] { GgsWriter w = PrefixUpToLighting(); w.U32(0); w.U8(0); w.F(0); w.F(0.5f); return w; };  // 점광원 0, 그림자 꺼짐
+        auto afterLighting = [&](uint32_t version = 2) { GgsWriter w = PrefixUpToLighting(version); w.U32(0); w.U8(0); w.F(0); w.F(0.5f); return w; };  // 점광원 0, 그림자 꺼짐
         for (uint32_t n : {65536u, 65537u}) {
             GgsWriter w = afterLighting(); w.U32(n);
             expect("rooms", TryLoad(r, "limit.ggs", w.Sealed()), n == 65536u ? "truncated while reading rooms" : "too many rooms");
-            GgsWriter c = afterLighting(); c.U32(0); c.U32(n);
-            expect("colliders", TryLoad(r, "limit.ggs", c.Sealed()), n == 65536u ? "truncated while reading colliders" : "too many colliders");
+            for (uint32_t version : {1u, 2u}) {   // 충돌체 레코드는 버전마다 다르므로 두 형식 모두에서 경계를 본다
+                GgsWriter c = afterLighting(version); c.U32(0); c.U32(n);
+                expect("colliders", TryLoad(r, "limit.ggs", c.Sealed()), n == 65536u ? "truncated while reading colliders" : "too many colliders");
+            }
             GgsWriter t = afterLighting(); t.U32(0); t.U32(0); t.U32(n);
             expect("triggers", TryLoad(r, "limit.ggs", t.Sealed()), n == 65536u ? "truncated while reading triggers" : "too many triggers");
+        }
+        // 충돌체 레코드의 최소 크기: 버전 2는 이름(길이 4바이트) + 좌표 16바이트 = 20, 버전 1은 16. 개수 x 최소 크기 > 남은 바이트면 큰 배열 전에 거부한다.
+        for (uint32_t version : {1u, 2u}) {
+            GgsWriter c = afterLighting(version); c.U32(0); c.U32(1000);   // 방 0개, 충돌체 1000개, 데이터 없음
+            expect("colliders without data", TryLoad(r, "limit.ggs", c.Sealed()), "truncated while reading colliders");
         }
         // 개수에 비해 남은 바이트가 모자라면(개수 x 항목 최소 크기 > 남은 바이트) 큰 배열을 만들기 전에 거부한다.
         GgsWriter w; w.Raw("GGS1", 4); w.U32(1); w.U32(0); w.U32(0); w.U32(1000);   // 노드 1000개, 데이터 없음
@@ -4185,6 +4751,18 @@ void Test_SceneStringAndClipLimitsAreCheckedAtTheirBoundaries()
         Spec s = VisualSpec(bmp);
         s.nodes[3].name = std::string(length, 'n');   // 그룹 노드의 이름
         expect("long name", TryLoad(r, "s.ggs", Serialize(s)), length == (size_t(1) << 20) ? "OK" : "truncated while reading node name");
+    }
+    // 충돌체 이름(버전 2)도 같은 문자열 한도를 쓴다: 1 MiB 허용, 1 MiB + 1 거부.
+    for (size_t length : {size_t(1) << 20, (size_t(1) << 20) + 1}) {
+        Spec s = VisualSpec(bmp);
+        s.colliders = {{std::string(length, 'c'), 0, 0, 1, 1}};
+        expect("long collider name", TryLoad(r, "s.ggs", Serialize(s)), length == (size_t(1) << 20) ? "OK" : "truncated while reading collider name");
+    }
+    {   // 남은 바이트보다 긴 충돌체 이름도 잘렸다고 해야 한다(방 0개 + 충돌체 1개, 이름 길이 1000인데 40바이트뿐).
+        // 40바이트는 "충돌체 1개의 최소 크기(20)" 검사는 통과하고 이름을 읽는 단계에서 모자란다.
+        GgsWriter w = PrefixUpToLighting(); w.U32(0); w.U8(0); w.F(0); w.F(0.5f); w.U32(0); w.U32(1);
+        w.U32(1000); w.Raw(std::string(40, 'c').data(), 40);
+        expect("collider name longer than the file", TryLoad(r, "s.ggs", w.Sealed()), "truncated while reading collider name");
     }
     // 남은 바이트보다 긴 문자열(한도보다는 짧다)도 잘렸다고 해야 한다.
     {
@@ -4335,6 +4913,19 @@ int main()
     struct Case { const char* name; std::function<void()> fn; };
     const Case cases[] = {
         {"GoldenCompareRules", Test_GoldenCompareRules},
+        {"ZeroScaleObjectsRenderLikeVeryThinOnes_AndNeverTouchOtherObjects", Test_ZeroScaleObjectsRenderLikeVeryThinOnes_AndNeverTouchOtherObjects},
+        {"ObjectVisibilityIsIndependentOfAlpha_AndHidesSubtreeShadowAndSorting", Test_ObjectVisibilityIsIndependentOfAlpha_AndHidesSubtreeShadowAndSorting},
+        {"SceneNodeRotationScaleAndVisibilityFollowThePositionRules", Test_SceneNodeRotationScaleAndVisibilityFollowThePositionRules},
+        {"SceneNodeWritesTouchOnlyTheFirstNodeWithTheName", Test_SceneNodeWritesTouchOnlyTheFirstNodeWithTheName},
+        {"ObjectTransformRejectsNonFiniteValuesAndKeepsTheOldOne", Test_ObjectTransformRejectsNonFiniteValuesAndKeepsTheOldOne},
+        {"WorldColliderEnableRules", Test_WorldColliderEnableRules},
+        {"ColliderStateStaysConsistentAcrossTogglesAndAdds", Test_ColliderStateStaysConsistentAcrossTogglesAndAdds},
+        {"SceneNamedCollidersOpenAndCloseLikeADoor", Test_SceneNamedCollidersOpenAndCloseLikeADoor},
+        {"SceneVersion1FilesHaveUnnamedCollidersThatStillBlock", Test_SceneVersion1FilesHaveUnnamedCollidersThatStillBlock},
+        {"BakedVersion1SampleLoadsAndBehavesLikeTheCurrentSample", Test_BakedVersion1SampleLoadsAndBehavesLikeTheCurrentSample},
+        {"SceneInsideTriggerQueryCoversEveryTriggerWithTheName", Test_SceneInsideTriggerQueryCoversEveryTriggerWithTheName},
+        {"SceneNodePositionCanBeReadMovedAndRestored", Test_SceneNodePositionCanBeReadMovedAndRestored},
+        {"SceneAnswersWhetherThePlayerIsInsideATrigger", Test_SceneAnswersWhetherThePlayerIsInsideATrigger},
         {"SceneSetTriggerEnabledByName", Test_SceneSetTriggerEnabledByName},
         {"SceneSetTriggerEnabledAffectsEveryTriggerWithTheName", Test_SceneSetTriggerEnabledAffectsEveryTriggerWithTheName},
         {"SceneTeleportPlayerSwitchesRoomsAndCameraImmediately", Test_SceneTeleportPlayerSwitchesRoomsAndCameraImmediately},

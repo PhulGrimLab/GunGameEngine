@@ -50,6 +50,16 @@ public static unsafe class Entry
             Runner().HandleTrigger(new TriggerEvent((TriggerKind)kind, tag, name));
         });
 
+    /// <param name="action">1 = Interact, 2 = Cancel, 3 = Menu(<see cref="GameAction"/>).</param>
+    [UnmanagedCallersOnly]
+    public static int HandleAction(int action) =>
+        Run(() =>
+        {
+            if (!Enum.IsDefined((GameAction)action))
+                throw new ArgumentOutOfRangeException(nameof(action), action, "unknown action");
+            Runner().HandleAction((GameAction)action);
+        });
+
     [UnmanagedCallersOnly]
     public static int Update(float deltaSeconds) => Run(() => Runner().Update(deltaSeconds));
 

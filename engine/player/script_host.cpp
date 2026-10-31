@@ -135,6 +135,7 @@ struct ScriptHost::Entries {
                                                          const wchar_t* scriptPath, const wchar_t* typeFilter);
     using StartFn = int(CORECLR_DELEGATE_CALLTYPE*)();
     using HandleTriggerFn = int(CORECLR_DELEGATE_CALLTYPE*)(int kind, int tag, const char* nameUtf8);
+    using HandleActionFn = int(CORECLR_DELEGATE_CALLTYPE*)(int action);
     using UpdateFn = int(CORECLR_DELEGATE_CALLTYPE*)(float deltaSeconds);
     using GetLastErrorFn = int(CORECLR_DELEGATE_CALLTYPE*)(char* buffer, int capacity);
     using ShutdownFn = void(CORECLR_DELEGATE_CALLTYPE*)();
@@ -142,6 +143,7 @@ struct ScriptHost::Entries {
     InitializeFn initialize = nullptr;
     StartFn start = nullptr;
     HandleTriggerFn handleTrigger = nullptr;
+    HandleActionFn handleAction = nullptr;
     UpdateFn update = nullptr;
     GetLastErrorFn getLastError = nullptr;
     ShutdownFn shutdown = nullptr;
@@ -227,7 +229,7 @@ std::unique_ptr<ScriptHost> ScriptHost::Create(const ScriptOptions& options, Gge
         return true;
     };
     const bool bound = bind(L"Initialize", e.initialize) && bind(L"Start", e.start) && bind(L"HandleTrigger", e.handleTrigger) &&
-                       bind(L"Update", e.update) && bind(L"GetLastError", e.getLastError) && bind(L"Shutdown", e.shutdown);
+                       bind(L"HandleAction", e.handleAction) && bind(L"Update", e.update) && bind(L"GetLastError", e.getLastError) && bind(L"Shutdown", e.shutdown);
     if (setErrorWriter)
         setErrorWriter(nullptr);
     if (!bound)
@@ -273,6 +275,14 @@ bool ScriptHost::Start(std::string& error)
 bool ScriptHost::OnTrigger(int kind, int tag, const char* name, std::string& error)
 {
     if (_entries->handleTrigger(kind, tag, name ? name : ""))
+        return true;
+    error = LastManagedError();
+    return false;
+}
+
+bool ScriptHost::OnAction(int action, std::string& error)
+{
+    if (_entries->handleAction(action))
         return true;
     error = LastManagedError();
     return false;

@@ -52,6 +52,13 @@ public:
     // 값이 유한하지 않거나 min >= max이면 예외를 던진다.
     int AddBoxCollider(float minX, float minZ, float maxX, float maxZ);
 
+    // 콜라이더를 켜거나 끈다(처음에는 모두 켜져 있다). 꺼진 콜라이더는 MoveCircle이 없는 것으로 본다(열린 문). 켜는 순간 그 안에 겹쳐 있는
+    // 이동체는 별도 처리 없이 기존 규칙대로 다음 MoveCircle에서 가장 가까운 면 바깥으로 밀려난다(이동량 0이어도 밀어낸다).
+    // 밀려나는 쪽은 가장 가까운 면 바깥이라, 얇은 문이 방 경계에 걸쳐 있으면 반대편(다른 방)으로 나갈 수 있다. 문은 방 안쪽에 두는 것이 좋다.
+    // 같은 상태로 다시 설정해도 변화가 없다. 알 수 없는 ID면 예외.
+    void SetColliderEnabled(int colliderId, bool enabled);
+    bool IsColliderEnabled(int colliderId) const;
+
     // 반지름 radius인 원형 이동체를 (x,z)에서 (dx,dz)만큼 움직인 최종 위치를 반환한다(벽 슬라이딩 포함, collision.h 참고).
     // radius <= 0, 유한하지 않은 값, 한 번의 이동량이 radius 대비 너무 크면(kMaxMoveSteps 초과) 예외를 던진다.
     Vec2 MoveCircle(float x, float z, float dx, float dz, float radius) const;
@@ -92,7 +99,8 @@ public:
     // (호출자가 폴링하지 않는 버그가 있어도 메모리가 무한히 늘지 않게 한다).
     bool PollTriggerEvent(TriggerEvent& out);
 
-    // 마지막 UpdateTriggers 기준으로 플레이어가 영역 안에 있는가(꺼진 트리거는 항상 false). 알 수 없는 ID면 예외.
+    // 마지막 UpdateTriggers 기준으로 플레이어가 영역 안에 있는가. 끈 트리거는 다음 UpdateTriggers부터 false(이벤트와 같은 시점).
+    // 알 수 없는 ID면 예외.
     bool IsInsideTrigger(int triggerId) const;
 
 private:
@@ -115,6 +123,8 @@ private:
     void PushEvent(const Trigger& trigger, int triggerId, int kind);
 
     std::vector<Box> _boxes;  // 인덱스 + 1 == 콜라이더 ID
+    std::vector<char> _boxEnabled;  // _boxes와 같은 인덱스(0/1). vector<bool>의 특수한 참조 동작을 피하려고 char를 쓴다.
+    std::vector<Box> _activeBoxes;  // 켜진 콜라이더만(MoveCircle이 쓴다). 켜고 끌 때마다 다시 만든다.
     std::vector<Room> _rooms;  // 인덱스 + 1 == 방 ID
     std::vector<Trigger> _triggers;  // 인덱스 + 1 == 트리거 ID
     std::deque<TriggerEvent> _events;  // 오래된 것이 앞

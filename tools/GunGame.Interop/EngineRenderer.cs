@@ -187,6 +187,22 @@ public sealed unsafe class EngineRenderer : IDisposable
     public void SetObjectCastsShadow(int objectId, bool casts) =>
         Check(Native.gge_object_set_casts_shadow(Handle, objectId, casts ? 1 : 0));
 
+    /// <summary>
+    /// 표시 여부(처음엔 보임). 숨기면 이 오브젝트와 모든 자손이 그려지지 않고 그림자도 드리우지 않으며 반투명 정렬에서도 빠진다.
+    /// 알파/그림자 설정과는 별개 상태라 다시 보이게 하면 그대로 돌아온다. 점광원은 영향받지 않는다.
+    /// </summary>
+    public void SetObjectVisible(int objectId, bool visible) =>
+        Check(Native.gge_object_set_visible(Handle, objectId, visible ? 1 : 0));
+
+    /// <summary>그 오브젝트 <b>자신의</b> 표시 플래그(부모가 숨겨졌는지는 보지 않는다). 알 수 없는 ID면 <see cref="EngineException"/>.</summary>
+    public bool IsObjectVisible(int objectId)
+    {
+        int result = Native.gge_object_is_visible(Handle, objectId);
+        if (result < 0)
+            throw new EngineException(Native.LastError());
+        return result == 1;
+    }
+
     // ---- 조명 (규약은 gge.h) ----
     public void SetAmbient(Vec3 rgb) => Check(Native.gge_renderer_set_ambient(Handle, rgb.X, rgb.Y, rgb.Z));
 
@@ -380,6 +396,12 @@ public sealed unsafe class EngineRenderer : IDisposable
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern int gge_object_set_casts_shadow(nint renderer, int objectId, int casts);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_object_set_visible(nint renderer, int objectId, int visible);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_object_is_visible(nint renderer, int objectId);
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern int gge_renderer_set_ambient(nint renderer, float r, float g, float b);

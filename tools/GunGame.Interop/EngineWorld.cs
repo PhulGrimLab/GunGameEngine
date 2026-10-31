@@ -67,6 +67,25 @@ public sealed unsafe class EngineWorld : IDisposable
     public int AddBoxCollider(float minX, float minZ, float maxX, float maxZ) =>
         CheckId(Native.gge_world_add_box_collider(Handle, minX, minZ, maxX, maxZ));
 
+    /// <summary>
+    /// 콜라이더를 켜거나 끈다(처음엔 모두 켜짐). 꺼진 콜라이더는 <see cref="MoveCircle"/>이 없는 것으로 본다. 켜는 순간 안에 겹쳐 있던 이동체는
+    /// 다음 MoveCircle(이동량 0이어도)에서 가장 가까운 면 바깥으로 밀려난다. 알 수 없는 ID면 <see cref="EngineException"/>.
+    /// </summary>
+    public void SetColliderEnabled(int colliderId, bool enabled)
+    {
+        if (Native.gge_world_set_collider_enabled(Handle, colliderId, enabled ? 1 : 0) == 0)
+            throw new EngineException(Native.LastError());
+    }
+
+    /// <summary>콜라이더가 켜져 있는가. 알 수 없는 ID면 <see cref="EngineException"/>.</summary>
+    public bool IsColliderEnabled(int colliderId)
+    {
+        int result = Native.gge_world_is_collider_enabled(Handle, colliderId);
+        if (result < 0)
+            throw new EngineException(Native.LastError());
+        return result == 1;
+    }
+
     /// <summary>반지름 radius인 원형 이동체를 pos에서 delta만큼 움직인 최종 위치(장애물에 막히면 벽을 따라 미끄러진다).</summary>
     public Vec2 MoveCircle(Vec2 pos, Vec2 delta, float radius)
     {
@@ -186,6 +205,12 @@ public sealed unsafe class EngineWorld : IDisposable
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern int gge_world_add_box_collider(nint world, float minX, float minZ, float maxX, float maxZ);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_world_set_collider_enabled(nint world, int colliderId, int enabled);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_world_is_collider_enabled(nint world, int colliderId);
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern int gge_world_move_circle(nint world, float x, float z, float dx, float dz, float radius, float* outXz);

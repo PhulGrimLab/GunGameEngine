@@ -112,6 +112,42 @@ public class SceneWriteApiTests
     }
 
     [Fact]
+    public void IsInsideTrigger_FollowsThePlayer_AndRejectsUnknownNames()
+    {
+        var (assets, renderer, scene) = LoadSample();
+        using (assets) using (renderer) using (scene)
+        {
+            Assert.True(scene.IsInsideTrigger("StartPad"));
+            Assert.False(scene.IsInsideTrigger("Door"));
+            scene.TeleportPlayer(4, 0);
+            Assert.False(scene.IsInsideTrigger("StartPad"));
+            Assert.True(scene.IsInsideTrigger("Door"));
+            EngineException ex = Assert.Throws<EngineException>(() => scene.IsInsideTrigger("Nope"));   // 밖(false)과 구별되는 실패
+            Assert.Contains("no trigger named 'Nope'", ex.Message);
+        }
+    }
+
+    [Fact]
+    public void NodePosition_CanBeReadAndMoved_ButNotForThePlayerOrUnknownNodes()
+    {
+        var (assets, renderer, scene) = LoadSample();
+        using (assets) using (renderer) using (scene)
+        {
+            Assert.Equal(new Vec3(-2, 0.5f, 2), scene.GetNodePosition("Pillar"));
+            Assert.Null(scene.GetNodePosition("Nobody"));
+
+            scene.SetNodePosition("Pillar", new Vec3(3, 1, -1));
+            Assert.Equal(new Vec3(3, 1, -1), scene.GetNodePosition("Pillar"));
+
+            EngineException player = Assert.Throws<EngineException>(() => scene.SetNodePosition("Hero", new Vec3(0, 0, 0)));
+            Assert.Contains("is the player", player.Message);
+            Assert.Contains("no node named 'Nobody'", Assert.Throws<EngineException>(() => scene.SetNodePosition("Nobody", new Vec3(0, 0, 0))).Message);
+            Assert.Contains("finite", Assert.Throws<EngineException>(() => scene.SetNodePosition("Pillar", new Vec3(float.NaN, 0, 0))).Message);
+            Assert.Equal(new Vec3(3, 1, -1), scene.GetNodePosition("Pillar"));   // 실패는 아무것도 바꾸지 않는다
+        }
+    }
+
+    [Fact]
     public void WriteApis_AfterDispose_ThrowObjectDisposed()
     {
         var (assets, renderer, scene) = LoadSample();
@@ -120,6 +156,9 @@ public class SceneWriteApiTests
             scene.Dispose();
             Assert.Throws<ObjectDisposedException>(() => scene.SetTriggerEnabled("StartPad", false));
             Assert.Throws<ObjectDisposedException>(() => scene.TeleportPlayer(0, 0));
+            Assert.Throws<ObjectDisposedException>(() => scene.IsInsideTrigger("StartPad"));
+            Assert.Throws<ObjectDisposedException>(() => scene.GetNodePosition("Pillar"));
+            Assert.Throws<ObjectDisposedException>(() => scene.SetNodePosition("Pillar", new Vec3(0, 0, 0)));
         }
     }
 }

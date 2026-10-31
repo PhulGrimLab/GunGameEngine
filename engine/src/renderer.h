@@ -52,6 +52,7 @@ struct Object {
     DirectX::XMFLOAT3 color{0.8f, 0.8f, 0.8f};
     float alpha = 1;            // 1 = 불투명, 0 = 그리지 않음, 그 사이 = 알파 블렌딩(뒤에서 앞으로 정렬해 그린다)
     bool castsShadow = false;   // ShadowSettings가 켜져 있을 때 바닥 평면에 그림자를 드리운다
+    bool visible = true;        // false면 이 오브젝트와 모든 자손을 그리지 않는다(그림자 포함). 알파/그림자 설정과는 별개 상태다.
 
     // 스켈레탈 애니메이션 (skeleton이 0이면 정점을 바인드 포즈 그대로 그린다)
     int skeleton = 0;
@@ -65,6 +66,9 @@ struct Object {
     // 같을 때만 world를 믿는다. 오브젝트 변경 API는 이 값을 건드리지 않으며, 렌더 번호가 매번 올라가므로 낡은 값이 쓰이지 않는다.
     mutable DirectX::XMFLOAT4X4 world{};
     mutable uint64_t worldStamp = 0;
+    // 같은 방식의 "자기와 모든 조상이 보이는가" 캐시(Renderer::EffectivelyVisible 전용). 부모 체인을 오브젝트마다 거슬러 오르면 깊은 계층에서 O(깊이^2)다.
+    mutable uint64_t visibleStamp = 0;
+    mutable bool effectivelyVisible = true;
 };
 
 class Renderer {
@@ -109,6 +113,10 @@ public:
     void SetObjectColor(int id, DirectX::XMFLOAT3 color);
     void SetObjectAlpha(int id, float alpha);  // 유한한 0..1
     void SetObjectCastsShadow(int id, bool casts);
+    // 표시 여부(처음엔 true). false면 이 오브젝트와 모든 자손이 그려지지 않고 그림자도 드리우지 않으며 반투명 정렬에서도 빠진다. 알파와 별개라
+    // 다시 켜면 이전 알파/그림자 설정 그대로 돌아온다. 점광원은 오브젝트가 아니라서 영향받지 않는다.
+    void SetObjectVisible(int id, bool visible);
+    bool IsObjectVisible(int id);  // 이 오브젝트 자신의 플래그(부모가 숨겨졌는지는 보지 않는다)
 
     // 스키닝된 메시의 최대 조인트 인덱스가 스켈레톤 본 수보다 작아야 한다. skeleton 0이면 해제.
     void SetObjectSkeleton(int id, int skeleton);
@@ -145,6 +153,7 @@ private:
     DirectX::XMMATRIX LocalMatrix(const Object& o) const;
     // 부모 체인을 곱한 월드 행렬. Render 중 오브젝트마다 한 번만 계산하도록 캐시한다(깊은 계층에서 O(깊이^2) -> O(깊이)).
     DirectX::XMMATRIX CachedWorldMatrix(const Object& o) const;
+    bool EffectivelyVisible(const Object& o) const;  // 자기와 모든 조상의 visible이 true인가
     ComPtr<ID3D11ShaderResourceView> MakeTexture(const uint8_t* rgba, int width, int height);
 
     // Render 보조: 오브젝트 하나를 그린다. shadowPass면 그림자 투영 셰이더 경로를 쓴다.

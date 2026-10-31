@@ -11,7 +11,8 @@ public sealed class GltfException(string message, Exception? inner = null) : Exc
 /// glTF 2.0(.glb / .gltf)에서 메시·스켈레톤·애니메이션을 읽는다. 오른손 Y-up, CCW, UV 원점 좌상단이라 엔진 규약과 같다.
 /// 지원: 삼각형 프리미티브, POSITION/NORMAL/TEXCOORD_0/JOINTS_0/WEIGHTS_0, 스킨 1개, translation/rotation/scale 선형 채널.
 /// 미지원(오류): sparse 액세서, STEP/CUBICSPLINE 보간. 재질/텍스처는 무시한다(텍스처는 씬 노드가 따로 지정).
-/// 스킨이 있는 파일에서는 스킨된 프리미티브만 가져오고, 아르마추어 노드의 변환은 무시한다(Warnings에 보고).
+/// 스킨이 있는 파일에서는 스킨된 프리미티브만 가져온다. 루트 조인트 위쪽 조상 노드(아르마추어, Z-up 변환 노드 등)의 월드 변환은
+/// glTF 규격대로 조인트의 월드 변환에 포함해, 항등이 아니면 그 변환을 가진 합성 루트 본을 스켈레톤 맨 앞에 둔다(본 한도에 포함).
 /// </summary>
 public static class GltfImporter
 {
@@ -390,28 +391,62 @@ public static class GltfImporter
             if (inverseBind is not null && inverseBind.Length != count * 16)
                 throw new GltfException("inverseBindMatrices count does not match joints");
 
-            var parents = new int[count];
-            var ibmOut = new float[count * 16];
-            var translation = new float[count * 3];
-            var rotation = new float[count * 4];
-            var scale = new float[count * 3];
+            // glTF 규격: 월드 정점 = 정점 x 역바인드 x (조인트의 월드 변환). 조인트의 월드 변환에는 루트 조인트 위쪽 조상(아르마추어, Blender/COLLADA의
+            // Z-up 변환 노드 등)이 들어간다. 엔진 스켈레톤은 루트 본의 지역값만 쓰므로, 조상의 월드 변환이 항등이 아니면 그 변환을 가진
+            // 합성 루트 본을 맨 앞에 두고 원래 루트들을 그 아래에 매단다(애니메이션이 루트 조인트의 지역값을 덮어써도 조상 변환은 유지된다).
+            // 같은 조상 노드 아래의 루트들은 합성 본 하나를 나눠 쓴다.
+            var syntheticOfNode = new Dictionary<int, int>();   // 조상 노드 번호 -> 합성 본 번호
+            var syntheticWorld = new List<Matrix4x4>();
             for (int i = 0; i < count; i++)
             {
                 int old = order[i];
-                Node node = _nodes[jointNodes[old]];
-                parents[i] = originalParent[old] < 0 ? -1 : remap[originalParent[old]];
-                if (inverseBind is not null)
-                    Array.Copy(inverseBind, old * 16, ibmOut, i * 16, 16);
-                else
-                    for (int d = 0; d < 4; d++) ibmOut[i * 16 + d * 5] = 1;
-                translation[i * 3] = node.Translation.X; translation[i * 3 + 1] = node.Translation.Y; translation[i * 3 + 2] = node.Translation.Z;
-                rotation[i * 4] = node.Rotation.X; rotation[i * 4 + 1] = node.Rotation.Y; rotation[i * 4 + 2] = node.Rotation.Z; rotation[i * 4 + 3] = node.Rotation.W;
-                scale[i * 3] = node.Scale.X; scale[i * 3 + 1] = node.Scale.Y; scale[i * 3 + 2] = node.Scale.Z;
-
-                if (parents[i] < 0 && _nodes[jointNodes[old]].Parent >= 0 && !IsIdentity(World(_nodes[jointNodes[old]].Parent)))
-                    _warnings.Add("the armature node has a non-identity transform, which is ignored");
+                int ancestor = _nodes[jointNodes[old]].Parent;
+                if (originalParent[old] >= 0 || ancestor < 0 || syntheticOfNode.ContainsKey(ancestor))
+                    continue;
+                Matrix4x4 world = World(ancestor);
+                if (IsIdentity(world))
+                    continue;
+                syntheticOfNode[ancestor] = syntheticWorld.Count;
+                syntheticWorld.Add(world);
             }
-            return (new SkeletonData(parents, ibmOut, translation, rotation, scale), remap);
+            int extra = syntheticWorld.Count;
+            if (count + extra > MaxBones)
+                throw new GltfException($"skin has {count} joints plus {extra} for the armature transform; the engine supports at most {MaxBones}");
+
+            int total = count + extra;
+            var parents = new int[total];
+            var ibmOut = new float[total * 16];
+            var translation = new float[total * 3];
+            var rotation = new float[total * 4];
+            var scale = new float[total * 3];
+            for (int s = 0; s < extra; s++)
+            {
+                // 회전한 노드 위에 비균등 스케일 노드가 있으면 월드 변환이 전단이라 Decompose가 false를 돌려준다(.NET이 직접 확인해 줌).
+                if (!Matrix4x4.Decompose(syntheticWorld[s], out Vector3 sScale, out Quaternion sRotation, out Vector3 sTranslation))
+                    throw new GltfException("the transform above the skeleton cannot be expressed as translation/rotation/scale (it contains shear); apply it in the modeling tool before exporting");
+                parents[s] = -1;
+                for (int d = 0; d < 4; d++) ibmOut[s * 16 + d * 5] = 1;   // 정점에 가중치가 없는 본이라 역바인드는 쓰이지 않는다
+                translation[s * 3] = sTranslation.X; translation[s * 3 + 1] = sTranslation.Y; translation[s * 3 + 2] = sTranslation.Z;
+                rotation[s * 4] = sRotation.X; rotation[s * 4 + 1] = sRotation.Y; rotation[s * 4 + 2] = sRotation.Z; rotation[s * 4 + 3] = sRotation.W;
+                scale[s * 3] = sScale.X; scale[s * 3 + 1] = sScale.Y; scale[s * 3 + 2] = sScale.Z;
+            }
+            for (int i = 0; i < count; i++)
+            {
+                int old = order[i];
+                int bone = extra + i;
+                Node node = _nodes[jointNodes[old]];
+                parents[bone] = originalParent[old] >= 0 ? extra + remap[originalParent[old]]
+                              : syntheticOfNode.TryGetValue(node.Parent, out int synthetic) ? synthetic : -1;
+                if (inverseBind is not null)
+                    Array.Copy(inverseBind, old * 16, ibmOut, bone * 16, 16);
+                else
+                    for (int d = 0; d < 4; d++) ibmOut[bone * 16 + d * 5] = 1;
+                translation[bone * 3] = node.Translation.X; translation[bone * 3 + 1] = node.Translation.Y; translation[bone * 3 + 2] = node.Translation.Z;
+                rotation[bone * 4] = node.Rotation.X; rotation[bone * 4 + 1] = node.Rotation.Y; rotation[bone * 4 + 2] = node.Rotation.Z; rotation[bone * 4 + 3] = node.Rotation.W;
+                scale[bone * 3] = node.Scale.X; scale[bone * 3 + 1] = node.Scale.Y; scale[bone * 3 + 2] = node.Scale.Z;
+            }
+            // 호출자는 원래 조인트 번호 -> 최종 본 번호로 정점/클립을 다시 매긴다(합성 본이 앞에 있으니 그만큼 밀린다).
+            return (new SkeletonData(parents, ibmOut, translation, rotation, scale), remap.Select(r => r + extra).ToArray());
         }
 
         private static bool IsIdentity(Matrix4x4 m) =>
@@ -430,6 +465,7 @@ public static class GltfImporter
             var indices = new List<uint>();
             var joints = new List<uint>();
             var weights = new List<float>();
+            var materialsUsed = new HashSet<int>();   // 가져온 프리미티브가 쓰는 재질 번호(재질 없음 = -1)
             if (!_root.TryGetProperty("meshes", out JsonElement meshes))
                 throw new GltfException("glTF has no meshes");
 
@@ -453,11 +489,15 @@ public static class GltfImporter
                         _warnings.Add("a non-skinned primitive was skipped because the model is skinned");
                         continue;
                     }
+                    materialsUsed.Add(prim.TryGetProperty("material", out JsonElement material) ? material.GetInt32() : -1);
                     AppendPrimitive(prim, attrs, skinned, skinned ? Matrix4x4.Identity : world, remap, vertices, indices, joints, weights);
                 }
             }
             if (indices.Count == 0)
                 throw new GltfException("glTF contains no triangle geometry");
+            // 메시는 하나로 합쳐지고 색/텍스처는 씬 노드 하나에 하나씩만 지정된다. 재질이 여럿이면 텍스처가 틀리게 나오므로 알려 준다.
+            if (materialsUsed.Count > 1)
+                _warnings.Add($"the model uses {materialsUsed.Count} materials, but materials and textures are not imported (one texture and color apply to the whole model); use a single material with a texture atlas");
             return (vertices.ToArray(), indices.ToArray(), skinned ? joints.ToArray() : null, skinned ? weights.ToArray() : null);
         }
 
@@ -515,12 +555,31 @@ public static class GltfImporter
             float[] w = ReadFloats(attrs.GetProperty("WEIGHTS_0").GetInt32(), 4);
             if (j.Length != count * 4 || w.Length != count * 4)
                 throw new GltfException("joint/weight counts do not match vertex count");
-            for (int k = 0; k < j.Length; k++)
+            // 가중치가 하나도 없는 정점(헬멧/장식 같은 비스킨 부품에 흔하다)은 규격상 스킨 행렬 합이 0이라 정의되지 않는다. 엔진은 "본 0에 고정"하지만
+            // 본 0이 합성 루트 본(조상 변환만 가짐, remap의 최솟값 앞)일 수 있으므로, 첫 번째 실제 조인트에 가중치 1로 묶어 부품이 모델과 같이 움직이게 한다.
+            int firstRealBone = remap.Min();
+            for (int v = 0; v < count; v++)
             {
-                if (w[k] > 0 && j[k] >= remap.Length)
-                    throw new GltfException($"vertex references joint {j[k]} but the skin has {remap.Length} joints");
-                joints.Add(w[k] > 0 ? (uint)remap[j[k]] : 0);
-                weights.Add(w[k]);
+                float total = 0;
+                for (int k = 0; k < 4; k++)
+                {
+                    if (!float.IsFinite(w[v * 4 + k]))
+                        throw new GltfException($"vertex {v} has a non-finite joint weight");
+                    total += Math.Max(w[v * 4 + k], 0);
+                }
+                if (total <= 0)
+                {
+                    joints.AddRange([(uint)firstRealBone, 0, 0, 0]);
+                    weights.AddRange([1f, 0, 0, 0]);
+                    continue;
+                }
+                for (int k = v * 4; k < v * 4 + 4; k++)
+                {
+                    if (w[k] > 0 && j[k] >= remap.Length)
+                        throw new GltfException($"vertex references joint {j[k]} but the skin has {remap.Length} joints");
+                    joints.Add(w[k] > 0 ? (uint)remap[j[k]] : 0);
+                    weights.Add(w[k]);
+                }
             }
         }
 

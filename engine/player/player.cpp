@@ -9,7 +9,8 @@
 //   --no-retro         PS1풍 효과(버텍스 스냅, 15비트 색, 디더, 아핀 텍스처)를 끈다(기본은 에디터와 같게 모두 켬).
 //   --headless         창 없이 --frames만큼 진행하고 끝낸다(자동 검증용). 결과 요약을 한 줄 출력한다.
 //   --frames N         헤드리스에서 진행할 프레임 수(기본 1, 프레임당 1/30초).
-//   --keys 스크립트     헤드리스 입력 대본: "D:60,W:30,DW:20,-:10" = 키 조합을 프레임 수만큼 누름(W A S D, '-'은 아무것도 안 누름).
+//   --keys 스크립트     헤드리스 입력 대본: "D:60,W:30,DW:20,E:1,-:10" = 키 조합을 프레임 수만큼 누름(W A S D = 이동, E = 상호작용,
+//                      Q = 취소, M = 메뉴, '-'은 아무것도 안 누름). 동작 버튼은 누른 프레임에 한 번만 스크립트로 전달된다.
 //   --screenshot 파일   헤드리스 마지막 프레임을 PPM(P6)으로 저장한다.
 //   --script 파일.dll   게임 스크립트(C#, GunGame.Scripting의 IGameScript)를 .NET 런타임을 띄워 실행한다. 이벤트/프레임마다 호출되고
 //                      엔진 쓰기 API(트리거 켜기/끄기, 텔레포트)와 오브젝트 알파로 게임을 바꾼다. 스크립트 예외는 사유를 출력하고 종료(코드 1).
@@ -17,6 +18,7 @@
 //   --script-host-dir 폴더  GunGame.ScriptHost.dll이 있는 폴더(기본 <exe 폴더>\script_host; tools\GunGameTools.slnx 빌드가 채운다).
 //   --self-test        입력 매핑/대본 해석의 자체 검사를 하고 끝낸다.
 // 조작: WASD/방향키 또는 게임패드 왼쪽 스틱, Esc 종료. 입력은 활성 방 카메라 기준이다.
+//   동작 버튼(스크립트가 받는다): 상호작용 E/Enter/Space 또는 패드 A, 취소 Q/Backspace 또는 B, 메뉴 Tab/M 또는 Start.
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -48,6 +50,16 @@ struct Axes {
     float x = 0, y = 0;
 };
 
+// 동작 버튼(비트). 스크립트의 GameAction 번호는 비트 번호 + 1(Interact 1, Cancel 2, Menu 3)이다.
+constexpr unsigned kInteract = 1u << 0, kCancel = 1u << 1, kMenu = 1u << 2;
+constexpr int kActionCount = 3;
+
+// 한 프레임의 입력: 이동 축 + 눌려 있는 동작 버튼.
+struct Input {
+    Axes axes;
+    unsigned actions = 0;
+};
+
 // 키 네 개를 축으로: 오른쪽+/화면 위쪽+. 반대 키를 함께 누르면 상쇄된다.
 Axes AxesFromKeys(bool left, bool right, bool up, bool down)
 {
@@ -60,9 +72,19 @@ float ThumbToAxis(int value) { return std::max(-1.0f, std::min(1.0f, static_cast
 // 키보드가 눌려 있으면 키보드, 아니면 게임패드.
 Axes Combine(Axes keyboard, Axes gamepad) { return (keyboard.x != 0 || keyboard.y != 0) ? keyboard : gamepad; }
 
-// "D:60,W:30,DW:20,-:10" -> 프레임마다의 키 조합. 형식이 틀리면 false.
+// 이번 프레임에 새로 눌린(이전 프레임엔 안 눌렸던) 버튼들.
+unsigned NewlyPressed(unsigned held, unsigned previous) { return held & ~previous; }
+
+// 게임패드 버튼 비트(XINPUT_GAMEPAD_*): A 0x1000, B 0x2000, Start 0x0010.
+unsigned ActionsFromButtons(WORD buttons)
+{
+    return ((buttons & 0x1000) ? kInteract : 0u) | ((buttons & 0x2000) ? kCancel : 0u) | ((buttons & 0x0010) ? kMenu : 0u);
+}
+
+// "D:60,W:30,DW:20,-:10" -> 프레임마다의 키 조합(W A S D = 이동, E = 상호작용, Q = 취소, M = 메뉴). 형식이 틀리면 false.
 struct ScriptStep {
     Axes axes;
+    unsigned actions = 0;
     int frames = 0;
 };
 
@@ -80,12 +102,16 @@ bool ParseKeyScript(const std::string& text, std::vector<ScriptStep>& out)
         if (colon == std::string::npos || colon == 0 || colon + 1 >= item.size())
             return false;
         bool left = false, right = false, up = false, down = false;
+        unsigned actions = 0;
         for (char c : item.substr(0, colon)) {
             switch (std::toupper(static_cast<unsigned char>(c))) {
                 case 'A': left = true; break;
                 case 'D': right = true; break;
                 case 'W': up = true; break;
                 case 'S': down = true; break;
+                case 'E': actions |= kInteract; break;
+                case 'Q': actions |= kCancel; break;
+                case 'M': actions |= kMenu; break;
                 case '-': break;
                 default: return false;
             }
@@ -94,7 +120,7 @@ bool ParseKeyScript(const std::string& text, std::vector<ScriptStep>& out)
         long frames = std::strtol(item.c_str() + colon + 1, &end, 10);
         if (*end != '\0' || frames < 0 || frames > 1000000)
             return false;
-        out.push_back({AxesFromKeys(left, right, up, down), static_cast<int>(frames)});
+        out.push_back({AxesFromKeys(left, right, up, down), actions, static_cast<int>(frames)});
     }
     return !out.empty();
 }
@@ -123,15 +149,15 @@ public:
     Gamepad(const Gamepad&) = delete;
     Gamepad& operator=(const Gamepad&) = delete;
 
-    // 첫 번째로 연결된 패드의 왼쪽 스틱. 없으면 (0, 0).
-    Axes Read() const
+    // 첫 번째로 연결된 패드의 왼쪽 스틱과 버튼(A = 상호작용, B = 취소, Start = 메뉴). 없으면 아무것도 안 누른 상태.
+    Input Read() const
     {
         if (!_getState)
             return {};
         for (DWORD i = 0; i < 4; ++i) {
             XInputState s{};
             if (_getState(i, &s) == ERROR_SUCCESS)
-                return {ThumbToAxis(s.thumbLX), ThumbToAxis(s.thumbLY)};
+                return {{ThumbToAxis(s.thumbLX), ThumbToAxis(s.thumbLY)}, ActionsFromButtons(s.buttons)};
         }
         return {};
     }
@@ -143,6 +169,13 @@ private:
 };
 
 bool KeyDown(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
+
+// 키보드 동작 키: 상호작용 E/Enter/Space, 취소 Q/Backspace, 메뉴 Tab/M.
+unsigned KeyboardActions()
+{
+    return ((KeyDown('E') || KeyDown(VK_RETURN) || KeyDown(VK_SPACE)) ? kInteract : 0u) |
+           ((KeyDown('Q') || KeyDown(VK_BACK)) ? kCancel : 0u) | ((KeyDown(VK_TAB) || KeyDown('M')) ? kMenu : 0u);
+}
 
 // ---- 공통 ----
 struct Options {
@@ -271,6 +304,7 @@ struct Game {
     GgeRenderer* renderer = nullptr;
     GgeScene* scene = nullptr;
     std::unique_ptr<gge_player::ScriptHost> script;   // --script를 줬을 때만
+    unsigned heldActions = 0;                          // 지난 걸음에 눌려 있던 동작 버튼(새로 눌린 것을 가려내는 기준)
 
     // 렌더러와 씬을 만들고, 스크립트가 있으면 .NET을 올려 OnStart까지 부른다.
     bool Start(const Options& o, std::string& error)
@@ -324,17 +358,29 @@ bool PumpEvents(Game& game, std::string& events, std::string& error)
     return true;
 }
 
-// 고정 타임스텝 한 걸음: 엔진 진행 -> 이벤트(스크립트 OnTrigger) -> 스크립트 OnUpdate -> 업데이트가 만든 이벤트.
-// 이번 걸음의 이벤트 글을 frameEvents에 담는다. 실패하면 false(사유는 error).
-bool StepFrame(Game& game, Axes axes, std::string& frameEvents, std::string& error)
+// 고정 타임스텝 한 걸음: 엔진 진행 -> 이벤트(스크립트 OnTrigger) -> 새로 눌린 동작(OnAction, 각각 뒤에 이벤트) -> 스크립트 OnUpdate
+// -> 업데이트가 만든 이벤트. 이번 걸음의 이벤트 글을 frameEvents에 담는다. 실패하면 false(사유는 error).
+bool StepFrame(Game& game, const Input& input, std::string& frameEvents, std::string& error)
 {
-    if (!gge_scene_step(game.scene, axes.x, axes.y, kFrameSeconds)) {
+    if (!gge_scene_step(game.scene, input.axes.x, input.axes.y, kFrameSeconds)) {
         error = std::string("step failed: ") + gge_last_error();
         return false;
     }
     if (!PumpEvents(game, frameEvents, error))
         return false;
+    const unsigned pressed = NewlyPressed(input.actions, game.heldActions);
+    game.heldActions = input.actions;
     if (game.script) {
+        for (int i = 0; i < kActionCount; ++i) {
+            if (!(pressed & (1u << i)))
+                continue;
+            if (!game.script->OnAction(i + 1, error)) {
+                error = "script error: " + error;
+                return false;
+            }
+            if (!PumpEvents(game, frameEvents, error))
+                return false;
+        }
         if (!game.script->OnUpdate(kFrameSeconds, error)) {
             error = "script error: " + error;
             return false;
@@ -372,11 +418,11 @@ int RunHeadless(const Options& o)
             ++stepIndex;
             remainingInStep = stepIndex < script.size() ? script[stepIndex].frames : 0;
         }
-        Axes axes = stepIndex < script.size() ? script[stepIndex].axes : Axes{};
+        Input input = stepIndex < script.size() ? Input{script[stepIndex].axes, script[stepIndex].actions} : Input{};
         if (stepIndex < script.size())
             --remainingInStep;
         std::string frameEvents;
-        if (!StepFrame(game, axes, frameEvents, error)) {
+        if (!StepFrame(game, input, frameEvents, error)) {
             std::fprintf(stderr, "gge_player: %s\n", error.c_str());
             return 1;
         }
@@ -525,13 +571,14 @@ int RunInteractive(const Options& o)
 
         int steps = 0;
         while (accumulator >= kFrameSeconds && steps < kMaxCatchUpSteps) {
-            Axes keyboard = (GetForegroundWindow() == window.hwnd)
-                                ? AxesFromKeys(KeyDown('A') || KeyDown(VK_LEFT), KeyDown('D') || KeyDown(VK_RIGHT),
-                                               KeyDown('W') || KeyDown(VK_UP), KeyDown('S') || KeyDown(VK_DOWN))
-                                : Axes{};
-            Axes axes = Combine(keyboard, gamepad.Read());
+            const bool active = GetForegroundWindow() == window.hwnd;   // 창이 활성일 때만 키보드를 읽는다
+            Axes keyboard = active ? AxesFromKeys(KeyDown('A') || KeyDown(VK_LEFT), KeyDown('D') || KeyDown(VK_RIGHT),
+                                                  KeyDown('W') || KeyDown(VK_UP), KeyDown('S') || KeyDown(VK_DOWN))
+                                   : Axes{};
+            const Input pad = gamepad.Read();
+            const Input input{Combine(keyboard, pad.axes), (active ? KeyboardActions() : 0u) | pad.actions};
             std::string events;
-            if (!StepFrame(game, axes, events, error)) {
+            if (!StepFrame(game, input, events, error)) {
                 MessageBoxA(window.hwnd, error.c_str(), "GunGame Player", MB_OK | MB_ICONERROR);
                 std::fprintf(stderr, "gge_player: %s\n", error.c_str());
                 return 1;
@@ -599,6 +646,22 @@ int SelfTest()
     }
     for (const char* bad : {"", "D", "D:", ":5", "X:5", "D:-1", "D:abc", "D:5,", "D:5,,W:1", "D:5x"})
         check(!ParseKeyScript(bad, steps), (std::string("script rejects '") + bad + "'").c_str());
+
+    check(ParseKeyScript("E:1,-:2,q:1,M:1,DEQM:2", steps) && steps.size() == 5, "action script parses");
+    if (steps.size() == 5) {
+        check(steps[0].actions == kInteract && same(steps[0].axes, 0, 0) && steps[0].frames == 1, "E = interact");
+        check(steps[1].actions == 0, "'-' presses nothing");
+        check(steps[2].actions == kCancel, "q = cancel (lowercase)");
+        check(steps[3].actions == kMenu, "M = menu");
+        check(steps[4].actions == (kInteract | kCancel | kMenu) && same(steps[4].axes, 1, 0), "moves and actions combine");
+    }
+    check(NewlyPressed(kInteract, 0) == kInteract, "a button pressed now and not before is new");
+    check(NewlyPressed(kInteract, kInteract) == 0, "a held button is not new again");
+    check(NewlyPressed(0, kInteract) == 0, "releasing is not a press");
+    check(NewlyPressed(kInteract | kMenu, kInteract) == kMenu, "only the newly pressed button counts");
+    check(ActionsFromButtons(0x1000) == kInteract && ActionsFromButtons(0x2000) == kCancel && ActionsFromButtons(0x0010) == kMenu &&
+              ActionsFromButtons(0x1010) == (kInteract | kMenu) && ActionsFromButtons(0x0001) == 0,
+          "gamepad buttons map A/B/Start (other buttons ignored)");
 
     int w = 0, h = 0;
     check(ParseSize("320x240", w, h) && w == 320 && h == 240, "size parses");

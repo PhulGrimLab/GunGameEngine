@@ -19,6 +19,15 @@ public sealed class GltfBuilder
     public string Interpolation { get; set; } = "LINEAR";
     public float[]? ArmatureTranslation { get; set; }
     public float[]? StaticNodeTranslation { get; set; }
+
+    /// <summary>이 번호의 정점은 가중치가 전부 0이다(-1 = 없음). 영향 없는 정점의 처리를 보려는 용도.</summary>
+    public int UnweightedVertex { get; set; } = -1;
+
+    /// <summary>true면 정점 0의 첫 가중치가 NaN이다(임포터는 사유와 함께 거부해야 한다).</summary>
+    public bool NonFiniteWeight { get; set; }
+
+    /// <summary>true면 같은 스킨을 두 번 나열한다(임포터는 "multiple skins" 경고를 낸다).</summary>
+    public bool SecondSkin { get; set; }
     public List<(string Name, float Angle0, float Angle1)> Animations { get; } = [("bend", 0f, MathF.PI / 2)];
     public bool TruncateBuffer { get; set; }
 
@@ -143,10 +152,13 @@ public sealed class GltfBuilder
         if (Skinned)
         {
             var joints = new List<byte>();
+            int vertexIndex = 0;
             foreach ((int boneA, int boneB, float weightB) in vertexBones)
             {
                 joints.AddRange([(byte)JointIndex(boneA), (byte)JointIndex(boneB), 0, 0]);
-                weightList.AddRange([1 - weightB, weightB, 0, 0]);
+                weightList.AddRange(vertexIndex++ == UnweightedVertex ? [0f, 0, 0, 0] : [1 - weightB, weightB, 0, 0]);
+                if (NonFiniteWeight && vertexIndex == 1)
+                    weightList[^4] = float.NaN;
             }
             attributes["JOINTS_0"] = AddAccessor(joints.ToArray(), 5121, vertexCount, "VEC4");
             attributes["WEIGHTS_0"] = AddAccessor(Floats(weightList), 5126, vertexCount, "VEC4");
@@ -196,7 +208,8 @@ public sealed class GltfBuilder
                 ibm.AddRange(m);
             }
             int ibmAccessor = AddAccessor(Floats(ibm), 5126, n, "MAT4");
-            doc["skins"] = new[] { new { joints = jointNodes, inverseBindMatrices = ibmAccessor, skeleton = 1 } };
+            var skin = new { joints = jointNodes, inverseBindMatrices = ibmAccessor, skeleton = 1 };
+            doc["skins"] = SecondSkin ? new[] { skin, skin } : [skin];   // 두 번째 스킨은 임포터가 경고만 하고 무시한다
 
             if (Animations.Count > 0 || KeyedAnimations.Count > 0)
             {

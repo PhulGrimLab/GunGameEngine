@@ -36,24 +36,39 @@ public class SampleAssetTests
             [(1, [0f, 1.0f, 0f]), (2, [0f, 1.2f, 0f])]));
         builder.Write(target, "tentacle");
 
-        // 독립 플레이어/엔진 테스트가 쓰는 구운 샘플. 씬 JSON이나 형식이 바뀌면 다시 만들어야 한다(아래 BakedPlaySample_IsUpToDate가 알려 준다).
+        // 독립 플레이어/엔진 테스트가 쓰는 구운 샘플. 씬 JSON이나 형식이 바뀌면 다시 만들어야 한다(아래 BakedSample_IsUpToDate가 알려 준다: 구운 파일은 C++ 엔진 테스트와 플레이어 ctest가 그대로 읽는다).
         string? samples = FindSamples();
         if (samples is not null)
-            File.WriteAllBytes(Path.Combine(target, "play.ggs"), SceneBaker.BakeToBytes(SceneSerializer.Load(Path.Combine(samples, "play.scene.json"))));
+            foreach (string name in BakedSamples)
+                File.WriteAllBytes(Path.Combine(target, name + ".ggs"), SceneBaker.BakeToBytes(SceneSerializer.Load(Path.Combine(samples, name + ".scene.json"))));
+    }
+
+    // 씬 JSON에서 구워 저장소에 둔 샘플(.ggs). play_v1.ggs는 옛 형식(version 1)을 그대로 보존한 호환 확인용 파일이라 여기에 없다(재생성하지 않는다).
+    private static readonly string[] BakedSamples = ["play", "locked_door"];
+
+    [Theory]
+    [InlineData("play")]
+    [InlineData("locked_door")]
+    public void BakedSample_IsUpToDate(string name)
+    {
+        string? samples = FindSamples();
+        Assert.True(samples is not null, "assets/samples was not found above the test binaries");
+        string baked = Path.Combine(samples, name + ".ggs");
+        Assert.True(File.Exists(baked), $"assets/samples/{name}.ggs is missing (regenerate with GGE_WRITE_SAMPLES)");
+        byte[] expected = SceneBaker.BakeToBytes(SceneSerializer.Load(Path.Combine(samples, name + ".scene.json")));
+        Assert.True(expected.AsSpan().SequenceEqual(File.ReadAllBytes(baked)), $"{name}.ggs does not match {name}.scene.json: regenerate it with GGE_WRITE_SAMPLES");
     }
 
     [Fact]
-    public void BakedPlaySample_IsUpToDate()
+    public void PreservedVersion1Sample_IsReallyVersion1_AndIsNotRegenerated()
     {
-        // assets/samples/play.ggs는 play.scene.json을 구운 결과여야 한다(C++ 엔진 테스트와 플레이어가 이 파일을 그대로 읽는다).
-        // 어긋났다면: GGE_WRITE_SAMPLES=<assets/samples 폴더>로 이 테스트 클래스를 실행해 다시 만든다.
+        // play_v1.ggs는 version 1 시절의 play.ggs 그대로다. 호환 테스트(engine_tests, 퍼징)가 쓰므로 현재 형식으로 바뀌면 안 된다.
         string? samples = FindSamples();
-        Assert.True(samples is not null, "assets/samples was not found above the test binaries");
-        string baked = Path.Combine(samples, "play.ggs");
-        Assert.True(File.Exists(baked), "assets/samples/play.ggs is missing (regenerate with GGE_WRITE_SAMPLES)");
-
-        byte[] expected = SceneBaker.BakeToBytes(SceneSerializer.Load(Path.Combine(samples, "play.scene.json")));
-        Assert.True(expected.AsSpan().SequenceEqual(File.ReadAllBytes(baked)), "play.ggs does not match play.scene.json: regenerate it with GGE_WRITE_SAMPLES");
+        Assert.True(samples is not null);
+        byte[] bytes = File.ReadAllBytes(Path.Combine(samples, "play_v1.ggs"));
+        Assert.Equal(1u, BitConverter.ToUInt32(bytes, 4));
+        Assert.Equal(1986, bytes.Length);
+        Assert.NotEqual(bytes, File.ReadAllBytes(Path.Combine(samples, "play.ggs")));
     }
 
     [Fact]

@@ -256,6 +256,21 @@ GGE_API int gge_object_set_casts_shadow(GgeRenderer* r, int object_id, int casts
     return Guard([&] { r->impl.SetObjectCastsShadow(object_id, casts != 0); return 1; });
 }
 
+GGE_API int gge_object_set_visible(GgeRenderer* r, int object_id, int visible)
+{
+    return Guard([&] { r->impl.SetObjectVisible(object_id, visible != 0); return 1; });
+}
+
+GGE_API int gge_object_is_visible(GgeRenderer* r, int object_id)
+{
+    try {
+        return r->impl.IsObjectVisible(object_id) ? 1 : 0;
+    } catch (const std::exception& e) {
+        gge::LastError() = e.what();
+        return -1;
+    }
+}
+
 GGE_API int gge_renderer_set_ambient(GgeRenderer* r, float red, float green, float blue)
 {
     return Guard([&] { r->impl.SetAmbient({red, green, blue}); return 1; });
@@ -353,6 +368,21 @@ GGE_API int gge_world_get_room_camera(const GgeWorld* w, int room_id, float* eye
 GGE_API int gge_world_add_box_collider(GgeWorld* w, float min_x, float min_z, float max_x, float max_z)
 {
     return Guard([&] { return w->impl.AddBoxCollider(min_x, min_z, max_x, max_z); });
+}
+
+GGE_API int gge_world_set_collider_enabled(GgeWorld* w, int collider_id, int enabled)
+{
+    return Guard([&] { w->impl.SetColliderEnabled(collider_id, enabled != 0); return 1; });
+}
+
+GGE_API int gge_world_is_collider_enabled(const GgeWorld* w, int collider_id)
+{
+    try {
+        return w->impl.IsColliderEnabled(collider_id) ? 1 : 0;
+    } catch (const std::exception& e) {
+        gge::LastError() = e.what();
+        return -1;
+    }
 }
 
 GGE_API int gge_world_move_circle(const GgeWorld* w, float x, float z, float dx, float dz, float radius,
@@ -497,6 +527,110 @@ GGE_API int gge_scene_set_trigger_enabled(GgeScene* s, const char* trigger_name_
             throw std::runtime_error("no trigger named '" + name + "'");
         return count;
     });
+}
+
+GGE_API int gge_scene_set_collider_enabled(GgeScene* s, const char* collider_name_utf8, int enabled)
+{
+    return Guard([&] {
+        const std::string name = collider_name_utf8 ? collider_name_utf8 : "";
+        if (name.empty())
+            throw std::runtime_error("a collider name must not be empty (unnamed colliders cannot be addressed)");
+        const int count = s->impl.SetColliderEnabled(name, enabled != 0);
+        if (count == 0)
+            throw std::runtime_error("no collider named '" + name + "'");
+        return count;
+    });
+}
+
+GGE_API int gge_scene_is_inside_trigger(const GgeScene* s, const char* trigger_name_utf8)
+{
+    try {
+        return s->impl.IsInsideTrigger(trigger_name_utf8 ? trigger_name_utf8 : "") ? 1 : 0;
+    } catch (const std::exception& e) {
+        gge::LastError() = e.what();
+        return -1;
+    }
+}
+
+GGE_API int gge_scene_get_node_position(const GgeScene* s, const char* node_name_utf8, float* x, float* y, float* z)
+{
+    DirectX::XMFLOAT3 position;
+    const std::string name = node_name_utf8 ? node_name_utf8 : "";
+    if (!s->impl.GetNodePosition(name, position)) {
+        gge::LastError() = "no node named '" + name + "'";
+        return 0;
+    }
+    if (x)
+        *x = position.x;
+    if (y)
+        *y = position.y;
+    if (z)
+        *z = position.z;
+    return 1;
+}
+
+GGE_API int gge_scene_set_node_position(GgeScene* s, const char* node_name_utf8, float x, float y, float z)
+{
+    return Guard([&] { s->impl.SetNodePosition(node_name_utf8 ? node_name_utf8 : "", {x, y, z}); return 1; });
+}
+
+namespace {
+
+// 노드의 3값 읽기: getter(이름, 출력)가 false면 "no node named" 오류로 0.
+template <class Getter>
+int GetNodeVector(Getter&& getter, const char* node_name_utf8, float* x, float* y, float* z)
+{
+    DirectX::XMFLOAT3 v;
+    const std::string name = node_name_utf8 ? node_name_utf8 : "";
+    if (!getter(name, v)) {
+        gge::LastError() = "no node named '" + name + "'";
+        return 0;
+    }
+    if (x)
+        *x = v.x;
+    if (y)
+        *y = v.y;
+    if (z)
+        *z = v.z;
+    return 1;
+}
+
+}  // namespace
+
+GGE_API int gge_scene_get_node_rotation(const GgeScene* s, const char* node_name_utf8, float* x, float* y, float* z)
+{
+    return GetNodeVector([&](const std::string& n, DirectX::XMFLOAT3& v) { return s->impl.GetNodeRotation(n, v); }, node_name_utf8, x, y, z);
+}
+
+GGE_API int gge_scene_set_node_rotation(GgeScene* s, const char* node_name_utf8, float x, float y, float z)
+{
+    return Guard([&] { s->impl.SetNodeRotation(node_name_utf8 ? node_name_utf8 : "", {x, y, z}); return 1; });
+}
+
+GGE_API int gge_scene_get_node_scale(const GgeScene* s, const char* node_name_utf8, float* x, float* y, float* z)
+{
+    return GetNodeVector([&](const std::string& n, DirectX::XMFLOAT3& v) { return s->impl.GetNodeScale(n, v); }, node_name_utf8, x, y, z);
+}
+
+GGE_API int gge_scene_set_node_scale(GgeScene* s, const char* node_name_utf8, float x, float y, float z)
+{
+    return Guard([&] { s->impl.SetNodeScale(node_name_utf8 ? node_name_utf8 : "", {x, y, z}); return 1; });
+}
+
+GGE_API int gge_scene_get_node_visible(const GgeScene* s, const char* node_name_utf8)
+{
+    bool visible = false;
+    const std::string name = node_name_utf8 ? node_name_utf8 : "";
+    if (!s->impl.GetNodeVisible(name, visible)) {
+        gge::LastError() = "no node named '" + name + "'";
+        return -1;
+    }
+    return visible ? 1 : 0;
+}
+
+GGE_API int gge_scene_set_node_visible(GgeScene* s, const char* node_name_utf8, int visible)
+{
+    return Guard([&] { s->impl.SetNodeVisible(node_name_utf8 ? node_name_utf8 : "", visible != 0); return 1; });
 }
 
 GGE_API int gge_scene_teleport_player(GgeScene* s, float x, float z)

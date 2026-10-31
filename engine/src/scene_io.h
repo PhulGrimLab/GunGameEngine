@@ -68,6 +68,7 @@ struct SceneRoomData {
 };
 
 struct SceneColliderData {
+    std::string name;  // 빈 문자열 = 이름 없음(version 1 파일). 같은 이름이 여럿일 수 있다.
     float minX = 0, minZ = 0, maxX = 0, maxZ = 0;
 };
 

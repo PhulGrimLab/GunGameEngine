@@ -251,6 +251,129 @@ int Scene::SetTriggerEnabled(const std::string& name, bool enabled)
     return count;
 }
 
+int Scene::SetColliderEnabled(const std::string& name, bool enabled)
+{
+    int count = 0;
+    for (size_t i = 0; i < _data.colliders.size(); ++i)
+        if (_data.colliders[i].name == name) {
+            _world.SetColliderEnabled(static_cast<int>(i) + 1, enabled);   // 월드의 콜라이더 ID는 씬의 순서 + 1
+            ++count;
+        }
+    return count;
+}
+
+bool Scene::IsInsideTrigger(const std::string& name) const
+{
+    bool found = false, inside = false;
+    for (size_t i = 0; i < _data.triggers.size(); ++i)
+        if (_data.triggers[i].name == name) {
+            found = true;
+            inside = inside || _world.IsInsideTrigger(static_cast<int>(i) + 1);
+        }
+    if (!found)
+        throw std::runtime_error("no trigger named '" + name + "'");
+    return inside;
+}
+
+namespace {
+int FindNodeIndex(const SceneData& data, size_t objectCount, const std::string& name)
+{
+    for (size_t i = 0; i < data.nodes.size() && i < objectCount; ++i)
+        if (data.nodes[i].name == name)
+            return static_cast<int>(i);
+    return -1;
+}
+}  // namespace
+
+bool Scene::GetNodePosition(const std::string& nodeName, DirectX::XMFLOAT3& out) const
+{
+    const int index = FindNodeIndex(_data, _objectIds.size(), nodeName);
+    if (index < 0)
+        return false;
+    out = _data.nodes[static_cast<size_t>(index)].position;
+    return true;
+}
+
+size_t Scene::EditableNodeIndex(const std::string& nodeName) const
+{
+    const int index = FindNodeIndex(_data, _objectIds.size(), nodeName);
+    if (index < 0)
+        throw std::runtime_error("no node named '" + nodeName + "'");
+    if (_player.present && index == _player.node)
+        throw std::runtime_error("node '" + nodeName + "' is the player; its position, rotation and scale follow the player (use teleport_player to move it)");
+    return static_cast<size_t>(index);
+}
+
+namespace {
+void RequireFiniteVector(const DirectX::XMFLOAT3& v, const char* what)
+{
+    if (!std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z))
+        throw std::runtime_error(std::string("node ") + what + " must be finite");
+}
+}  // namespace
+
+void Scene::SetNodePosition(const std::string& nodeName, DirectX::XMFLOAT3 position)
+{
+    const size_t index = EditableNodeIndex(nodeName);
+    RequireFiniteVector(position, "position");
+    SceneNodeData& node = _data.nodes[index];
+    _renderer.SetObjectTransform(_objectIds[index], position, node.rotation, node.scale);
+    node.position = position;   // 렌더러가 받아들인 뒤에만 기록한다
+}
+
+bool Scene::GetNodeRotation(const std::string& nodeName, DirectX::XMFLOAT3& out) const
+{
+    const int index = FindNodeIndex(_data, _objectIds.size(), nodeName);
+    if (index < 0)
+        return false;
+    out = _data.nodes[static_cast<size_t>(index)].rotation;
+    return true;
+}
+
+void Scene::SetNodeRotation(const std::string& nodeName, DirectX::XMFLOAT3 rotation)
+{
+    const size_t index = EditableNodeIndex(nodeName);
+    RequireFiniteVector(rotation, "rotation");
+    SceneNodeData& node = _data.nodes[index];
+    _renderer.SetObjectTransform(_objectIds[index], node.position, rotation, node.scale);
+    node.rotation = rotation;
+}
+
+bool Scene::GetNodeScale(const std::string& nodeName, DirectX::XMFLOAT3& out) const
+{
+    const int index = FindNodeIndex(_data, _objectIds.size(), nodeName);
+    if (index < 0)
+        return false;
+    out = _data.nodes[static_cast<size_t>(index)].scale;
+    return true;
+}
+
+void Scene::SetNodeScale(const std::string& nodeName, DirectX::XMFLOAT3 scale)
+{
+    const size_t index = EditableNodeIndex(nodeName);
+    RequireFiniteVector(scale, "scale");
+    SceneNodeData& node = _data.nodes[index];
+    _renderer.SetObjectTransform(_objectIds[index], node.position, node.rotation, scale);
+    node.scale = scale;
+}
+
+bool Scene::GetNodeVisible(const std::string& nodeName, bool& out) const
+{
+    const int index = FindNodeIndex(_data, _objectIds.size(), nodeName);
+    if (index < 0)
+        return false;
+    out = _renderer.IsObjectVisible(_objectIds[static_cast<size_t>(index)]);
+    return true;
+}
+
+void Scene::SetNodeVisible(const std::string& nodeName, bool visible)
+{
+    const int index = FindNodeIndex(_data, _objectIds.size(), nodeName);
+    if (index < 0)
+        throw std::runtime_error("no node named '" + nodeName + "'");
+    _renderer.SetObjectVisible(_objectIds[static_cast<size_t>(index)], visible);   // 플레이어 노드도 숨길 수 있다(컷신/퇴장)
+}
+
 void Scene::TeleportPlayer(float x, float z)
 {
     if (!_player.present)

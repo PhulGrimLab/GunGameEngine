@@ -115,6 +115,13 @@ public sealed class ScriptRunner
             Invoke(name, nameof(IGameScript.OnTrigger), () => script.OnTrigger(_context, trigger));
     }
 
+    public void HandleAction(GameAction action)
+    {
+        EnsureStarted();
+        foreach ((string name, IGameScript script) in _scripts)
+            Invoke(name, nameof(IGameScript.OnAction), () => script.OnAction(_context, action));
+    }
+
     public void Update(float deltaSeconds)
     {
         EnsureStarted();

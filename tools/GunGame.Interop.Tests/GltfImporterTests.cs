@@ -1,3 +1,4 @@
+using System.Numerics;
 using GunGame.Interop;
 
 namespace GunGame.Interop.Tests;
@@ -117,12 +118,31 @@ public class GltfImporterTests
     }
 
     [Fact]
-    public void Import_NonIdentityArmature_WarnsButSucceeds()
+    public void Import_NonIdentityArmature_BecomesASyntheticRootBone_AndMovesTheWholeModel()
     {
         using var assets = new TestAssets();
-        ImportedModel model = Import(new GltfBuilder { ArmatureTranslation = [0, 5, 0] }, assets);
-        Assert.Contains(model.Warnings, w => w.Contains("armature"));
-        Assert.NotNull(model.Skeleton);
+        ImportedModel plain = Import(new GltfBuilder(), assets, "plain");
+        ImportedModel moved = Import(new GltfBuilder { ArmatureTranslation = [0, 5, 0] }, assets, "moved");
+
+        Assert.Empty(moved.Warnings);  // 이제 무시하지 않고 반영한다
+        SkeletonData skeleton = moved.Skeleton!;
+        Assert.Equal([-1, 0, 1, 2], skeleton.Parents);                        // 합성 본(0)이 원래 루트 본(1)의 부모
+        Assert.Equal([0f, 5, 0], skeleton.RestTranslation[..3]);
+        Assert.Equal([0f, 0, 0, 1], skeleton.RestRotation[..4]);
+        Assert.Equal([1f, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], skeleton.InverseBind[..16]);
+        Assert.Equal(plain.Skeleton!.InverseBind, skeleton.InverseBind[16..]);  // 실제 본의 역바인드는 그대로(한 칸 뒤)
+        // 정점의 조인트와 클립 채널의 본 번호는 한 칸씩 밀린다(가중치 0인 슬롯은 0 그대로).
+        Assert.Equal(plain.Joints!.Select((j, i) => plain.Weights![i] > 0 ? j + 1 : 0u), moved.Joints!);
+        Assert.Equal(plain.Clips[0].Channels[0].Bone + 1, moved.Clips[0].Channels[0].Bone);
+
+        // 엔진에서 실제로 모든 정점이 (0,5,0)만큼 올라가 있다: 레스트 포즈와 클립 중간 시점 모두.
+        foreach ((int? clip, float time) in new (int?, float)[] { (null, 0f), (0, 0.5f) })
+        {
+            Vector3[] before = RealGltfModelTests.EnginePositions(plain, clip, time);
+            Vector3[] after = RealGltfModelTests.EnginePositions(moved, clip, time);
+            for (int v = 0; v < before.Length; v++)
+                Assert.True(Vector3.Distance(before[v] + new Vector3(0, 5, 0), after[v]) < 1e-4f, $"vertex {v} at clip {clip}: {before[v]} -> {after[v]}");
+        }
     }
 
     [Fact]
