@@ -195,6 +195,32 @@ public sealed unsafe class EngineScene : IDisposable
             throw new EngineException(Native.LastError());
     }
 
+    // ---- 동적 오브젝트(생성/삭제; 규칙은 gge.h와 같다) ----
+    /// <summary>
+    /// 씬 파일의 노드(템플릿)와 모든 자손을 복제한다. 복제 루트 이름 = <paramref name="instanceName"/>, 자손 이름 = "인스턴스/원래이름".
+    /// 시작 상태는 템플릿의 구운 값(템플릿을 스크립트가 바꿔도 영향 없음)이고 <paramref name="position"/>은 템플릿과 같은 부모 기준의 로컬 위치다.
+    /// 없는 템플릿/복제본·플레이어 템플릿/잘못된 또는 이미 있는 이름/비유한 값/한도 초과(복제 노드 256, step당 spawn 64, 깊이 16)는
+    /// <see cref="EngineException"/>이며 상태는 그대로다.
+    /// </summary>
+    public void SpawnObject(string templateName, string instanceName, Vec3 position)
+    {
+        if (Native.gge_scene_spawn_object(Handle, templateName, instanceName, position.X, position.Y, position.Z) == 0)
+            throw new EngineException(Native.LastError());
+    }
+
+    /// <summary>SpawnObject로 만든 인스턴스(루트 이름)를 자손까지 지운다. 씬 파일의 노드/복제본의 자손/없는 이름은 <see cref="EngineException"/>.</summary>
+    public void DestroyObject(string instanceName)
+    {
+        if (Native.gge_scene_destroy_object(Handle, instanceName) == 0)
+            throw new EngineException(Native.LastError());
+    }
+
+    /// <summary>그 이름의 노드가 있는가(씬 파일/복제 구분 없음).</summary>
+    public bool ObjectExists(string nodeName) => Native.gge_scene_object_exists(Handle, nodeName) == 1;
+
+    /// <summary>살아 있는 복제 노드 수(자손 포함).</summary>
+    public int DynamicNodeCount => Native.gge_scene_get_dynamic_node_count(Handle);
+
     // ---- 클립 재생(스킨 메시 노드, 플레이어 노드 포함; 규칙은 gge.h와 C# AnimationPlayer와 같다) ----
     /// <summary>
     /// 노드의 클립을 0초부터 재생한다. 이미 그 클립이 현재 클립이면(loop가 달라도) 아무것도 하지 않는다: 끝난 한 번 재생 클립이나 반복 중인 클립을 loop만 바꿔
@@ -332,6 +358,18 @@ public sealed unsafe class EngineScene : IDisposable
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern int gge_scene_set_node_visible(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string nodeName, int visible);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_spawn_object(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string templateName, [MarshalAs(UnmanagedType.LPUTF8Str)] string instanceName, float x, float y, float z);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_destroy_object(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string instanceName);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_object_exists(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string nodeName);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_get_dynamic_node_count(nint scene);
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern int gge_scene_play_clip(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string nodeName, [MarshalAs(UnmanagedType.LPUTF8Str)] string clipName, float fadeSeconds, int restart, int loop);

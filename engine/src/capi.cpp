@@ -218,6 +218,8 @@ GGE_API int gge_object_destroy(GgeRenderer* r, int object_id)
     return Guard([&] { r->impl.DestroyObject(object_id); return 1; });
 }
 
+GGE_API int gge_renderer_get_object_count(const GgeRenderer* r) { return r->impl.ObjectCount(); }
+
 GGE_API int gge_object_set_parent(GgeRenderer* r, int object_id, int parent_id)
 {
     return Guard([&] { r->impl.SetObjectParent(object_id, parent_id); return 1; });
@@ -688,6 +690,34 @@ GGE_API int gge_scene_get_node_visible(const GgeScene* s, const char* node_name_
 GGE_API int gge_scene_set_node_visible(GgeScene* s, const char* node_name_utf8, int visible)
 {
     return Guard([&] { s->impl.SetNodeVisible(node_name_utf8 ? node_name_utf8 : "", visible != 0); return 1; });
+}
+
+GGE_API int gge_scene_spawn_object(GgeScene* s, const char* template_name_utf8, const char* instance_name_utf8, float x, float y, float z)
+{
+    return Guard([&] {
+        s->impl.SpawnObject(template_name_utf8 ? template_name_utf8 : "", instance_name_utf8 ? instance_name_utf8 : "", {x, y, z});
+        return 1;
+    });
+}
+
+GGE_API int gge_scene_destroy_object(GgeScene* s, const char* instance_name_utf8)
+{
+    return Guard([&] { s->impl.DestroyObject(instance_name_utf8 ? instance_name_utf8 : ""); return 1; });
+}
+
+GGE_API int gge_scene_object_exists(const GgeScene* s, const char* node_name_utf8)
+{
+    return s->impl.ObjectExists(node_name_utf8 ? node_name_utf8 : "") ? 1 : 0;
+}
+
+GGE_API int gge_scene_get_dynamic_node_count(const GgeScene* s) { return s->impl.DynamicNodeCount(); }
+
+GGE_API int gge_scene_get_node_slot_count(const GgeScene* s) { return s->impl.NodeSlotCount(); }
+
+GGE_API int gge_scene_set_spawn_failure_for_tests(GgeScene* s, int after_nodes)
+{
+    s->impl.FailSpawnAfterNodesForTests(after_nodes);
+    return 1;
 }
 
 GGE_API int gge_scene_teleport_player(GgeScene* s, float x, float z)

@@ -153,11 +153,39 @@ public interface IAnimationApi
 }
 
 /// <summary>
-/// 스크립트가 게임 세계를 읽고 바꾸는 창구: <see cref="IWorldApi"/>(플레이어/방/트리거/충돌체) + <see cref="IObjectApi"/>(노드 변환/표시/알파) +
-/// <see cref="IAnimationApi"/>(클립 재생) + 로그. 호출은 모두 게임 스레드에서 이벤트/업데이트 처리 도중에 일어나며, 실패하면 예외를 던진다
-/// (스크립트가 예외를 처리하지 않으면 플레이어는 사유를 출력하고 종료한다).
+/// 오브젝트 생성/삭제: 씬 파일의 <b>템플릿 노드</b>(와 모든 자손)를 복제해 런타임에 인스턴스를 만든다(총알, 아이템, 적 ...). 메시/텍스처/스켈레톤/클립은
+/// 템플릿과 공유하고 오브젝트만 새로 만든다. 템플릿은 에디터에서 평범한 노드로 만들고 화면에 보이지 않게 해 두면 된다: 구운 노드는 항상 보이는 상태로 시작하므로
+/// <c>OnStart</c>에서 <see cref="IObjectApi.SetObjectVisible"/>(false)로 숨기거나 화면 밖에 두는 것이 관례다(복제는 템플릿의 <b>구운 값</b>으로 시작하므로
+/// 숨기거나 옮겨도 복제본은 영향을 받지 않고 항상 보인다).
+/// <para>이름: 복제 루트 = 인스턴스 이름, 자손 = "인스턴스/원래이름". 이후 <see cref="IObjectApi"/>/<see cref="IAnimationApi"/>의 모든 이름 기반 API가 이 이름으로 동작한다.</para>
 /// </summary>
-public interface IScriptContext : IWorldApi, IObjectApi, IAnimationApi
+public interface ISpawnApi
+{
+    /// <summary>
+    /// 템플릿을 복제해 인스턴스를 만든다. 위치는 <b>템플릿과 같은 부모 기준의 로컬 좌표</b>다(템플릿의 부모가 루트가 아니면 월드 좌표와 다르다). 회전/크기는 템플릿의 구운 값이라
+    /// 방향은 직후에 <see cref="IObjectApi.SetObjectRotation"/>으로 정한다(그 사이 프레임이 지나지 않으므로 한 프레임도 잘못된 방향으로 그려지지 않는다).
+    /// 그런 템플릿이 없으면 false. 인스턴스 이름이 비었거나 '/'를 포함하거나 128바이트를 넘거나 이미 있는 노드 이름(자손 이름 "인스턴스/원래이름" 포함)과 같거나,
+    /// 템플릿이 복제본/플레이어(를 포함)거나, 값이 유한하지 않거나, 한도(살아 있는 복제 노드 256개, 한 프레임 spawn 64번, 서브트리 깊이 16)를 넘으면 예외이며
+    /// 아무것도 만들어지지 않는다. 조명/충돌체/트리거는 복제하지 않는다.
+    /// </summary>
+    bool SpawnObject(string templateName, string instanceName, float x, float y, float z);
+
+    /// <summary>
+    /// <see cref="SpawnObject"/>로 만든 인스턴스(루트 이름)를 자손까지 지운다. 이름은 다시 쓸 수 있다. 그런 노드가 없으면 false.
+    /// 씬 파일의 노드, 복제본의 자손 단독이면 예외(씬 노드는 <see cref="IObjectApi.SetObjectVisible"/>로 숨긴다). 지운 뒤 그 이름의 API는 "없는 노드" 규칙을 따른다.
+    /// </summary>
+    bool DestroyObject(string instanceName);
+
+    /// <summary>그 이름의 노드가 있는가(씬 파일/복제 구분 없음).</summary>
+    bool ObjectExists(string nodeName);
+}
+
+/// <summary>
+/// 스크립트가 게임 세계를 읽고 바꾸는 창구: <see cref="IWorldApi"/>(플레이어/방/트리거/충돌체) + <see cref="IObjectApi"/>(노드 변환/표시/알파) +
+/// <see cref="IAnimationApi"/>(클립 재생) + <see cref="ISpawnApi"/>(생성/삭제) + 로그. 호출은 모두 게임 스레드에서 이벤트/업데이트 처리 도중에 일어나며,
+/// 실패하면 예외를 던진다(스크립트가 예외를 처리하지 않으면 플레이어는 사유를 출력하고 종료한다).
+/// </summary>
+public interface IScriptContext : IWorldApi, IObjectApi, IAnimationApi, ISpawnApi
 {
     /// <summary>플레이어 프로세스의 표준 오류에 "[script] 메시지"를 남긴다.</summary>
     void Log(string message);

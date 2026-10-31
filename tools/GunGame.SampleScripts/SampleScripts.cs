@@ -120,6 +120,7 @@ public sealed class LockedDoor : IGameScript
 /// <summary>
 /// 플레이어의 걷기/대기 애니메이션 자동 전환(assets/samples/walk_animation.scene.json): 실제로 움직이는 중(PlayerSpeed)이면 walk, 아니면 idle.
 /// 벽을 정면으로 밀면 PlayerSpeed가 0이라 idle이 된다. 매 프레임 PlayClip을 불러도 같은 클립이면 무시되어 되감기지 않는다.
+/// 문턱 근처에서 깜빡이면 히스테리시스(켜는 문턱 > 끄는 문턱)를 두면 되지만 샘플은 단순하게 둔다.
 /// 이 패턴이 여러 게임에서 반복되면 씬 데이터 필드(.ggs v3)로 올리는 것을 검토한다.
 /// </summary>
 public sealed class PlayerWalkAnimation : IGameScript
@@ -129,6 +130,52 @@ public sealed class PlayerWalkAnimation : IGameScript
 
     public void OnUpdate(IScriptContext context, float deltaSeconds) =>
         context.PlayClip("Hero", context.PlayerSpeed > WalkSpeedThreshold ? "walk" : "idle", FadeSeconds);
+}
+
+/// <summary>
+/// 오브젝트 생성/삭제(assets/samples/spawner.scene.json): 씬의 템플릿 노드 Crate(자손 Lid 포함)를 시작할 때 숨기고,
+/// 상호작용 버튼을 누를 때마다 플레이어 위치에 복제(Crate1, Crate2, ...)를 만들며, 취소 버튼은 가장 최근 복제를 지운다.
+/// 템플릿 숨기기는 구운 데이터에 '템플릿' 표식이 없어서 쓰는 관례이고, 복제는 템플릿의 구운 값(위치/크기/색)으로 시작하므로 숨긴 템플릿과 무관하게 보인다.
+/// </summary>
+public sealed class Spawner : IGameScript
+{
+    private readonly Stack<string> _spawned = new();
+    private int _counter;
+
+    public void OnStart(IScriptContext context) => context.SetObjectVisible("Crate", false);
+
+    public void OnAction(IScriptContext context, GameAction action)
+    {
+        if (action == GameAction.Interact)
+        {
+            (float X, float Z) player = context.PlayerPosition ?? throw new InvalidOperationException("the scene has no player");
+            string name = $"Crate{++_counter}";
+            // 위치는 템플릿과 같은 부모(여기서는 루트) 기준이다. 높이는 템플릿의 구운 값(0.3)을 따른다.
+            context.SpawnObject("Crate", name, player.X, 0.3f, player.Z);
+            _spawned.Push(name);
+            context.Log($"spawned {name} at {player.X:F2}, {player.Z:F2}");
+        }
+        else if (action == GameAction.Cancel)
+        {
+            if (!_spawned.TryPop(out string? name))
+            {
+                context.Log("nothing to destroy");
+                return;
+            }
+            context.DestroyObject(name);
+            context.Log($"destroyed {name}");
+        }
+    }
+}
+
+/// <summary>한 프레임에 한도(64)보다 많이 만들려고 한다(한도 초과가 사유와 함께 스크립트 예외가 되어 플레이어가 멈추는지 확인용).</summary>
+public sealed class SpawnFlood : IGameScript
+{
+    public void OnAction(IScriptContext context, GameAction action)
+    {
+        for (int i = 0; i < 65; ++i)
+            context.SpawnObject("Crate", $"Flood{i}", 0, 0.3f, 0);
+    }
 }
 
 /// <summary>업데이트가 30번 불린 프레임(1초 뒤)에 플레이어를 Annex로 옮긴다(OnUpdate 호출 확인용).</summary>

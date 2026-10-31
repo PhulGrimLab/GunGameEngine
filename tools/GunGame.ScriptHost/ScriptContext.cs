@@ -113,6 +113,26 @@ internal sealed class ScriptContext(EngineRenderer renderer, EngineScene scene, 
 
     private bool NodeExists(string nodeName) => scene.IsNodeVisible(nodeName) is not null;
 
+    // ---- ISpawnApi ----
+    // 없는 템플릿/인스턴스는 false(다른 쓰기 API와 같은 규칙), 이름 충돌/한도/씬 노드 삭제 같은 실제 오류는 엔진의 사유가 담긴 예외다.
+    public bool SpawnObject(string templateName, string instanceName, float x, float y, float z)
+    {
+        if (!NodeExists(templateName))
+            return false;
+        scene.SpawnObject(templateName, instanceName, new Vec3(x, y, z));
+        return true;
+    }
+
+    public bool DestroyObject(string instanceName)
+    {
+        if (!NodeExists(instanceName))
+            return false;
+        scene.DestroyObject(instanceName);
+        return true;
+    }
+
+    public bool ObjectExists(string nodeName) => scene.ObjectExists(nodeName);
+
     // ---- 로그 ----
     public void Log(string message) => log.WriteLine("[script] " + message);
 }

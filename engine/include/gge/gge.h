@@ -84,6 +84,8 @@ GGE_API int gge_clip_destroy(GgeRenderer* r, int clip_id);
 GGE_API int gge_object_create(GgeRenderer* r, int mesh_id, int texture_id, int parent_id);
 // 자손까지 함께 제거한다.
 GGE_API int gge_object_destroy(GgeRenderer* r, int object_id);
+// 살아 있는 오브젝트 수(씬이 만든 것 포함). 진단/누수 검사용.
+GGE_API int gge_renderer_get_object_count(const GgeRenderer* r);
 // 순환이 생기는 부모 지정은 실패한다.
 GGE_API int gge_object_set_parent(GgeRenderer* r, int object_id, int parent_id);
 GGE_API int gge_object_set_mesh(GgeRenderer* r, int object_id, int mesh_id);
@@ -282,7 +284,7 @@ GGE_API int gge_scene_stop_clip(GgeScene* s, const char* node_name_utf8);
 GGE_API int gge_scene_set_clip_speed(GgeScene* s, const char* node_name_utf8, float speed);
 // playing == 0이면 일시정지(시간과 크로스페이드 진행이 모두 멈춘다), 아니면 재개. 한 번 재생이 끝난 뒤에도 이 값은 그대로(끝남은 finished로 따로 본다).
 GGE_API int gge_scene_set_clip_playing(GgeScene* s, const char* node_name_utf8, int playing);
-// 현재 재생 상태. clip_name은 재생 중인 클립 이름(레스트 포즈면 빈 문자열, 다음 호출 전까지 유효한 UTF-8), time은 그 클립의 현재 시간(초),
+// 현재 재생 상태. clip_name은 재생 중인 클립 이름(레스트 포즈면 빈 문자열, 같은 씬의 다음 gge_scene_get_node_animation 호출 전까지 유효한 UTF-8 - 그 사이 다른 API를 불러도 바뀌지 않지만 다음 호출이 덮어쓰니 필요하면 복사), time은 그 클립의 현재 시간(초),
 // fading은 크로스페이드 중인가, loop는 반복인가, finished는 한 번 재생이 재생 방향의 끝(speed >= 0이면 끝 시간, 음수면 0초)에 닿아 멈춘 상태인가
 // (반복/레스트는 항상 0, 끝에서 speed 부호를 바꾸면 0이 되어 거꾸로 재생된다). 각 포인터는 NULL 가능. 성공하면 1.
 GGE_API int gge_scene_get_node_animation(GgeScene* s, const char* node_name_utf8, const char** clip_name, float* time, int* playing,
@@ -293,5 +295,25 @@ GGE_API int gge_scene_get_node_animation(GgeScene* s, const char* node_name_utf8
 GGE_API int gge_scene_get_player_speed(const GgeScene* s, float* speed);
 GGE_API int gge_scene_get_node_visible(const GgeScene* s, const char* node_name_utf8);
 GGE_API int gge_scene_set_node_visible(GgeScene* s, const char* node_name_utf8, int visible);
+
+// ---- 동적 오브젝트(생성/삭제) ----
+// 씬 파일의 노드(템플릿)와 그 모든 자손을 복제한다. 메시/텍스처/스켈레톤/클립은 공유하고 오브젝트만 새로 만든다.
+// 복제 루트 이름 = instance_name, 자손 이름 = "instance_name/원래이름"이며 이후 모든 이름 기반 gge_scene_* 가 이 이름으로 동작한다.
+// 시작 상태는 템플릿의 **구운 값**(스크립트가 템플릿을 바꿔도 영향 없음), 복제 루트는 보인다. (x,y,z)는 **템플릿과 같은 부모 기준의 로컬 위치**이고
+// 회전/크기는 구운 값이라 방향은 직후에 gge_scene_set_node_rotation으로 정한다. 조명/충돌체/트리거는 복제하지 않는다.
+// 실패(0, 상태 그대로, 누수 없음): 없는 템플릿, 템플릿이 복제본이거나 플레이어(를 포함), 인스턴스 이름이 비었거나 '/' 포함/128바이트 초과/이미 있는 노드 이름과 같음
+// (자손 이름 포함), 값이 유한하지 않음, 한도 초과(살아 있는 복제 노드 256, 한 step 사이 64번 spawn, 서브트리 깊이 16). 성공하면 1.
+GGE_API int gge_scene_spawn_object(GgeScene* s, const char* template_name_utf8, const char* instance_name_utf8, float x, float y, float z);
+// gge_scene_spawn_object로 만든 인스턴스(루트 이름)를 자손까지 지운다. 그 이름은 다시 쓸 수 있다. 씬 파일의 노드, 복제본의 자손 단독, 없는 이름은 0.
+GGE_API int gge_scene_destroy_object(GgeScene* s, const char* instance_name_utf8);
+// 그 이름의 노드가 있으면 1, 없으면 0(씬 파일/복제 구분 없음).
+GGE_API int gge_scene_object_exists(const GgeScene* s, const char* node_name_utf8);
+// 살아 있는 복제 노드 수(자손 포함).
+GGE_API int gge_scene_get_dynamic_node_count(const GgeScene* s);
+// 노드 슬롯 수(씬 파일의 노드 + 복제가 쓴 슬롯의 최대치). 지운 슬롯은 재사용되므로 씬 파일 노드 수 + 256(복제 노드 한도)을 넘어 늘지 않는다. 진단용.
+GGE_API int gge_scene_get_node_slot_count(const GgeScene* s);
+// 테스트 전용(안정 API 아님, 배포 빌드에서 제거/비활성 대상: doc/04 P10): 이후 spawn이 n번째(1부터) 렌더러 오브젝트를 만든 직후 실패하게 한다(-1 = 끔).
+// 중간 실패 되돌림 검증용이며 게임 코드가 쓸 일은 없다. C# 래퍼/스크립트 API에는 노출하지 않는다.
+GGE_API int gge_scene_set_spawn_failure_for_tests(GgeScene* s, int after_nodes);
 
 GGE_API const char* gge_last_error(void);

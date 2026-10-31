@@ -25,6 +25,7 @@ add_test(NAME engine_tests COMMAND engine_tests)
 add_executable(engine_bench tests/engine_bench.cpp)
 target_link_libraries(engine_bench PRIVATE gge)
 target_compile_options(engine_bench PRIVATE /W4 /utf-8)
+target_compile_definitions(engine_bench PRIVATE "GGE_SPAWNER_SCENE=\"${CMAKE_CURRENT_SOURCE_DIR}/../assets/samples/spawner.ggs\"")
 
 # 독립 실행 플레이어: 구운 씬(.ggs)을 창에서 실행한다. 엔진 C API만 쓴다(gge.dll이 같은 폴더에 있어야 한다).
 # --script를 줄 때만 hostfxr로 .NET을 올린다(player/script_host.cpp). 관리 코드는 tools/ 빌드(build.cmd)가 build/bin/script_host에 모은다.
@@ -136,6 +137,27 @@ gge_player_walk_test(gge_player_walk_animation_returns_to_idle_when_stopped 50 D
 # 벽을 정면으로 밀면 입력은 있어도 실제 이동이 0이라 idle(PlayerSpeed는 입력이 아니라 실제 이동)
 gge_player_walk_test(gge_player_walk_animation_is_idle_when_blocked_by_a_wall 120 D:120
     "player=.5.600, 0.000. .*animation.Hero.=idle playing=1 fading=0")
+# 오브젝트 생성/삭제(assets/samples/spawner.ggs + Spawner 스크립트): 템플릿 Crate(+Lid)를 복제/삭제한다. --report-objects가 실제 엔진 상태
+# (동적 노드 수, 렌더러 오브젝트 수)를 한 줄에 붙인다. 구운 오브젝트는 Floor, Crate, Lid, Hero 4개.
+set(GGE_SPAWNER_SCENE ${CMAKE_CURRENT_SOURCE_DIR}/../assets/samples/spawner.ggs)
+function(gge_player_spawner_test name frames keys regex)
+    add_test(NAME ${name}
+             COMMAND gge_player ${GGE_SPAWNER_SCENE} --headless --warp --frames ${frames} --keys ${keys} --report-objects
+                     --script ${GGE_SAMPLE_SCRIPTS} --script-type Spawner)
+    set_tests_properties(${name} PROPERTIES PASS_REGULAR_EXPRESSION "${regex}")
+endfunction()
+# E 세 번: 복제 3개(노드 2개씩) = 동적 6, 렌더러 오브젝트 4 + 6. 플레이어가 움직이는 만큼 위치가 다르다(복제는 만든 순간 플레이어 위치).
+gge_player_spawner_test(gge_player_spawner_creates_instances 11 E:1,-:2,D:3,E:1,D:3,E:1
+    "spawned Crate1 at 0.00, 0.00[\r\n]+.script. spawned Crate2 at 0.30, 0.00[\r\n]+.script. spawned Crate3 at 0.60, 0.00[\r\n]+.*dynamic=6 objects=10")
+# E 두 번 뒤 Q: 가장 최근 복제(Crate2)만 지워진다 -> 동적 2, 오브젝트 6
+gge_player_spawner_test(gge_player_spawner_destroys_the_latest_instance 8 E:1,-:1,E:1,-:1,Q:1,-:1
+    "destroyed Crate2[\r\n]+.*dynamic=2 objects=6")
+# 아무것도 안 만들었을 때 Q: 지울 것이 없고 동적 0, 오브젝트 4
+gge_player_spawner_test(gge_player_spawner_destroys_nothing_when_nothing_was_spawned 3 Q:1,-:2
+    "nothing to destroy[\r\n]+.*dynamic=0 objects=4")
+gge_player_expect_failure(gge_player_spawner_flood_is_stopped_by_the_frame_limit
+    "too many spawns in one frame .max 64."
+    ${GGE_SPAWNER_SCENE} --headless --warp --frames 3 --keys E:1 --script ${GGE_SAMPLE_SCRIPTS} --script-type SpawnFlood)
 # 스크립트 호스트 폴더에 gge.dll 사본이 있어도 .NET이 그걸 따로 불러 엔진 상태가 갈라지면 안 된다(플레이어가 올린 것을 그대로 쓴다).
 # 갈라지면 스크립트가 보는 씬이 달라 위 텔레포트/트리거 결과가 나오지 않거나 프로세스가 죽는다.
 add_test(NAME gge_player_script_decoy_host_setup

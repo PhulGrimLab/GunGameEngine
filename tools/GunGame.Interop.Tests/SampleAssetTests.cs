@@ -51,9 +51,10 @@ public class SampleAssetTests
     }
 
     // 씬 JSON에서 구워 저장소에 둔 샘플(.ggs). play_v1.ggs는 옛 형식(version 1)을 그대로 보존한 호환 확인용 파일이라 여기에 없다(재생성하지 않는다).
-    private static readonly string[] BakedSamples = ["play", "locked_door", "walk_animation"];
+    private static readonly string[] BakedSamples = ["play", "locked_door", "walk_animation", "spawner"];
 
     [Theory]
+    [InlineData("spawner")]
     [InlineData("play")]
     [InlineData("locked_door")]
     [InlineData("walk_animation")]

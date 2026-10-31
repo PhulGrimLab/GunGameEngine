@@ -141,6 +141,53 @@ double BenchSkinned(int count, int bones)
     return ms;
 }
 
+// 동적 오브젝트: 템플릿 Crate(+Lid) 복제 128개(= 노드 256, 한도)를 올린 씬에서 (1) 프레임 렌더 비용, (2) 이름 API(노드 위치 읽기) 한 번의 비용,
+// (3) 인스턴스 128개 생성+삭제 한 바퀴의 비용을 잰다(이름 조회가 해시 맵이라 복제 수와 무관해야 한다).
+void BenchSpawner()
+{
+    GgeRenderer* r = gge_renderer_create(kWidth, kHeight, g_useWarp);
+    GgeScene* scene = gge_scene_load(r, GGE_SPAWNER_SCENE);
+    if (!scene) {
+        std::printf("  spawner scene              : load failed (%s)\n", gge_last_error());
+        gge_renderer_destroy(r);
+        return;
+    }
+    gge_scene_set_node_visible(scene, "Crate", 0);
+    const double emptyMs = TimeRender(r);
+    char name[32];
+    auto cycle = [&](bool destroy) {
+        for (int i = 0; i < 128; ++i) {
+            if (i % 64 == 0) gge_scene_step(scene, 0, 0, 0);   // 프레임당 spawn 64번 한도
+            std::snprintf(name, sizeof name, "I%d", i);
+            if (destroy) gge_scene_destroy_object(scene, name);
+            else gge_scene_spawn_object(scene, "Crate", name, static_cast<float>(i % 12) - 6, 0.3f, static_cast<float>(i / 12) - 4);
+        }
+    };
+    cycle(false);
+    const double fullMs = TimeRender(r);
+
+    float x, y, z;
+    const int calls = 200000;
+    auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < calls; ++i) {
+        std::snprintf(name, sizeof name, "I%d/Lid", i % 128);
+        gge_scene_get_node_position(scene, name, &x, &y, &z);
+    }
+    std::chrono::duration<double, std::micro> lookups = std::chrono::steady_clock::now() - start;
+    start = std::chrono::steady_clock::now();
+    const int rounds = 200;
+    for (int i = 0; i < rounds; ++i) {
+        cycle(true);
+        cycle(false);
+    }
+    std::chrono::duration<double, std::micro> cycles = std::chrono::steady_clock::now() - start;
+    std::printf("  spawner 0 vs 256 clone nodes: %8.3f vs %8.3f ms/frame\n", emptyMs, fullMs);
+    std::printf("  name API w/ 256 clone nodes : %8.3f us/call (includes the name formatting)\n", lookups.count() / calls);
+    std::printf("  destroy+spawn 128 instances : %8.1f us per round (256 nodes)\n", cycles.count() / rounds);
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(r);
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -153,5 +200,6 @@ int main(int argc, char** argv)
     std::printf("  flat    1000 cubes          : %8.3f ms/frame\n", BenchFlat(1000));
     std::printf("  hierarchy 100 chains x d20  : %8.3f ms/frame\n", BenchDeepHierarchy(100, 20));
     std::printf("  skinned  50 objs x 32 bones : %8.3f ms/frame\n", BenchSkinned(50, 32));
+    BenchSpawner();
     return 0;
 }

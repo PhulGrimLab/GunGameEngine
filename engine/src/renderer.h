@@ -106,6 +106,7 @@ public:
 
     int CreateObject(int mesh, int texture, int parent);
     void DestroyObject(int id);  // 자손까지 함께 제거
+    int ObjectCount() const { return static_cast<int>(objects_.size()); }  // 살아 있는 오브젝트 수(진단/누수 검사용)
     void SetObjectParent(int id, int parent);
     void SetObjectMesh(int id, int mesh);
     void SetObjectTexture(int id, int texture);

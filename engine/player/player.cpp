@@ -16,6 +16,7 @@
 //                      엔진 쓰기 API(트리거 켜기/끄기, 텔레포트)와 오브젝트 알파로 게임을 바꾼다. 스크립트 예외는 사유를 출력하고 종료(코드 1).
 //   --script-type 이름  어셈블리에 스크립트가 여럿일 때 그 타입(전체/짧은 이름)만 실행한다(기본은 모두).
 //   --report-animation 노드  헤드리스 결과 한 줄 끝에 그 노드의 클립 재생 상태(클립 이름, playing/fading/loop/finished, 시간, 속도)를 붙인다.
+//   --report-objects   헤드리스 결과 한 줄 끝에 살아 있는 동적 노드 수(dynamic=N)와 렌더러 오브젝트 수(objects=N)를 붙인다.
 //   --script-host-dir 폴더  GunGame.ScriptHost.dll이 있는 폴더(기본 <exe 폴더>\script_host; tools\GunGameTools.slnx 빌드가 채운다).
 //   --self-test        입력 매핑/대본 해석의 자체 검사를 하고 끝낸다.
 // 조작: WASD/방향키 또는 게임패드 왼쪽 스틱, Esc 종료. 입력은 활성 방 카메라 기준이다.
@@ -187,6 +188,7 @@ struct Options {
     std::string keys, screenshot;
     std::wstring script, scriptType, scriptHostDir;   // --script / --script-type / --script-host-dir
     std::string reportAnimation;                      // --report-animation 노드: 헤드리스 결과 한 줄에 그 노드의 클립 재생 상태를 붙인다
+    bool reportObjects = false;                       // --report-objects: 헤드리스 결과 한 줄에 살아 있는 동적 노드 수(dynamic=N)와 렌더러 오브젝트 수(objects=N)를 붙인다
 };
 
 std::string ToUtf8(const wchar_t* wide)
@@ -258,6 +260,7 @@ bool ParseOptions(int argc, wchar_t** argv, Options& o, std::string& error)
         } else if (a == "--keys") o.keys = value("--keys");
         else if (a == "--screenshot") o.screenshot = value("--screenshot");
         else if (a == "--report-animation") o.reportAnimation = value("--report-animation");
+        else if (a == "--report-objects") o.reportObjects = true;
         else if (a == "--script") o.script = wideValue("--script");
         else if (a == "--script-type") o.scriptType = wideValue("--script-type");
         else if (a == "--script-host-dir") o.scriptHostDir = wideValue("--script-host-dir");
@@ -464,6 +467,11 @@ int RunHeadless(const Options& o)
         std::snprintf(text, sizeof text, " animation[%s]=%s playing=%d fading=%d loop=%d finished=%d time=%.3f speed=%.3f", o.reportAnimation.c_str(),
                       clip ? clip : "", playing, fading, loop, finished, time, speed);
         animation = text;
+    }
+    if (o.reportObjects) {
+        char text[96];
+        std::snprintf(text, sizeof text, " dynamic=%d objects=%d", gge_scene_get_dynamic_node_count(game.scene), gge_renderer_get_object_count(game.renderer));
+        animation += text;
     }
 
     float x = 0, z = 0, yaw = 0;

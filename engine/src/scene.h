@@ -1,7 +1,9 @@
 #pragma once
 #include <deque>
 #include <map>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "renderer.h"
@@ -9,6 +11,12 @@
 #include "world.h"
 
 namespace gge {
+
+// 동적 오브젝트(SpawnObject)의 한도. 프로토타입 값이며 P8(전투)에서 다시 정한다.
+constexpr int kMaxDynamicNodes = 256;            // 살아 있는 복제 노드 합계(자손 포함)
+constexpr int kMaxSpawnsPerStep = 64;            // Step 한 번(= 한 프레임) 사이의 SpawnObject 호출 수
+constexpr int kMaxCloneDepth = 16;               // 복제하는 서브트리의 깊이(템플릿 자신 = 1)
+constexpr size_t kMaxInstanceNameBytes = 128;    // 인스턴스 이름의 UTF-8 바이트 수
 
 // Scene이 내보내는 트리거 이벤트(영역 이름 포함). 같은 프레임 안에서는 Exit가 먼저, 그다음 Enter이며 각각 트리거 순서다.
 struct SceneEvent {
@@ -133,6 +141,30 @@ public:
     };
     NodeAnimation GetNodeAnimation(const std::string& nodeName) const;    // 없는 노드/스킨 아닌 노드는 예외
 
+    // ---- 동적 오브젝트(생성/삭제) ----
+    // 씬 파일의 노드(템플릿)와 그 모든 자손을 복제한다. 메시/텍스처/스켈레톤/클립은 공유하고 오브젝트만 새로 만든다.
+    //  - 복제 루트 이름 = instanceName, 자손 이름 = "instanceName/원래이름". 이후 모든 이름 기반 API(위치/표시/클립 ...)가 이 이름으로 동작한다.
+    //    이름은 비어 있거나 '/'를 포함하거나 kMaxInstanceNameBytes를 넘거나 이미 있는 어떤 노드 이름(구운/동적, 자손 이름 포함)과 같으면 예외.
+    //  - 시작 상태는 템플릿의 **구운 값**(스크립트가 템플릿을 옮기거나 알파를 바꿔도 영향 없음), 복제 루트는 항상 보임.
+    //    position만 인자로 덮어쓰며 **템플릿과 같은 부모 기준의 로컬 좌표**다(부모가 루트가 아니면 월드 좌표와 다르다). 회전/크기는 템플릿의 구운 값이라
+    //    방향은 SpawnObject 직후 SetNodeRotation으로 정한다(그 사이 렌더/Step이 끼지 않으므로 한 프레임도 잘못된 방향으로 그려지지 않는다).
+    //  - 템플릿은 씬 파일의 노드여야 한다(복제본을 다시 복제할 수 없다). 플레이어 노드, 플레이어를 자손으로 가진 노드는 불가.
+    //    조명/충돌체/트리거는 복제하지 않는다(동적 충돌체는 P8). 스킨 메시는 복제마다 독립된 재생 상태를 가진다(초기 클립은 구운 값).
+    //  - 모두 성공하거나 모두 실패한다: 이름/한도(kMaxDynamicNodes, kMaxSpawnsPerStep, kMaxCloneDepth)는 렌더러 오브젝트를 만들기 전에 검사하고,
+    //    만드는 도중 실패해도 만든 것을 되돌린다(상태 불변, 누수 없음). 없는 템플릿도 예외.
+    void SpawnObject(const std::string& templateName, const std::string& instanceName, DirectX::XMFLOAT3 position);
+    // SpawnObject로 만든 인스턴스(루트 이름)를 자손까지 지운다. 그 이름은 다시 쓸 수 있다. 씬 파일의 노드/복제 자손 단독/없는 이름은 예외(숨기려면 SetNodeVisible).
+    void DestroyObject(const std::string& instanceName);
+    // 그 이름의 노드가 있는가(구운/동적 구분 없음).
+    bool ObjectExists(const std::string& name) const { return _nodeByName.count(name) != 0; }
+    // 살아 있는 복제 노드 수(자손 포함)와 인스턴스 수.
+    int DynamicNodeCount() const { return _liveDynamic; }
+    int InstanceCount() const { return static_cast<int>(_instances.size()); }
+    // 노드 슬롯 수(구운 노드 + 복제가 쓴 슬롯의 최대치). 지운 슬롯을 재사용하므로 복제 노드 한도(kMaxDynamicNodes)를 넘어 늘지 않는다.
+    int NodeSlotCount() const { return static_cast<int>(_data.nodes.size()); }
+    // 테스트 전용: SpawnObject가 n번째 렌더러 오브젝트를 만든 직후 실패하게 한다(-1 = 끔). 되돌림 검증용.
+    void FailSpawnAfterNodesForTests(int n) { _failSpawnAfter = n; }
+
     // 마지막 Step에서 충돌/슬라이딩을 반영한 뒤 플레이어가 실제로 이동한 거리 / dt(월드 단위/초). 벽을 정면으로 밀면 0, 벽을 따라 미끄러지면 0보다 크다.
     // 텔레포트 직후(다음 Step 전)와 dt가 0인 Step, 플레이어가 없는 씬은 0이다. 켜진 충돌체가 겹친 플레이어를 밀어내는 이동도 이동으로 센다.
     float PlayerSpeed() const { return _playerSpeed; }
@@ -157,6 +189,10 @@ private:
     // 이름이 같은 첫 노드의 _anims 번호. 없는 노드/스킨이 아닌 노드는 예외.
     size_t AnimIndex(const std::string& nodeName) const;
     void ApplyPose(const NodeAnim& anim);  // 렌더러에 현재 포즈를 올린다
+    // 이름이 같은 첫 노드의 번호(구운 노드가 먼저, 같은 이름이면 가장 낮은 번호). 없으면 -1.
+    int FindNode(const std::string& name) const;
+    // 노드 데이터대로 렌더러 오브젝트를 만들고(스킨이면 anim도 채운다) ID를 돌려준다. 실패하면 만든 오브젝트를 지우고 예외.
+    int CreateNodeObject(const SceneNodeData& node, size_t slot, int parentObject, std::optional<NodeAnim>& anim);
 
     void Build();
     void Destroy();
@@ -174,6 +210,20 @@ private:
     std::vector<NodeAnim> _anims;
     std::vector<int> _animOfNode;  // 노드 번호 -> _anims 번호(스킨 노드가 아니면 -1)
     std::deque<SceneEvent> _events;
+
+    // 동적 오브젝트. 노드 슬롯(_data.nodes/_objectIds/_animOfNode의 번호)은 [0, _bakedCount)가 씬 파일 노드, 그 뒤가 복제 노드(빈 슬롯은 재사용)다.
+    struct Instance {
+        std::vector<size_t> slots;  // 루트가 첫 번째
+        int rootObject = 0;
+    };
+    std::vector<SceneNodeData> _bakedNodes;                 // 로드 시점 스냅샷(복제의 시작 값). _data.nodes는 스크립트가 바꾸는 현재 값
+    size_t _bakedCount = 0;
+    std::unordered_map<std::string, size_t> _nodeByName;    // 이름 -> 슬롯(같은 이름이면 가장 낮은 번호)
+    std::unordered_map<std::string, Instance> _instances;   // 루트 이름 -> 인스턴스
+    std::vector<size_t> _freeSlots;
+    int _liveDynamic = 0;
+    int _spawnsThisStep = 0;
+    int _failSpawnAfter = -1;
 
     ScenePlayerData _player;
     Vec2 _position{0, 0};

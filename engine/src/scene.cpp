@@ -72,46 +72,24 @@ void Scene::Build()
     }
 
     // 오브젝트 그래프
+    _bakedNodes = _data.nodes;
+    _bakedCount = _data.nodes.size();
     _objectIds.reserve(_data.nodes.size());
     _animOfNode.assign(_data.nodes.size(), -1);
-    for (const SceneNodeData& node : _data.nodes) {
-        const size_t nodeIndex = _objectIds.size();
+    for (size_t nodeIndex = 0; nodeIndex < _bakedCount; ++nodeIndex) {
+        const SceneNodeData& node = _data.nodes[nodeIndex];
         Wrapped("node '" + node.name + "'", [&] {
-            const int mesh = node.mesh < 0 ? 0 : _meshIds[node.mesh];
-            const int texture = node.texture < 0 ? 0 : _textureIds[node.texture];
             const int parent = node.parent < 0 ? 0 : _objectIds[node.parent];
-            const int object = _renderer.CreateObject(mesh, texture, parent);
+            std::optional<NodeAnim> anim;
+            const int object = CreateNodeObject(node, nodeIndex, parent, anim);
             _objectIds.push_back(object);
             if (parent == 0)
                 _rootObjects.push_back(object);
-            _renderer.SetObjectTransform(object, node.position, node.rotation, node.scale);
-            _renderer.SetObjectColor(object, node.color);
-            _renderer.SetObjectAlpha(object, node.alpha);
-            _renderer.SetObjectCastsShadow(object, node.castsShadow);
-
-            if (node.mesh < 0 || !_data.meshes[node.mesh].skinned)
-                return;  // 정적 메시는 클립이 있어도 쓰지 않는다(에디터와 같다)
-            _renderer.SetObjectSkeleton(object, _skeletonIds[node.mesh]);
-
-            // 스킨 노드마다 재생 상태를 둔다: 씬이 정한 초기 클립(있다면)으로 시작하고, 스크립트가 나중에 다른 클립으로 바꿀 수 있다.
-            NodeAnim anim;
-            anim.node = nodeIndex;
-            anim.object = object;
-            anim.mesh = node.mesh;
-            if (!node.clip.empty()) {
-                const std::vector<SceneClip>& clips = _data.meshes[node.mesh].clips;
-                size_t c = 0;
-                while (c < clips.size() && clips[c].name != node.clip)
-                    ++c;
-                if (c == clips.size())
-                    throw std::runtime_error("clip '" + node.clip + "' was not found in its mesh");
-                anim.player.Play({_clipIds[node.mesh][c], clips[c].clip.duration}, 0, false, true);
-                anim.player.speed = node.speed;
-                anim.player.playing = node.playing;
+            _nodeByName.try_emplace(node.name, nodeIndex);   // 같은 이름이면 가장 낮은 번호가 첫 노드
+            if (anim) {
+                _animOfNode[nodeIndex] = static_cast<int>(_anims.size());
+                _anims.push_back(std::move(*anim));
             }
-            _animOfNode[nodeIndex] = static_cast<int>(_anims.size());
-            _anims.push_back(std::move(anim));
-            ApplyPose(_anims.back());
         });
     }
 
@@ -149,6 +127,50 @@ void Scene::Build()
     ApplyPlayer();
 }
 
+int Scene::CreateNodeObject(const SceneNodeData& node, size_t slot, int parentObject, std::optional<NodeAnim>& anim)
+{
+    anim.reset();
+    const int mesh = node.mesh < 0 ? 0 : _meshIds[node.mesh];
+    const int texture = node.texture < 0 ? 0 : _textureIds[node.texture];
+    const int object = _renderer.CreateObject(mesh, texture, parentObject);
+    try {
+        _renderer.SetObjectTransform(object, node.position, node.rotation, node.scale);
+        _renderer.SetObjectColor(object, node.color);
+        _renderer.SetObjectAlpha(object, node.alpha);
+        _renderer.SetObjectCastsShadow(object, node.castsShadow);
+
+        if (node.mesh < 0 || !_data.meshes[node.mesh].skinned)
+            return object;  // 정적 메시는 클립이 있어도 쓰지 않는다(에디터와 같다)
+        _renderer.SetObjectSkeleton(object, _skeletonIds[node.mesh]);
+
+        // 스킨 노드마다 재생 상태를 둔다: 씬이 정한 초기 클립(있다면)으로 시작하고, 스크립트가 나중에 다른 클립으로 바꿀 수 있다.
+        NodeAnim a;
+        a.node = slot;
+        a.object = object;
+        a.mesh = node.mesh;
+        if (!node.clip.empty()) {
+            const std::vector<SceneClip>& clips = _data.meshes[node.mesh].clips;
+            size_t c = 0;
+            while (c < clips.size() && clips[c].name != node.clip)
+                ++c;
+            if (c == clips.size())
+                throw std::runtime_error("clip '" + node.clip + "' was not found in its mesh");
+            a.player.Play({_clipIds[node.mesh][c], clips[c].clip.duration}, 0, false, true);
+            a.player.speed = node.speed;
+            a.player.playing = node.playing;
+        }
+        ApplyPose(a);
+        anim = std::move(a);
+        return object;
+    } catch (...) {
+        try {
+            _renderer.DestroyObject(object);
+        } catch (const std::exception&) {
+        }
+        throw;
+    }
+}
+
 void Scene::Destroy()
 {
     // 소멸자와 생성 실패 경로에서 불린다: 개별 해제가 실패해도 나머지를 계속 정리한다(예외를 밖으로 내보내지 않는다).
@@ -159,6 +181,8 @@ void Scene::Destroy()
             // 이미 해제됐거나 렌더러가 먼저 정리된 경우: 할 일이 없다
         }
     };
+    for (const auto& [name, instance] : _instances)
+        quiet([&] { _renderer.DestroyObject(instance.rootObject); });  // 동적 오브젝트(부모가 구운 노드면 아래에서 한 번 더 지워지려다 무시된다)
     for (int id : _rootObjects)
         quiet([&] { _renderer.DestroyObject(id); });  // 자손까지 함께 지워진다
     for (int id : _lightIds)
@@ -182,12 +206,17 @@ void Scene::Destroy()
     _objectIds.clear();
     _anims.clear();
     _animOfNode.clear();
+    _instances.clear();
+    _nodeByName.clear();
+    _freeSlots.clear();
+    _liveDynamic = 0;
 }
 
 void Scene::Step(float inputX, float inputY, float dt)
 {
     if (!std::isfinite(dt) || dt < 0)
         throw std::runtime_error("dt must be a finite non-negative number");
+    _spawnsThisStep = 0;
 
     if (_player.present) {
         const Vec2 intended = _world.MoveInput(inputX, inputY, _player.speed, dt);
@@ -248,12 +277,16 @@ const std::string& Scene::ActiveRoomName() const
     return room > 0 ? _data.rooms[static_cast<size_t>(room) - 1].name : none;
 }
 
+int Scene::FindNode(const std::string& name) const
+{
+    const auto it = _nodeByName.find(name);
+    return it == _nodeByName.end() ? -1 : static_cast<int>(it->second);
+}
+
 int Scene::FindObject(const std::string& nodeName) const
 {
-    for (size_t i = 0; i < _data.nodes.size() && i < _objectIds.size(); ++i)
-        if (_data.nodes[i].name == nodeName)
-            return _objectIds[i];
-    return 0;
+    const int index = FindNode(nodeName);
+    return index < 0 ? 0 : _objectIds[static_cast<size_t>(index)];
 }
 
 int Scene::SetTriggerEnabled(const std::string& name, bool enabled)
@@ -291,19 +324,9 @@ bool Scene::IsInsideTrigger(const std::string& name) const
     return inside;
 }
 
-namespace {
-int FindNodeIndex(const SceneData& data, size_t objectCount, const std::string& name)
-{
-    for (size_t i = 0; i < data.nodes.size() && i < objectCount; ++i)
-        if (data.nodes[i].name == name)
-            return static_cast<int>(i);
-    return -1;
-}
-}  // namespace
-
 bool Scene::GetNodePosition(const std::string& nodeName, DirectX::XMFLOAT3& out) const
 {
-    const int index = FindNodeIndex(_data, _objectIds.size(), nodeName);
+    const int index = FindNode(nodeName);
     if (index < 0)
         return false;
     out = _data.nodes[static_cast<size_t>(index)].position;
@@ -312,7 +335,7 @@ bool Scene::GetNodePosition(const std::string& nodeName, DirectX::XMFLOAT3& out)
 
 size_t Scene::EditableNodeIndex(const std::string& nodeName) const
 {
-    const int index = FindNodeIndex(_data, _objectIds.size(), nodeName);
+    const int index = FindNode(nodeName);
     if (index < 0)
         throw std::runtime_error("no node named '" + nodeName + "'");
     if (_player.present && index == _player.node)
@@ -339,7 +362,7 @@ void Scene::SetNodePosition(const std::string& nodeName, DirectX::XMFLOAT3 posit
 
 bool Scene::GetNodeRotation(const std::string& nodeName, DirectX::XMFLOAT3& out) const
 {
-    const int index = FindNodeIndex(_data, _objectIds.size(), nodeName);
+    const int index = FindNode(nodeName);
     if (index < 0)
         return false;
     out = _data.nodes[static_cast<size_t>(index)].rotation;
@@ -357,7 +380,7 @@ void Scene::SetNodeRotation(const std::string& nodeName, DirectX::XMFLOAT3 rotat
 
 bool Scene::GetNodeScale(const std::string& nodeName, DirectX::XMFLOAT3& out) const
 {
-    const int index = FindNodeIndex(_data, _objectIds.size(), nodeName);
+    const int index = FindNode(nodeName);
     if (index < 0)
         return false;
     out = _data.nodes[static_cast<size_t>(index)].scale;
@@ -375,7 +398,7 @@ void Scene::SetNodeScale(const std::string& nodeName, DirectX::XMFLOAT3 scale)
 
 bool Scene::GetNodeVisible(const std::string& nodeName, bool& out) const
 {
-    const int index = FindNodeIndex(_data, _objectIds.size(), nodeName);
+    const int index = FindNode(nodeName);
     if (index < 0)
         return false;
     out = _renderer.IsObjectVisible(_objectIds[static_cast<size_t>(index)]);
@@ -384,7 +407,7 @@ bool Scene::GetNodeVisible(const std::string& nodeName, bool& out) const
 
 void Scene::SetNodeVisible(const std::string& nodeName, bool visible)
 {
-    const int index = FindNodeIndex(_data, _objectIds.size(), nodeName);
+    const int index = FindNode(nodeName);
     if (index < 0)
         throw std::runtime_error("no node named '" + nodeName + "'");
     _renderer.SetObjectVisible(_objectIds[static_cast<size_t>(index)], visible);   // 플레이어 노드도 숨길 수 있다(컷신/퇴장)
@@ -468,7 +491,7 @@ bool ClipPlayer::Finished() const
 
 size_t Scene::AnimIndex(const std::string& nodeName) const
 {
-    const int index = FindNodeIndex(_data, _objectIds.size(), nodeName);
+    const int index = FindNode(nodeName);
     if (index < 0)
         throw std::runtime_error("no node named '" + nodeName + "'");
     const int anim = static_cast<size_t>(index) < _animOfNode.size() ? _animOfNode[static_cast<size_t>(index)] : -1;
@@ -552,6 +575,151 @@ void Scene::TeleportPlayer(float x, float z)
     _world.UpdateActiveRoom(x, z);
     UpdateTriggers();
     ApplyPlayer();
+}
+
+// ---- 동적 오브젝트 ----
+void Scene::SpawnObject(const std::string& templateName, const std::string& instanceName, XMFLOAT3 position)
+{
+    // 1) 검사: 여기서 던지면 아무것도 바뀌지 않는다(렌더러 오브젝트는 아직 없다).
+    if (instanceName.empty())
+        throw std::runtime_error("the instance name must not be empty");
+    if (instanceName.find('/') != std::string::npos)
+        throw std::runtime_error("the instance name '" + instanceName + "' must not contain '/' (it separates an instance from its children)");
+    if (instanceName.size() > kMaxInstanceNameBytes)
+        throw std::runtime_error("the instance name is too long (max " + std::to_string(kMaxInstanceNameBytes) + " bytes)");
+    RequireFiniteVector(position, "spawn position");
+
+    const int found = FindNode(templateName);
+    if (found < 0)
+        throw std::runtime_error("no node named '" + templateName + "'");
+    const size_t tpl = static_cast<size_t>(found);
+    if (tpl >= _bakedCount)
+        throw std::runtime_error("'" + templateName + "' is a spawned object; spawn from a node of the scene file");
+    if (_spawnsThisStep >= kMaxSpawnsPerStep)
+        throw std::runtime_error("too many spawns in one frame (max " + std::to_string(kMaxSpawnsPerStep) + ")");
+
+    // 서브트리: 템플릿과 자손(구운 노드는 부모가 항상 앞에 온다). localOf = 구운 번호 -> 서브트리 안의 순서.
+    std::vector<size_t> subtree{tpl};
+    std::vector<int> localOf(_bakedCount, -1), depth(_bakedCount, 0);
+    localOf[tpl] = 0;
+    depth[tpl] = 1;
+    for (size_t i = tpl + 1; i < _bakedCount; ++i) {
+        const int parent = _bakedNodes[i].parent;
+        if (parent < 0 || depth[static_cast<size_t>(parent)] == 0)
+            continue;
+        depth[i] = depth[static_cast<size_t>(parent)] + 1;
+        localOf[i] = static_cast<int>(subtree.size());
+        subtree.push_back(i);
+    }
+    for (size_t i : subtree) {
+        if (_player.present && i == static_cast<size_t>(_player.node))
+            throw std::runtime_error("node '" + templateName + "' is or contains the player and cannot be spawned");
+        if (depth[i] > kMaxCloneDepth)
+            throw std::runtime_error("node '" + templateName + "' is nested too deeply to spawn (max depth " + std::to_string(kMaxCloneDepth) + ")");
+    }
+    if (_liveDynamic + static_cast<int>(subtree.size()) > kMaxDynamicNodes)
+        throw std::runtime_error("too many spawned nodes (max " + std::to_string(kMaxDynamicNodes) + ", " + std::to_string(_liveDynamic) +
+                                 " alive, this spawn needs " + std::to_string(subtree.size()) + ")");
+
+    std::vector<std::string> names;
+    names.reserve(subtree.size());
+    names.push_back(instanceName);
+    for (size_t k = 1; k < subtree.size(); ++k)
+        names.push_back(instanceName + "/" + _bakedNodes[subtree[k]].name);
+    for (const std::string& name : names)
+        if (_nodeByName.count(name))
+            throw std::runtime_error("a node named '" + name + "' already exists");
+
+    // 2) 렌더러 오브젝트를 만든다. 중간에 실패하면 이미 만든 루트를 지워(자손 연쇄) 되돌린다. 멤버 상태는 아직 건드리지 않았다.
+    const int baseParent = _bakedNodes[tpl].parent < 0 ? 0 : _objectIds[static_cast<size_t>(_bakedNodes[tpl].parent)];
+    std::vector<int> objects(subtree.size(), 0);
+    std::vector<std::optional<NodeAnim>> anims(subtree.size());
+    for (size_t k = 0; k < subtree.size(); ++k) {
+        SceneNodeData node = _bakedNodes[subtree[k]];
+        node.name = names[k];
+        if (k == 0)
+            node.position = position;
+        const int parentObject = k == 0 ? baseParent : objects[static_cast<size_t>(localOf[static_cast<size_t>(node.parent)])];
+        try {
+            objects[k] = CreateNodeObject(node, 0, parentObject, anims[k]);
+            if (_failSpawnAfter >= 0 && static_cast<int>(k) + 1 == _failSpawnAfter)
+                throw std::runtime_error("injected spawn failure");
+        } catch (...) {
+            if (k > 0 || objects[0] != 0) {
+                try {
+                    _renderer.DestroyObject(objects[0]);
+                } catch (const std::exception&) {
+                }
+            }
+            throw;
+        }
+    }
+
+    // 3) 반영: 여기부터는 실패하지 않는 연산뿐이다(슬롯 배정, 맵/목록 갱신).
+    std::vector<size_t> slots(subtree.size());
+    for (size_t k = 0; k < subtree.size(); ++k) {
+        size_t slot;
+        if (!_freeSlots.empty()) {
+            slot = _freeSlots.back();
+            _freeSlots.pop_back();
+        } else {
+            slot = _data.nodes.size();
+            _data.nodes.emplace_back();
+            _objectIds.push_back(0);
+            _animOfNode.push_back(-1);
+        }
+        slots[k] = slot;
+    }
+    for (size_t k = 0; k < subtree.size(); ++k) {
+        SceneNodeData node = _bakedNodes[subtree[k]];
+        node.name = names[k];
+        node.parent = k == 0 ? _bakedNodes[tpl].parent : static_cast<int>(slots[static_cast<size_t>(localOf[static_cast<size_t>(node.parent)])]);
+        if (k == 0)
+            node.position = position;
+        _data.nodes[slots[k]] = std::move(node);
+        _objectIds[slots[k]] = objects[k];
+        _animOfNode[slots[k]] = -1;
+        if (anims[k]) {
+            anims[k]->node = slots[k];
+            _animOfNode[slots[k]] = static_cast<int>(_anims.size());
+            _anims.push_back(std::move(*anims[k]));
+        }
+        _nodeByName.try_emplace(names[k], slots[k]);   // 같은 서브트리 안의 같은 이름은 먼저 만든 것이 첫 노드
+    }
+    _instances[instanceName] = Instance{std::move(slots), objects[0]};
+    _liveDynamic += static_cast<int>(subtree.size());
+    ++_spawnsThisStep;
+}
+
+void Scene::DestroyObject(const std::string& instanceName)
+{
+    const auto it = _instances.find(instanceName);
+    if (it == _instances.end()) {
+        if (_nodeByName.count(instanceName))
+            throw std::runtime_error("'" + instanceName + "' was not created by spawn_object, so it cannot be destroyed (hide a scene node with set_node_visible; destroy the instance root, not its children)");
+        throw std::runtime_error("no node named '" + instanceName + "'");
+    }
+    _renderer.DestroyObject(it->second.rootObject);   // 자손까지 지워진다. 실패하면 아무것도 바꾸지 않는다
+    for (size_t slot : it->second.slots) {
+        const int a = _animOfNode[slot];
+        if (a >= 0) {
+            const size_t last = _anims.size() - 1;
+            if (static_cast<size_t>(a) != last) {
+                _anims[static_cast<size_t>(a)] = std::move(_anims[last]);
+                _animOfNode[_anims[static_cast<size_t>(a)].node] = a;
+            }
+            _anims.pop_back();
+        }
+        const auto name = _nodeByName.find(_data.nodes[slot].name);
+        if (name != _nodeByName.end() && name->second == slot)
+            _nodeByName.erase(name);
+        _data.nodes[slot] = SceneNodeData{};
+        _objectIds[slot] = 0;
+        _animOfNode[slot] = -1;
+        _freeSlots.push_back(slot);
+    }
+    _liveDynamic -= static_cast<int>(it->second.slots.size());
+    _instances.erase(it);
 }
 
 }  // namespace gge

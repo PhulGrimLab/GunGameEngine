@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -5195,10 +5196,364 @@ void Test_GoldenCompareRules()
     CHECK(d.strict == 1 && d.edge == 0);
 }
 
+// ---- 동적 오브젝트(생성/삭제) ----
+// RoomWithPlayerSpec(0 Panel=플레이어, 1 Badge=플레이어의 자식, 2 Strip, 3 Group)에 템플릿들을 더한다.
+//  Crate(4) <- Lid(5) <- Knob(6): 3단 서브트리(구운 값이 일부러 평범하지 않다), Pebble(7): 잎 노드, Dummy(8): 스킨 노드(클립 bend 속도 1.5, sway 있음),
+//  "Z/Lid"(9): 인스턴스 "Z"의 자손 이름과 겹치게 만든 구운 노드, D1..D17(10..26): 깊이 17 사슬, E1..E16(27..42): 깊이 16 사슬.
+Spec SpawnSpec(const fs::path& bmp)
+{
+    Spec s = RoomWithPlayerSpec(bmp);
+    s.extraClips = {"sway"};
+    auto add = [&](SpecNode n) { s.nodes.push_back(n); return static_cast<int>(s.nodes.size()) - 1; };
+    SpecNode crate; crate.name = "Crate"; crate.mesh = 0; crate.texture = 0; crate.pos[0] = -3; crate.pos[1] = 0.5f; crate.rot[1] = 0.3f;
+    crate.scale[0] = crate.scale[1] = crate.scale[2] = 0.5f; crate.alpha = 0.7f; crate.casts = true;
+    crate.color[0] = 0.9f; crate.color[1] = 0.4f; crate.color[2] = 0.2f;
+    const int c = add(crate);
+    SpecNode lid; lid.name = "Lid"; lid.parent = c; lid.mesh = 0; lid.pos[1] = 1.2f; lid.color[0] = 0.2f; lid.color[1] = 0.3f; lid.color[2] = 0.9f;
+    const int l = add(lid);
+    SpecNode knob; knob.name = "Knob"; knob.parent = l; knob.mesh = 0; knob.pos[1] = 1.0f; knob.scale[0] = knob.scale[1] = knob.scale[2] = 0.3f;
+    add(knob);
+    SpecNode pebble; pebble.name = "Pebble"; pebble.mesh = 0; pebble.pos[0] = -3; pebble.pos[1] = 0.2f; pebble.pos[2] = 2;
+    pebble.scale[0] = pebble.scale[1] = pebble.scale[2] = 0.2f;
+    add(pebble);
+    SpecNode dummy; dummy.name = "Dummy"; dummy.mesh = 1; dummy.clip = "bend"; dummy.speed = 1.5f; dummy.pos[0] = 3; dummy.pos[2] = 2;
+    add(dummy);
+    SpecNode probe; probe.name = "Z/Lid";
+    add(probe);
+    int parent = -1;
+    for (int i = 1; i <= 17; ++i) {
+        SpecNode n; n.name = "D" + std::to_string(i); n.parent = parent;
+        parent = add(n);
+    }
+    parent = -1;
+    for (int i = 1; i <= 16; ++i) {
+        SpecNode n; n.name = "E" + std::to_string(i); n.parent = parent;
+        parent = add(n);
+    }
+    return s;
+}
+
+struct SpawnFixture {
+    GgeRenderer* r = nullptr;
+    GgeScene* scene = nullptr;
+    int base = 0;   // 로드 직후 렌더러 오브젝트 수
+    explicit SpawnFixture(const char* file, int w = 128, int h = 96)
+    {
+        fs::path bmp = TempDir() / (std::string(file) + ".bmp");
+        WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+        r = NewRenderer(w, h);
+        scene = gge_scene_load(r, WriteScene(std::string(file) + ".ggs", Serialize(SpawnSpec(bmp))).string().c_str());
+        if (!scene) std::printf("  load failed: %s\n", gge_last_error());
+        CHECK(scene != nullptr);
+        if (scene) base = gge_renderer_get_object_count(r);
+    }
+    ~SpawnFixture()
+    {
+        if (scene) gge_scene_destroy(scene);
+        if (r) gge_renderer_destroy(r);
+    }
+    bool ok() const { return scene != nullptr; }
+    int Spawn(const char* tpl, const char* name, float x = 0, float y = 0, float z = 0) { return gge_scene_spawn_object(scene, tpl, name, x, y, z); }
+    int Destroy(const char* name) { return gge_scene_destroy_object(scene, name); }
+    bool Exists(const char* name) const { return gge_scene_object_exists(scene, name) == 1; }
+    int Objects() const { return gge_renderer_get_object_count(r); }
+    int Dynamic() const { return gge_scene_get_dynamic_node_count(scene); }
+    void Step() { CHECK(gge_scene_step(scene, 0, 0, 0) == 1); }   // dt 0: 프레임 경계(한 프레임의 spawn 횟수 세기)만 넘긴다
+};
+
+bool LastErrorHas(const char* part) { return std::string(gge_last_error()).find(part) != std::string::npos; }
+
+void Test_SpawnedObjectStartsFromTheBakedTemplateAndLooksLikeABakedCopy()
+{
+    // 기준: 같은 모양(Crate 서브트리)을 처음부터 (2, 0.5, 1)에 구워 둔 씬. 복제본은 이 화면과 같아야 한다.
+    fs::path bmp = TempDir() / "spawn_ref.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+    Spec spec = SpawnSpec(bmp);
+    Spec refSpec = spec;
+    {
+        const SpecNode crate = spec.nodes[4], lid = spec.nodes[5], knob = spec.nodes[6];
+        SpecNode a = crate; a.name = "Baked"; a.pos[0] = 2; a.pos[1] = 0.5f; a.pos[2] = 1;
+        refSpec.nodes.push_back(a);
+        const int bi = static_cast<int>(refSpec.nodes.size()) - 1;
+        SpecNode b = lid; b.name = "BakedLid"; b.parent = bi; refSpec.nodes.push_back(b);
+        SpecNode k = knob; k.name = "BakedKnob"; k.parent = bi + 1; refSpec.nodes.push_back(k);
+    }
+    GgeRenderer* rr = NewRenderer(128, 96);
+    GgeScene* ref = gge_scene_load(rr, WriteScene("spawn_ref.ggs", Serialize(refSpec)).string().c_str());
+    CHECK(ref != nullptr);
+    if (!ref) { gge_renderer_destroy(rr); return; }
+    CHECK(gge_scene_set_node_visible(ref, "Crate", 0) == 1);   // 템플릿은 화면에서 뺀다
+    const Image reference = Render(rr);
+    gge_scene_destroy(ref);
+    gge_renderer_destroy(rr);
+
+    SpawnFixture f("spawn_main");
+    if (!f.ok()) return;
+    CHECK(gge_scene_set_node_visible(f.scene, "Crate", 0) == 1);
+    const Image empty = Render(f.r);
+
+    // 스크립트가 템플릿을 마음대로 바꿔도(옮기고, 돌리고, 키우고, 알파를 바꿔도) 복제는 구운 값으로 시작한다.
+    CHECK(gge_scene_set_node_position(f.scene, "Crate", 9, 9, 9) == 1);
+    CHECK(gge_scene_set_node_rotation(f.scene, "Crate", 1, 1, 1) == 1);
+    CHECK(gge_scene_set_node_scale(f.scene, "Crate", 3, 3, 3) == 1);
+    CHECK(gge_object_set_alpha(f.r, gge_scene_find_object(f.scene, "Crate"), 0.1f) == 1);
+    CHECK(f.Spawn("Crate", "C1", 2, 0.5f, 1) == 1);
+    const Image spawned = Render(f.r);
+    CHECK(DifferingPixels(empty, spawned) > 20);                   // 복제가 실제로 그려진다
+    CHECK(spawned.bgra == reference.bgra);                         // 구운 사본과 바이트 동일
+
+    CHECK(f.Exists("C1") && f.Exists("C1/Lid") && f.Exists("C1/Knob"));
+    CHECK(f.Dynamic() == 3 && f.Objects() == f.base + 3);
+    float x = 0, y = 0, z = 0;
+    CHECK(gge_scene_get_node_position(f.scene, "C1", &x, &y, &z) == 1 && x == 2 && y == 0.5f && z == 1);   // 인자 위치(템플릿과 같은 부모 기준 로컬)
+    CHECK(gge_scene_get_node_position(f.scene, "C1/Lid", &x, &y, &z) == 1 && x == 0 && y == 1.2f && z == 0);
+    CHECK(gge_scene_get_node_rotation(f.scene, "C1", &x, &y, &z) == 1 && x == 0 && y == 0.3f && z == 0);   // 구운 회전/크기
+    CHECK(gge_scene_get_node_scale(f.scene, "C1", &x, &y, &z) == 1 && x == 0.5f && y == 0.5f && z == 0.5f);
+    CHECK(gge_scene_get_node_visible(f.scene, "C1") == 1 && gge_scene_get_node_visible(f.scene, "Crate") == 0);   // 복제는 보이고 템플릿은 그대로 숨김
+    CHECK(gge_scene_get_node_position(f.scene, "Crate", &x, &y, &z) == 1 && x == 9 && y == 9 && z == 9);        // 템플릿은 건드리지 않는다
+
+    // 복제본의 변경이 템플릿에 영향을 주지 않는다(기존 이름 API가 복제본에 그대로 동작한다).
+    CHECK(gge_scene_set_node_position(f.scene, "C1/Lid", 0, 5, 0) == 1);
+    CHECK(gge_scene_set_node_visible(f.scene, "C1/Knob", 0) == 1);
+    CHECK(gge_scene_get_node_position(f.scene, "Lid", &x, &y, &z) == 1 && y == 1.2f);          // 구운 Lid는 그대로
+    CHECK(gge_scene_get_node_visible(f.scene, "Knob") == 1);
+    CHECK(Render(f.r).bgra != spawned.bgra);
+}
+
+void Test_DestroyedObjectsLeaveNoTrace_AndTheirNamesCanBeReused()
+{
+    SpawnFixture f("spawn_destroy");
+    if (!f.ok()) return;
+    CHECK(gge_scene_set_node_visible(f.scene, "Crate", 0) == 1);
+    const Image before = Render(f.r);
+
+    CHECK(f.Spawn("Crate", "C1", 2, 0.5f, 1) == 1);
+    CHECK(f.Spawn("Crate", "C2", -1, 0.5f, 2) == 1);
+    CHECK(f.Dynamic() == 6 && f.Objects() == f.base + 6);
+    const Image two = Render(f.r);
+    CHECK(f.Destroy("C1") == 1);                                  // 자손까지
+    CHECK(!f.Exists("C1") && !f.Exists("C1/Lid") && !f.Exists("C1/Knob"));
+    CHECK(f.Exists("C2") && f.Exists("C2/Lid") && f.Exists("C2/Knob"));
+    CHECK(f.Dynamic() == 3 && f.Objects() == f.base + 3);
+    float x = 0, y = 0, z = 0;
+    CHECK(gge_scene_get_node_position(f.scene, "C1", &x, &y, &z) == 0 && LastErrorHas("no node named 'C1'"));   // 지운 이름 = 없는 노드 규칙
+    CHECK(gge_scene_set_node_position(f.scene, "C1/Lid", 0, 0, 0) == 0);
+    CHECK(gge_scene_get_node_position(f.scene, "C2", &x, &y, &z) == 1 && x == -1 && z == 2);
+    CHECK(Render(f.r).bgra != two.bgra);
+    CHECK(f.Destroy("C2") == 1);
+    CHECK(f.Dynamic() == 0 && f.Objects() == f.base);
+    CHECK(Render(f.r).bgra == before.bgra);                      // 만들기 전과 바이트 동일
+
+    // 이름 재사용 + 슬롯 재사용: 같은 이름으로 다시 만들어도 같은 결과.
+    CHECK(f.Spawn("Crate", "C1", 2, 0.5f, 1) == 1);
+    CHECK(f.Dynamic() == 3 && f.Objects() == f.base + 3);
+    CHECK(gge_scene_get_node_position(f.scene, "C1/Lid", &x, &y, &z) == 1 && y == 1.2f);
+
+    // 부모가 구운 노드(Badge는 Panel의 자식)인 복제: 지우면 부모는 그대로 남고 복제만 사라진다.
+    const int objectsBefore = f.Objects();
+    CHECK(f.Spawn("Badge", "B1", 0.1f, 0.2f, 0.3f) == 1 && f.Objects() == objectsBefore + 1);
+    CHECK(f.Destroy("B1") == 1 && f.Objects() == objectsBefore && f.Exists("Panel") && f.Exists("Badge"));
+
+    // 지울 수 없는 것: 씬 파일의 노드, 복제본의 자손 단독, 없는 이름. 상태는 그대로다.
+    const Image kept = Render(f.r);
+    CHECK(f.Destroy("Crate") == 0 && LastErrorHas("was not created by spawn_object"));
+    CHECK(f.Destroy("Panel") == 0 && LastErrorHas("was not created by spawn_object"));
+    CHECK(f.Destroy("C1/Lid") == 0 && LastErrorHas("was not created by spawn_object"));
+    CHECK(f.Destroy("Nope") == 0 && LastErrorHas("no node named 'Nope'"));
+    CHECK(f.Exists("Crate") && f.Exists("C1/Lid") && f.Dynamic() == 3 && f.Objects() == f.base + 3);
+    CHECK(Render(f.r).bgra == kept.bgra);
+}
+
+void Test_SpawnRejectsBadRequests_AndChangesNothing()
+{
+    SpawnFixture f("spawn_reject");
+    if (!f.ok()) return;
+    CHECK(f.Spawn("Crate", "C1", 2, 0.5f, 1) == 1);
+    const Image before = Render(f.r);
+    const int objects = f.Objects(), dynamic = f.Dynamic();
+    auto rejected = [&](const char* what, int result, const char* reason) {
+        if (result != 0 || !LastErrorHas(reason)) std::printf("  not rejected as expected: %s (error: %s)\n", what, gge_last_error());
+        CHECK(result == 0);
+        CHECK(LastErrorHas(reason));
+        CHECK(f.Objects() == objects && f.Dynamic() == dynamic);   // 렌더러 오브젝트도 노드 수도 그대로
+    };
+    rejected("empty name", f.Spawn("Crate", ""), "must not be empty");
+    rejected("null name", gge_scene_spawn_object(f.scene, "Crate", nullptr, 0, 0, 0), "must not be empty");
+    rejected("slash in name", f.Spawn("Crate", "a/b"), "must not contain '/'");
+    rejected("name too long", f.Spawn("Crate", std::string(129, 'x').c_str()), "too long");
+    rejected("duplicate dynamic name", f.Spawn("Crate", "C1"), "already exists");
+    rejected("duplicate descendant name", f.Spawn("Pebble", "C1/Lid"), "must not contain '/'");
+    rejected("duplicate scene node name", f.Spawn("Pebble", "Panel"), "already exists");
+    rejected("descendant name clashes with a scene node", f.Spawn("Crate", "Z"), "a node named 'Z/Lid' already exists");
+    rejected("no such template", f.Spawn("Nope", "N1"), "no node named 'Nope'");
+    rejected("null template", gge_scene_spawn_object(f.scene, nullptr, "N1", 0, 0, 0), "no node named ''");
+    rejected("template is a clone", f.Spawn("C1", "N1"), "is a spawned object");
+    rejected("template is the player", f.Spawn("Panel", "N1"), "is or contains the player");
+    rejected("NaN position", f.Spawn("Crate", "N1", NAN, 0, 0), "spawn position must be finite");
+    rejected("infinite position", f.Spawn("Crate", "N1", 0, INFINITY, 0), "spawn position must be finite");
+    CHECK(!f.Exists("N1"));
+    CHECK(Render(f.r).bgra == before.bgra);
+
+    // 거부된 뒤에도 정상 동작한다(실패가 내부 상태를 망가뜨리지 않았다).
+    CHECK(f.Spawn("Crate", "C2", 0, 0.5f, 0) == 1 && f.Dynamic() == dynamic + 3);
+}
+
+void Test_SpawnLimitsAreEnforcedBeforeAnythingIsCreated()
+{
+    SpawnFixture f("spawn_limits");
+    if (!f.ok()) return;
+    auto name = [](int i) { return "P" + std::to_string(i); };
+
+    // 한 프레임(Step 사이)에 64번까지. 65번째는 거부, Step을 넘기면 다시 64번 가능.
+    for (int i = 0; i < 64; ++i) CHECK(f.Spawn("Pebble", name(i).c_str()) == 1);
+    CHECK(f.Spawn("Pebble", "P64") == 0 && LastErrorHas("too many spawns in one frame"));
+    CHECK(f.Dynamic() == 64 && !f.Exists("P64"));
+    f.Step();
+    // 합계 256까지(한 프레임 64씩).
+    for (int i = 64; i < 256; ++i) {
+        if (i % 64 == 0) f.Step();
+        CHECK(f.Spawn("Pebble", name(i).c_str()) == 1);
+    }
+    CHECK(f.Dynamic() == 256 && f.Objects() == f.base + 256);
+    f.Step();
+    CHECK(f.Spawn("Pebble", "P256") == 0 && LastErrorHas("too many spawned nodes (max 256, 256 alive, this spawn needs 1)"));
+    CHECK(f.Dynamic() == 256 && f.Objects() == f.base + 256 && !f.Exists("P256"));
+    CHECK(f.Destroy("P0") == 1);
+    CHECK(f.Spawn("Crate", "C1") == 0 && LastErrorHas("this spawn needs 3"));      // 자손 포함 3개가 안 들어간다: 하나도 만들지 않는다
+    CHECK(!f.Exists("C1") && !f.Exists("C1/Lid") && f.Dynamic() == 255);
+    CHECK(f.Spawn("Pebble", "P256") == 1 && f.Dynamic() == 256);                   // 자리가 나면 다시 된다
+
+    // 깊이: 17단 사슬은 거부(자손 이름도 하나도 안 남는다), 16단은 된다.
+    for (int i = 0; i < 40; ++i) CHECK(f.Destroy(name(i + 1).c_str()) == 1 || i >= 255);
+    f.Step();
+    const int objects = f.Objects(), dynamic = f.Dynamic();
+    CHECK(f.Spawn("D1", "D") == 0 && LastErrorHas("nested too deeply") && f.Objects() == objects && f.Dynamic() == dynamic && !f.Exists("D"));
+    CHECK(f.Spawn("E1", "E") == 1 && f.Dynamic() == dynamic + 16 && f.Exists("E/E16") && f.Objects() == objects + 16);
+
+    // Scene을 파괴하면 동적 오브젝트도 렌더러에서 사라진다.
+    gge_scene_destroy(f.scene);
+    f.scene = nullptr;
+    CHECK(gge_renderer_get_object_count(f.r) == 0);
+}
+
+void Test_SpawnedSkinnedObjectsKeepIndependentAnimationState()
+{
+    SpawnFixture f("spawn_skinned");
+    if (!f.ok()) return;
+    auto time = [&](const char* node) { const char* clip = nullptr; float t = -1; int p = 0, fd = 0, lp = 0, fin = 0; float sp = 0;
+                                        CHECK(gge_scene_get_node_animation(f.scene, node, &clip, &t, &p, &sp, &fd, &lp, &fin) == 1); return t; };
+    auto clipOf = [&](const char* node) { const char* clip = nullptr; float t, sp; int p, fd, lp, fin;
+                                          CHECK(gge_scene_get_node_animation(f.scene, node, &clip, &t, &p, &sp, &fd, &lp, &fin) == 1); return std::string(clip ? clip : "?"); };
+    for (int i = 0; i < 4; ++i) CHECK(gge_scene_step(f.scene, 0, 0, 0.25f) == 1);      // 템플릿 Dummy는 1.5배속으로 1.5초 -> 시간 0.5
+    CHECK(std::fabs(time("Dummy") - 0.5f) < 1e-4f);
+
+    CHECK(f.Spawn("Dummy", "Dm1", 1, 0, 0) == 1 && f.Spawn("Dummy", "Dm2", 2, 0, 0) == 1);
+    CHECK(clipOf("Dm1") == "bend" && time("Dm1") == 0 && time("Dm2") == 0);          // 구운 초기 클립으로, 템플릿의 현재 시간과 무관하게 시작
+    CHECK(std::fabs(time("Dummy") - 0.5f) < 1e-4f);
+    CHECK(gge_scene_play_clip(f.scene, "Dm1", "sway", 0, 0, 1) == 1);                // Dm1만 클립 변경
+    CHECK(clipOf("Dm1") == "sway" && clipOf("Dm2") == "bend" && clipOf("Dummy") == "bend");
+    for (int i = 0; i < 2; ++i) CHECK(gge_scene_step(f.scene, 0, 0, 0.25f) == 1);
+    CHECK(std::fabs(time("Dm2") - 0.75f) < 1e-4f && std::fabs(time("Dm1") - 0.75f) < 1e-4f);
+    CHECK(std::fabs(time("Dummy") - 0.25f) < 1e-4f);                                   // 1.25 -> 감김 0.25
+
+    // 먼저 만든 Dm1을 지워도(애니메이션 목록에서 빠져도) 나머지는 각자의 시간으로 계속 진행한다.
+    CHECK(f.Destroy("Dm1") == 1);
+    float t = 0; const char* clip = nullptr; int p, fd, lp, fin; float sp;
+    CHECK(gge_scene_get_node_animation(f.scene, "Dm1", &clip, &t, &p, &sp, &fd, &lp, &fin) == 0 && LastErrorHas("no node named 'Dm1'"));
+    CHECK(gge_scene_step(f.scene, 0, 0, 0.25f) == 1);
+    CHECK(std::fabs(time("Dm2") - 0.125f) < 1e-4f);                                    // 0.75 + 0.375 = 1.125 -> 0.125
+    CHECK(std::fabs(time("Dummy") - 0.625f) < 1e-4f);
+    CHECK(f.Spawn("Dummy", "Dm3", 3, 0, 0) == 1 && time("Dm3") == 0 && clipOf("Dm3") == "bend");   // 빈 슬롯을 다시 쓴다
+    CHECK(gge_scene_step(f.scene, 0, 0, 0.25f) == 1);
+    CHECK(std::fabs(time("Dm3") - 0.375f) < 1e-4f && std::fabs(time("Dm2") - 0.5f) < 1e-4f && std::min(time("Dummy"), 1.0f - time("Dummy")) < 1e-4f);   // 1.0 -> 감겨서 0(부동소수점 오차로 1 바로 아래일 수 있다)
+
+    // 스킨이 아닌 복제본에는 클립을 쓸 수 없다.
+    CHECK(f.Spawn("Pebble", "Pb1") == 1);
+    CHECK(gge_scene_play_clip(f.scene, "Pb1", "bend", 0, 0, 1) == 0 && LastErrorHas("has no skeleton animation"));
+}
+
+void Test_SpawnFailingHalfwayRollsBackEveryObject()
+{
+    SpawnFixture f("spawn_rollback");
+    if (!f.ok()) return;
+    CHECK(gge_scene_set_node_visible(f.scene, "Crate", 0) == 1);
+    const Image before = Render(f.r);
+    for (int failAfter = 1; failAfter <= 3; ++failAfter) {           // 루트 직후/중간/마지막 자손 직후
+        CHECK(gge_scene_set_spawn_failure_for_tests(f.scene, failAfter) == 1);
+        CHECK(f.Spawn("Crate", "C1", 2, 0.5f, 1) == 0 && LastErrorHas("injected spawn failure"));
+        CHECK(f.Objects() == f.base && f.Dynamic() == 0);            // 렌더러 오브젝트가 남지 않는다
+        CHECK(!f.Exists("C1") && !f.Exists("C1/Lid") && !f.Exists("C1/Knob"));   // 이름도 남지 않는다
+        CHECK(Render(f.r).bgra == before.bgra);
+    }
+    CHECK(gge_scene_set_spawn_failure_for_tests(f.scene, 1) == 1);   // 부모가 구운 노드(Badge/Panel)인 복제
+    CHECK(f.Spawn("Badge", "B1") == 0 && f.Objects() == f.base && !f.Exists("B1"));
+    CHECK(gge_scene_set_spawn_failure_for_tests(f.scene, 1) == 1);   // 스킨 노드(애니메이션 상태가 만들어진 뒤 실패)
+    CHECK(f.Spawn("Dummy", "Dm1") == 0 && f.Objects() == f.base && !f.Exists("Dm1"));
+    CHECK(gge_scene_set_spawn_failure_for_tests(f.scene, -1) == 1);
+    CHECK(f.Spawn("Crate", "C1", 2, 0.5f, 1) == 1 && f.Dynamic() == 3 && f.Objects() == f.base + 3);   // 실패 뒤에도 정상
+    CHECK(f.Spawn("Dummy", "Dm1") == 1);
+    CHECK(gge_scene_step(f.scene, 0, 0, 0.25f) == 1);                // 애니메이션 목록이 온전하다
+}
+
+// 무작위로 만들고 지우기를 반복해도 모델(살아 있는 이름 집합)과 렌더러/노드 수가 항상 일치한다.
+void Test_SpawnAndDestroyKeepEveryInvariantUnderRandomSequences()
+{
+    SpawnFixture f("spawn_random", 64, 48);
+    if (!f.ok()) return;
+    struct Template { const char* name; int size; };
+    const Template templates[] = {{"Crate", 3}, {"Pebble", 1}, {"Dummy", 1}, {"Badge", 1}, {"E1", 16}};
+    std::map<std::string, const Template*> live;   // 인스턴스 이름 -> 템플릿
+    unsigned seed = 12345;
+    auto next = [&] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+    int total = 0, spawned = 0, destroyed = 0, refused = 0;
+    for (int op = 0; op < 3000; ++op) {
+        f.Step();   // 한 프레임 한도에 걸리지 않게 매 연산마다 프레임을 넘긴다
+        const std::string name = "I" + std::to_string(next() % 40);
+        if (next() % 2 == 0) {
+            const Template& t = templates[next() % 5];
+            const bool expectOk = !live.count(name) && total + t.size <= 256;
+            const int result = f.Spawn(t.name, name.c_str(), static_cast<float>(next() % 5), 0, static_cast<float>(next() % 5));
+            CHECK((result == 1) == expectOk);
+            if (result == 1) { live[name] = &t; total += t.size; ++spawned; } else ++refused;
+        } else {
+            const int result = f.Destroy(name.c_str());
+            CHECK((result == 1) == (live.count(name) != 0));
+            if (result == 1) { total -= live[name]->size; live.erase(name); ++destroyed; } else ++refused;
+        }
+        CHECK(f.Dynamic() == total && f.Objects() == f.base + total);
+        if (op % 100 == 0) {
+            for (int i = 0; i < 40; ++i) {
+                const std::string n = "I" + std::to_string(i);
+                CHECK(f.Exists(n.c_str()) == (live.count(n) != 0));
+            }
+            CHECK(f.Exists("Crate") && f.Exists("Panel"));
+        }
+        if (g_failures > 0) break;   // 첫 실패에서 멈춘다(로그가 쏟아지지 않게)
+    }
+    CHECK(spawned > 200 && destroyed > 200 && refused > 200);          // 세 경로가 모두 실제로 쓰였다
+    for (const auto& [n, t] : live) CHECK(f.Destroy(n.c_str()) == 1);
+    CHECK(f.Dynamic() == 0 && f.Objects() == f.base);
+    CHECK(gge_scene_get_node_slot_count(f.scene) <= 43 + 256);   // 구운 노드 43개(SpawnSpec) + 동시에 살 수 있는 복제 노드 최대치: 지운 슬롯을 재사용한다(spawned는 1000건이 넘는다)
+    // 새 이름으로 가득 차게 만들었다 비우기를 반복해도 렌더러 오브젝트 수가 늘지 않는다(누수 없음).
+    for (int round = 0; round < 50; ++round) {
+        f.Step();
+        for (int i = 0; i < 10; ++i) CHECK(f.Spawn("Crate", ("R" + std::to_string(i)).c_str()) == 1);
+        for (int i = 0; i < 10; ++i) CHECK(f.Destroy(("R" + std::to_string(i)).c_str()) == 1);
+        CHECK(f.Objects() == f.base && f.Dynamic() == 0);
+    }
+}
+
 int main()
 {
     struct Case { const char* name; std::function<void()> fn; };
     const Case cases[] = {
+        {"SpawnedObjectStartsFromTheBakedTemplateAndLooksLikeABakedCopy", Test_SpawnedObjectStartsFromTheBakedTemplateAndLooksLikeABakedCopy},
+        {"DestroyedObjectsLeaveNoTrace_AndTheirNamesCanBeReused", Test_DestroyedObjectsLeaveNoTrace_AndTheirNamesCanBeReused},
+        {"SpawnRejectsBadRequests_AndChangesNothing", Test_SpawnRejectsBadRequests_AndChangesNothing},
+        {"SpawnLimitsAreEnforcedBeforeAnythingIsCreated", Test_SpawnLimitsAreEnforcedBeforeAnythingIsCreated},
+        {"SpawnedSkinnedObjectsKeepIndependentAnimationState", Test_SpawnedSkinnedObjectsKeepIndependentAnimationState},
+        {"SpawnFailingHalfwayRollsBackEveryObject", Test_SpawnFailingHalfwayRollsBackEveryObject},
+        {"SpawnAndDestroyKeepEveryInvariantUnderRandomSequences", Test_SpawnAndDestroyKeepEveryInvariantUnderRandomSequences},
         {"GoldenCompareRules", Test_GoldenCompareRules},
         {"ZeroScaleObjectsRenderLikeVeryThinOnes_AndNeverTouchOtherObjects", Test_ZeroScaleObjectsRenderLikeVeryThinOnes_AndNeverTouchOtherObjects},
         {"ObjectVisibilityIsIndependentOfAlpha_AndHidesSubtreeShadowAndSorting", Test_ObjectVisibilityIsIndependentOfAlpha_AndHidesSubtreeShadowAndSorting},
