@@ -1,0 +1,2 @@
+# 외부 폰트는 원본 바이트 그대로 둔다(autocrlf가 줄바꿈을 바꾸면 SHA-256 검사(FontFileTests)와 "원본 무수정" 약속이 깨진다).
+assets/external/galmuri/* -text
