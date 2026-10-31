@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "nodes": [
+    { "name": "Floor", "mesh": "cube.obj", "position": [0, -0.1, 0], "scale": [6, 0.1, 4], "color": [0.35, 0.4, 0.35] },
+    { "name": "Npc",   "mesh": "cube.obj", "position": [3, 0.5, 0],  "scale": [0.4, 0.5, 0.4], "color": [0.3, 0.6, 0.9] },
+    { "name": "Hero",  "mesh": "cube.obj", "position": [0, 0.35, 0], "scale": [0.35, 0.35, 0.35], "color": [0.9, 0.6, 0.2] }
+  ],
+  "gameplay": {
+    "rooms": [
+      {
+        "name": "Village",
+        "polygon": [-6, -4, 6, -4, 6, 4, -6, 4],
+        "camera": { "eye": [0, 7, 9], "target": [0, 0, 0], "fov": 0.8 }
+      }
+    ],
+    "colliders": [
+      { "name": "Npc", "min": [2.6, -0.4], "max": [3.4, 0.4] }
+    ],
+    "triggers": [
+      { "name": "NpcPad", "tag": 20, "polygon": [1.5, -1.2, 4.5, -1.2, 4.5, 1.2, 1.5, 1.2] }
+    ],
+    "player": { "node": "Hero", "spawn": [0, 0], "radius": 0.4, "speed": 3 }
+  }
+}

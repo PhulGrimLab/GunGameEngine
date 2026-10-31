@@ -155,6 +155,7 @@ public class UiApiTests
         rig.Runner(new Lambda(c =>
         {
             Assert.Equal(new TextSize(11, 9, 1), c.MeasureText("AB"));
+            Assert.Equal((64, 48), (c.ScreenWidth, c.ScreenHeight));       // 렌더 타깃 크기
             c.ShowRect("panel", 0, 0, 20, 12, 0x102030);
             c.ShowText("title", "AB", 1, 1, 0xFFFF00);
             seen.Add($"ui {rig.Renderer.UiCount}");

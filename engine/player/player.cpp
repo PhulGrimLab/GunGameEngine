@@ -16,7 +16,9 @@
 //                      엔진 쓰기 API(트리거 켜기/끄기, 텔레포트)와 오브젝트 알파로 게임을 바꾼다. 스크립트 예외는 사유를 출력하고 종료(코드 1).
 //   --script-type 이름  어셈블리에 스크립트가 여럿일 때 그 타입(전체/짧은 이름)만 실행한다(기본은 모두).
 //   --report-animation 노드  헤드리스 결과 한 줄 끝에 그 노드의 클립 재생 상태(클립 이름, playing/fading/loop/finished, 시간, 속도)를 붙인다.
-//   --font 파일.bdf    스크립트의 화면 글자(IUiApi)에 쓸 BDF 비트맵 폰트(예: Galmuri11.bdf). --script와 함께만 쓴다.
+//   --font 파일.bdf    스크립트의 화면 글자(IUiApi)에 쓸 BDF 비트맵 폰트(예: Galmuri11.bdf). --script와 함께만 쓴다. 안 주면 기본 위치(실행 파일 옆
+//                      Galmuri11.bdf, 저장소에서 실행하면 assets/external/galmuri/Galmuri11.bdf)에서 찾고 없으면 폰트 없이 시작한다.
+//   --no-font          기본 폰트도 읽지 않는다(스크립트가 글자 API를 부르면 "no font" 오류).
 //   --report-ui        헤드리스 결과 한 줄 끝에 화면 항목 수(ui=N)를 붙인다.
 //   --report-objects   헤드리스 결과 한 줄 끝에 살아 있는 동적 노드 수(dynamic=N)와 렌더러 오브젝트 수(objects=N)를 붙인다.
 //   --script-host-dir 폴더  GunGame.ScriptHost.dll이 있는 폴더(기본 <exe 폴더>\script_host; tools\GunGameTools.slnx 빌드가 채운다).
@@ -191,7 +193,8 @@ struct Options {
     std::wstring script, scriptType, scriptHostDir;   // --script / --script-type / --script-host-dir
     std::string reportAnimation;                      // --report-animation 노드: 헤드리스 결과 한 줄에 그 노드의 클립 재생 상태를 붙인다
     std::string font;                                 // --font 파일.bdf: 스크립트의 화면 글자(IUiApi)에 쓸 비트맵 폰트(UTF-8 경로)
-    bool reportUi = false;                            // --report-ui: 헤드리스 결과 한 줄에 화면 항목 수(ui=N)를 붙인다
+    bool noFont = false;                              // --no-font: 기본 폰트도 읽지 않는다(글자 API는 "no font" 오류)
+    bool reportUi = false;                         // --report-ui: 헤드리스 결과 한 줄에 화면 항목 수(ui=N)를 붙인다
     bool reportObjects = false;                       // --report-objects: 헤드리스 결과 한 줄에 살아 있는 동적 노드 수(dynamic=N)와 렌더러 오브젝트 수(objects=N)를 붙인다
 };
 
@@ -212,6 +215,17 @@ std::wstring ExeDirectory()
     std::wstring full(path, n < MAX_PATH ? n : 0);
     size_t slash = full.find_last_of(L"\\/");
     return slash == std::wstring::npos ? L"." : full.substr(0, slash);
+}
+
+// 기본 폰트 위치: 실행 파일 옆의 Galmuri11.bdf(배포 때 게임과 함께 둔다), 없으면 저장소 레이아웃(build\bin에서 ..\..\assets\external\galmuri). 없으면 빈 문자열.
+std::string FindDefaultFont()
+{
+    const std::wstring exe = ExeDirectory();
+    const std::wstring candidates[] = {exe + L"\\Galmuri11.bdf", exe + L"\\..\\..\\assets\\external\\galmuri\\Galmuri11.bdf"};
+    for (const std::wstring& c : candidates)
+        if (GetFileAttributesW(c.c_str()) != INVALID_FILE_ATTRIBUTES)
+            return ToUtf8(c.c_str());
+    return {};
 }
 
 bool ParseSize(const std::string& text, int& w, int& h)
@@ -266,6 +280,7 @@ bool ParseOptions(int argc, wchar_t** argv, Options& o, std::string& error)
         else if (a == "--report-animation") o.reportAnimation = value("--report-animation");
         else if (a == "--report-objects") o.reportObjects = true;
         else if (a == "--report-ui") o.reportUi = true;
+        else if (a == "--no-font") o.noFont = true;
         else if (a == "--font") o.font = value("--font");
         else if (a == "--script") o.script = wideValue("--script");
         else if (a == "--script-type") o.scriptType = wideValue("--script-type");
@@ -332,8 +347,13 @@ struct Game {
             gge_renderer_set_retro(renderer, 1, kColorBitsRetro, 1, 1);
         scene = gge_scene_load(renderer, o.scene.c_str());
         if (!scene) { error = std::string("cannot load the scene: ") + gge_last_error(); return false; }
-        if (!o.font.empty()) {
-            font = gge_font_load(o.font.c_str());
+        // 폰트: --font가 있으면 그 파일(없거나 잘못되면 오류로 종료), 없고 스크립트가 있으면 기본 위치(실행 파일 옆 Galmuri11.bdf, 저장소에서 실행하면 assets/external/galmuri)를
+        // 찾아 있으면 쓴다. 기본 위치에 없으면 조용히 폰트 없이 시작하고 스크립트가 글자 API를 부를 때 "no font" 오류가 난다(--no-font도 같은 상태).
+        std::string fontPath = o.font;
+        if (fontPath.empty() && !o.script.empty() && !o.noFont)
+            fontPath = FindDefaultFont();
+        if (!fontPath.empty()) {
+            font = gge_font_load(fontPath.c_str());
             if (!font) { error = std::string("cannot load the font: ") + gge_last_error(); return false; }
         }
         if (!o.script.empty()) {

@@ -35,5 +35,8 @@ python -I tools/extract_glb_texture.py assets/external/CesiumMilkTruck/CesiumMil
 구운 데모 보기: `set GGE_WRITE_DEMO=build\demo` 후 `dotnet test tools\GunGame.Interop.Tests --filter RealModelPipelineTests`, 그다음
 `build\bin\gge_player.exe build\demo\real_models.ggs`(또는 `--headless --warp --keys S:20 --screenshot out.ppm`).
 
+## 폰트 (게임 콘텐츠로 배포 가능)
+- `galmuri/Galmuri11.bdf` + `galmuri/LICENSE.txt`: 한글 비트맵 폰트(SIL OFL 1.1, 원본 무수정). 출처/버전/SHA-256/배포 의무는 `galmuri/README.md`. 위 glTF 모델과 달리 게임에 함께 배포하는 용도이며 그때 `LICENSE.txt`를 같이 넣는다.
+
 ## 일부러 넣지 않은 것
 - `VirtualCity`(Khronos 샘플): "3DRT license with allowances for glTF Testing"이라 재배포 조건이 불리해 저장소에 두지 않았다. 정적/다중 노드 경로는 CesiumMilkTruck으로 대신 검증한다.

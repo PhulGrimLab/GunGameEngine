@@ -197,6 +197,65 @@ public sealed class HudDemo : IGameScript
     }
 }
 
+/// <summary>
+/// 대화하는 NPC(assets/samples/dialog.scene.json): NpcPad 영역 안에서 상호작용 버튼을 누르면 화면 아래에 반투명 대화창(배경 사각형 + 화자 + 대사)이 열리고, 누를 때마다
+/// 다음 대사로 넘어가며 마지막 대사 뒤에는 닫힌다. 취소 버튼은 언제든 닫는다. 대화창 높이는 MeasureText로 대사에 맞추고 화면 크기는 ScreenWidth/ScreenHeight에서 읽는다.
+/// 한 글자씩 나오는 효과는 없다(스크립트가 글자를 늘려 가며 직접 만들 수 있다).
+/// </summary>
+public sealed class NpcDialog : IGameScript
+{
+    private const string Speaker = "마을 사람";
+    private static readonly string[] Lines =
+    [
+        "여행자여, 이 마을에 온 것을 환영한다.",
+        "북쪽 문은 열쇠가 있어야 열린다네. 열쇠는 동굴 안에 있지.",
+        "조심해서 다녀오게!",
+    ];
+
+    private const int Margin = 4, Padding = 4;
+    private int _line = -1;   // -1 = 닫힘
+
+    public void OnAction(IScriptContext context, GameAction action)
+    {
+        if (action == GameAction.Cancel && _line >= 0)
+        {
+            Close(context);
+        }
+        else if (action == GameAction.Interact)
+        {
+            if (_line < 0 && context.IsPlayerInside("NpcPad"))
+                Show(context, 0);
+            else if (_line >= 0 && _line + 1 < Lines.Length)
+                Show(context, _line + 1);
+            else if (_line >= 0)
+                Close(context);
+        }
+    }
+
+    private void Show(IScriptContext context, int line)
+    {
+        _line = line;
+        int textWidth = context.ScreenWidth - 2 * (Margin + Padding);
+        TextSize speaker = context.MeasureText(Speaker);
+        TextSize text = context.MeasureText(Lines[line], textWidth);
+        int boxHeight = Padding + speaker.Height + 2 + text.Height + Padding;
+        int boxY = context.ScreenHeight - Margin - boxHeight;
+        context.ShowRect("dialog.box", Margin, boxY, context.ScreenWidth - 2 * Margin, boxHeight, 0x101830, 200);   // 반투명 배경이 먼저
+        context.ShowText("dialog.speaker", Speaker, Margin + Padding, boxY + Padding, 0xFFD060);
+        context.ShowText("dialog.text", Lines[line], Margin + Padding, boxY + Padding + speaker.Height + 2, 0xFFFFFF, textWidth);
+        context.Log($"dialog line {line + 1}/{Lines.Length}");
+    }
+
+    private void Close(IScriptContext context)
+    {
+        _line = -1;
+        context.HideRect("dialog.box");
+        context.HideText("dialog.speaker");
+        context.HideText("dialog.text");
+        context.Log("dialog closed");
+    }
+}
+
 /// <summary>한 프레임에 한도(64)보다 많이 만들려고 한다(한도 초과가 사유와 함께 스크립트 예외가 되어 플레이어가 멈추는지 확인용).</summary>
 public sealed class SpawnFlood : IGameScript
 {

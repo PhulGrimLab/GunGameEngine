@@ -192,6 +192,12 @@ public readonly record struct TextSize(int Width, int Height, int Lines);
 /// </summary>
 public interface IUiApi
 {
+    /// <summary>렌더 타깃의 가로 픽셀 수(플레이어의 --size). 화면 아래에 대화창을 놓는 것처럼 화면 크기에 맞춘 배치에 쓴다.</summary>
+    int ScreenWidth { get; }
+
+    /// <summary>렌더 타깃의 세로 픽셀 수.</summary>
+    int ScreenHeight { get; }
+
     /// <summary>
     /// 이름의 글자 항목을 보인다: 없으면 만들고(그리는 순서 = 만든 순서), 있으면 <b>제자리에서</b> 글자/위치/색/폭을 고친다(순서 유지).
     /// <paramref name="maxWidth"/> &gt; 0이면 그 픽셀 폭을 넘기 전에 줄바꿈(마지막 공백에서, 공백이 없으면 글자 경계에서), 0 이하면 '\n'에서만 줄을 바꾼다.

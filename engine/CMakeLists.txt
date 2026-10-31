@@ -184,13 +184,43 @@ set_tests_properties(gge_player_hud_matches_golden PROPERTIES FIXTURES_REQUIRED 
 # 폰트 없이 글자 API를 쓰면 사유와 함께 멈춘다. --font만 주거나 잘못된 폰트 파일도 사유와 함께 거부한다.
 gge_player_expect_failure(gge_player_hud_text_needs_a_font
     "no font: start the player with --font file.bdf"
-    ${GGE_SPAWNER_SCENE} --headless --warp --frames 1 --script ${GGE_SAMPLE_SCRIPTS} --script-type HudDemo)
+    ${GGE_SPAWNER_SCENE} --headless --warp --frames 1 --no-font --script ${GGE_SAMPLE_SCRIPTS} --script-type HudDemo)
 gge_player_expect_failure(gge_player_font_needs_a_script
     "--font needs --script"
     ${GGE_SPAWNER_SCENE} --headless --warp --frames 1 --font ${GGE_TEST_FONT})
 gge_player_expect_failure(gge_player_font_missing_file_is_rejected
     "cannot load the font: cannot open font file"
     ${GGE_SPAWNER_SCENE} --headless --warp --frames 1 --font ${CMAKE_BINARY_DIR}/no_such_font.bdf --script ${GGE_SAMPLE_SCRIPTS} --script-type HudDemo)
+# 대화하는 NPC(assets/samples/dialog.ggs + NpcDialog 스크립트, 실제 Galmuri11 한글 폰트를 기본 위치에서 찾는다): NpcPad 영역(x >= 1.5, 20프레임 걷기)에서 상호작용.
+set(GGE_DIALOG_SCENE ${CMAKE_CURRENT_SOURCE_DIR}/../assets/samples/dialog.ggs)
+function(gge_player_dialog_test name frames keys regex)
+    add_test(NAME ${name}
+             COMMAND gge_player ${GGE_DIALOG_SCENE} --headless --warp --size 160x120 --frames ${frames} --keys ${keys} --report-ui
+                     --script ${GGE_SAMPLE_SCRIPTS} --script-type NpcDialog)
+    set_tests_properties(${name} PROPERTIES PASS_REGULAR_EXPRESSION "${regex}")
+endfunction()
+# 영역 안에서 E: 대화창이 열린다(배경 + 화자 + 대사 = 항목 3개)
+gge_player_dialog_test(gge_player_dialog_opens_inside_the_npc_area 21 D:20,E:1 "dialog line 1/3[\r\n]+.*events=.Enter NpcPad 20. ui=3")
+# E를 세 번 더: 대사 2/3, 3/3, 그다음 닫힘(항목 0개)
+gge_player_dialog_test(gge_player_dialog_advances_and_closes 27 D:20,E:1,-:1,E:1,-:1,E:1,-:1,E:1
+    "dialog line 1/3[\r\n]+.script. dialog line 2/3[\r\n]+.script. dialog line 3/3[\r\n]+.script. dialog closed[\r\n]+.*ui=0")
+# 취소(Q): 언제든 닫힌다
+gge_player_dialog_test(gge_player_dialog_closes_with_cancel 23 D:20,E:1,-:1,Q:1 "dialog line 1/3[\r\n]+.script. dialog closed[\r\n]+.*ui=0")
+# 영역 밖에서 E: 아무 일도 없다
+gge_player_dialog_test(gge_player_dialog_needs_the_npc_area 3 E:1 "frames=3 .*ui=0")
+set_tests_properties(gge_player_dialog_needs_the_npc_area PROPERTIES FAIL_REGULAR_EXPRESSION "dialog")
+# 화면 결과: 실제 한글 폰트로 그린 대화창(눈으로 확인한 뒤 고정한 골든)이 바이트까지 같다. 폰트가 바뀌면 골든을 다시 만든다(assets/external/galmuri/README.md).
+add_test(NAME gge_player_dialog_screenshot
+         COMMAND gge_player ${GGE_DIALOG_SCENE} --headless --warp --size 160x120 --frames 21 --keys D:20,E:1
+                 --script ${GGE_SAMPLE_SCRIPTS} --script-type NpcDialog --screenshot ${CMAKE_BINARY_DIR}/player_dialog.ppm)
+set_tests_properties(gge_player_dialog_screenshot PROPERTIES FIXTURES_SETUP gge_player_dialog_screenshot)
+add_test(NAME gge_player_dialog_matches_golden
+         COMMAND ${CMAKE_COMMAND} -E compare_files ${CMAKE_BINARY_DIR}/player_dialog.ppm ${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/player_dialog_160x120.ppm)
+set_tests_properties(gge_player_dialog_matches_golden PROPERTIES FIXTURES_REQUIRED gge_player_dialog_screenshot)
+# --no-font면 기본 폰트도 읽지 않아 글자 API가 "no font"로 멈춘다(기본 폰트 규칙의 반대편 확인).
+gge_player_expect_failure(gge_player_dialog_without_a_font_stops_with_a_reason
+    "no font: start the player with --font file.bdf"
+    ${GGE_DIALOG_SCENE} --headless --warp --frames 21 --keys D:20,E:1 --no-font --script ${GGE_SAMPLE_SCRIPTS} --script-type NpcDialog)
 # 스크립트 호스트 폴더에 gge.dll 사본이 있어도 .NET이 그걸 따로 불러 엔진 상태가 갈라지면 안 된다(플레이어가 올린 것을 그대로 쓴다).
 # 갈라지면 스크립트가 보는 씬이 달라 위 텔레포트/트리거 결과가 나오지 않거나 프로세스가 죽는다.
 add_test(NAME gge_player_script_decoy_host_setup

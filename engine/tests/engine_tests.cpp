@@ -3,6 +3,7 @@
 #include <gge/gge.h>
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -6132,10 +6133,46 @@ void Test_UiTextKeepsItsFontAliveAndSurvivesRendererSizes()
     }
 }
 
+// 실제 폰트(assets/external/galmuri/Galmuri11.bdf, 원본 무수정): 파일이 없으면 통과하지 않고 실패한다(경로가 깨진 것을 알려야 한다).
+void Test_RealGalmuriFontCoversHangulAndAsciiAndLoadsFast()
+{
+    const fs::path path = fs::path(GGE_TEST_DATA_DIR) / "../../assets/external/galmuri/Galmuri11.bdf";
+    CHECK(fs::exists(path));
+    if (!fs::exists(path)) return;
+    const auto start = std::chrono::steady_clock::now();
+    GgeFont* font = gge_font_load(path.generic_string().c_str());
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    if (!font) std::printf("  real font load failed: %s\n", gge_last_error());
+    CHECK(font != nullptr);
+    if (!font) return;
+    std::printf("  (Galmuri11.bdf loaded in %.1f ms)\n", ms);
+    CHECK(ms < 5000);                                        // 수치는 보고용이고 여기서는 터무니없이 느린 경우만 잡는다(보통 십수 ms)
+    int ascent = 0, descent = 0;
+    CHECK(gge_font_get_metrics(font, &ascent, &descent) == 1 && ascent == 14 && descent == 2);
+    int missingHangul = 0, missingAscii = 0;
+    for (uint32_t c = 0xAC00; c <= 0xD7A3; ++c) missingHangul += gge_font_has_glyph(font, c) ? 0 : 1;   // 현대 한글 완성형 11172자 전부
+    for (uint32_t c = 0x20; c <= 0x7E; ++c) missingAscii += gge_font_has_glyph(font, c) ? 0 : 1;
+    CHECK(missingHangul == 0 && missingAscii == 0);
+    CHECK(gge_font_has_glyph(font, 0xFFFD) == 1);
+    CHECK(gge_font_has_glyph(font, 0x1F600) == 0);           // 이모지는 없다(.notdef로 보인다)
+    // 한글 문장의 측정: 실제 글리프 폭 합(비례폭)과 줄 높이 14 + 2.
+    int w = 0, h = 0, n = 0;
+    CHECK(gge_font_measure_text(font, "안녕하세요, 세계! Hello 123", 0, &w, &h, &n) == 1 && w == 161 && h == 16 && n == 1);
+    CHECK(gge_font_measure_text(font, "안녕하세요, 세계! Hello 123", 80, &w, &h, &n) == 1 && n >= 2 && w <= 80 && h == 16 * n);
+    // 그리기는 크래시 없이 켜진 픽셀을 만들고(한글/영문/숫자/이모지/깨진 UTF-8 섞임), 같은 입력은 같은 결과다.
+    Canvas a(200, 40), b(200, 40);
+    const char* mixed = "한글 ABC 123 \xF0\x9F\x98\x80 \xFF 끝";
+    CHECK(gge_font_draw_text(font, mixed, 0, a.px.data(), a.w, a.h, a.Stride(), 2, 2, 0xFFFFFF) == 1);
+    CHECK(gge_font_draw_text(font, mixed, 0, b.px.data(), b.w, b.h, b.Stride(), 2, 2, 0xFFFFFF) == 1);
+    CHECK(a.px == b.px && a.Ascii(0xFFFFFF).find('#') != std::string::npos);
+    gge_font_destroy(font);
+}
+
 int main()
 {
     struct Case { const char* name; std::function<void()> fn; };
     const Case cases[] = {
+        {"RealGalmuriFontCoversHangulAndAsciiAndLoadsFast", Test_RealGalmuriFontCoversHangulAndAsciiAndLoadsFast},
         {"BitmapFontParsesGlyphsMetricsAndDrawsExactPixels", Test_BitmapFontParsesGlyphsMetricsAndDrawsExactPixels},
         {"BitmapFontRejectsMalformedFilesWithAReason", Test_BitmapFontRejectsMalformedFilesWithAReason},
         {"TextMeasuringFollowsTheLineRules", Test_TextMeasuringFollowsTheLineRules},

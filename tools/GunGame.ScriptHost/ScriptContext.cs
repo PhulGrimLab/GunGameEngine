@@ -139,7 +139,11 @@ internal sealed class ScriptContext(EngineRenderer renderer, EngineScene scene, 
 
     private readonly Dictionary<string, (int Id, UiKind Kind)> _ui = new(StringComparer.Ordinal);
 
-    private EngineFont Font => font ?? throw new InvalidOperationException("no font: start the player with --font file.bdf");
+    public int ScreenWidth => renderer.Width;
+
+    public int ScreenHeight => renderer.Height;
+
+    private EngineFont Font => font ?? throw new InvalidOperationException("no font: start the player with --font file.bdf (or put Galmuri11.bdf next to gge_player.exe)");
 
     private static void RequireUiName(string name)
     {
