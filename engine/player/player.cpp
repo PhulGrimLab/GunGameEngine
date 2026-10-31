@@ -15,6 +15,7 @@
 //   --script 파일.dll   게임 스크립트(C#, GunGame.Scripting의 IGameScript)를 .NET 런타임을 띄워 실행한다. 이벤트/프레임마다 호출되고
 //                      엔진 쓰기 API(트리거 켜기/끄기, 텔레포트)와 오브젝트 알파로 게임을 바꾼다. 스크립트 예외는 사유를 출력하고 종료(코드 1).
 //   --script-type 이름  어셈블리에 스크립트가 여럿일 때 그 타입(전체/짧은 이름)만 실행한다(기본은 모두).
+//   --report-animation 노드  헤드리스 결과 한 줄 끝에 그 노드의 클립 재생 상태(클립 이름, playing/fading/loop/finished, 시간, 속도)를 붙인다.
 //   --script-host-dir 폴더  GunGame.ScriptHost.dll이 있는 폴더(기본 <exe 폴더>\script_host; tools\GunGameTools.slnx 빌드가 채운다).
 //   --self-test        입력 매핑/대본 해석의 자체 검사를 하고 끝낸다.
 // 조작: WASD/방향키 또는 게임패드 왼쪽 스틱, Esc 종료. 입력은 활성 방 카메라 기준이다.
@@ -185,6 +186,7 @@ struct Options {
     int frames = 1;
     std::string keys, screenshot;
     std::wstring script, scriptType, scriptHostDir;   // --script / --script-type / --script-host-dir
+    std::string reportAnimation;                      // --report-animation 노드: 헤드리스 결과 한 줄에 그 노드의 클립 재생 상태를 붙인다
 };
 
 std::string ToUtf8(const wchar_t* wide)
@@ -255,6 +257,7 @@ bool ParseOptions(int argc, wchar_t** argv, Options& o, std::string& error)
             if (!ParseSize(value("--size"), o.width, o.height)) { error = "--size must look like 320x240"; return false; }
         } else if (a == "--keys") o.keys = value("--keys");
         else if (a == "--screenshot") o.screenshot = value("--screenshot");
+        else if (a == "--report-animation") o.reportAnimation = value("--report-animation");
         else if (a == "--script") o.script = wideValue("--script");
         else if (a == "--script-type") o.scriptType = wideValue("--script-type");
         else if (a == "--script-host-dir") o.scriptHostDir = wideValue("--script-host-dir");
@@ -447,11 +450,27 @@ int RunHeadless(const Options& o)
         }
     }
 
+    // --report-animation: 자동 검증이 클립 전환 결과를 확인할 수 있게 노드의 재생 상태를 결과 줄 끝에 붙인다.
+    std::string animation;
+    if (!o.reportAnimation.empty()) {
+        const char* clip = nullptr;
+        float time = 0, speed = 0;
+        int playing = 0, fading = 0, loop = 0, finished = 0;
+        if (!gge_scene_get_node_animation(game.scene, o.reportAnimation.c_str(), &clip, &time, &playing, &speed, &fading, &loop, &finished)) {
+            std::fprintf(stderr, "gge_player: --report-animation: %s\n", gge_last_error());
+            return 1;
+        }
+        char text[256];
+        std::snprintf(text, sizeof text, " animation[%s]=%s playing=%d fading=%d loop=%d finished=%d time=%.3f speed=%.3f", o.reportAnimation.c_str(),
+                      clip ? clip : "", playing, fading, loop, finished, time, speed);
+        animation = text;
+    }
+
     float x = 0, z = 0, yaw = 0;
     if (gge_scene_get_player(game.scene, &x, &z, &yaw))
-        std::printf("frames=%d player=(%.3f, %.3f) yaw=%.3f room=%s events=[%s]\n", o.frames, x, z, yaw, gge_scene_active_room_name(game.scene), events.c_str());
+        std::printf("frames=%d player=(%.3f, %.3f) yaw=%.3f room=%s events=[%s]%s\n", o.frames, x, z, yaw, gge_scene_active_room_name(game.scene), events.c_str(), animation.c_str());
     else
-        std::printf("frames=%d player=none events=[%s]\n", o.frames, events.c_str());
+        std::printf("frames=%d player=none events=[%s]%s\n", o.frames, events.c_str(), animation.c_str());
     return 0;
 }
 

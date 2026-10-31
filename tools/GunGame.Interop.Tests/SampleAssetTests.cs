@@ -36,6 +36,13 @@ public class SampleAssetTests
             [(1, [0f, 1.0f, 0f]), (2, [0f, 1.2f, 0f])]));
         builder.Write(target, "tentacle");
 
+        // 플레이어 걷기/대기 전환 샘플(walk_animation.scene.json)의 모델: 길이 2초 idle(살짝 흔들림)과 1초 walk(크게 흔들림).
+        var hero = new GltfBuilder { Tube = true };
+        hero.Animations.Clear();
+        hero.KeyedAnimations.Add(("idle", [0f, 1f, 2f], [(1, [0f, 0.1f, 0f]), (2, [0f, -0.1f, 0f])]));
+        hero.KeyedAnimations.Add(("walk", [0f, 0.5f, 1f], [(1, [0f, 0.5f, 0f]), (2, [0f, -0.5f, 0f])]));
+        hero.Write(target, "hero");
+
         // 독립 플레이어/엔진 테스트가 쓰는 구운 샘플. 씬 JSON이나 형식이 바뀌면 다시 만들어야 한다(아래 BakedSample_IsUpToDate가 알려 준다: 구운 파일은 C++ 엔진 테스트와 플레이어 ctest가 그대로 읽는다).
         string? samples = FindSamples();
         if (samples is not null)
@@ -44,11 +51,12 @@ public class SampleAssetTests
     }
 
     // 씬 JSON에서 구워 저장소에 둔 샘플(.ggs). play_v1.ggs는 옛 형식(version 1)을 그대로 보존한 호환 확인용 파일이라 여기에 없다(재생성하지 않는다).
-    private static readonly string[] BakedSamples = ["play", "locked_door"];
+    private static readonly string[] BakedSamples = ["play", "locked_door", "walk_animation"];
 
     [Theory]
     [InlineData("play")]
     [InlineData("locked_door")]
+    [InlineData("walk_animation")]
     public void BakedSample_IsUpToDate(string name)
     {
         string? samples = FindSamples();
@@ -69,6 +77,18 @@ public class SampleAssetTests
         Assert.Equal(1u, BitConverter.ToUInt32(bytes, 4));
         Assert.Equal(1986, bytes.Length);
         Assert.NotEqual(bytes, File.ReadAllBytes(Path.Combine(samples, "play.ggs")));
+    }
+
+    [Fact]
+    public void HeroSample_HasTheIdleAndWalkClipsTheWalkAnimationSampleNeeds()
+    {
+        string? samples = FindSamples();
+        Assert.True(samples is not null, "assets/samples was not found above the test binaries");
+        Assert.True(File.Exists(Path.Combine(samples, "hero.glb")), "assets/samples/hero.glb is missing (regenerate with GGE_WRITE_SAMPLES)");
+        ImportedModel model = GltfImporter.Import(Path.Combine(samples, "hero.glb"));
+        Assert.Equal(["idle", "walk"], model.Clips.Select(c => c.Name));
+        Assert.Equal([2f, 1f], model.Clips.Select(c => c.Duration));
+        Assert.Empty(model.Warnings);
     }
 
     [Fact]

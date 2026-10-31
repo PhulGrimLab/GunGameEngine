@@ -117,6 +117,25 @@ add_test(NAME gge_player_locked_door_blocks_without_any_script
          COMMAND gge_player ${GGE_LOCKED_DOOR_SCENE} --headless --warp --frames 80 --keys DS:31,D:49)
 set_tests_properties(gge_player_locked_door_blocks_without_any_script PROPERTIES
     PASS_REGULAR_EXPRESSION "frames=80 player=.-1.400, 0.192. yaw=1.571 room=Hall events=.Enter DoorPad 11.")
+# 플레이어 걷기/대기 자동 전환(assets/samples/walk_animation.ggs + PlayerWalkAnimation 스크립트): 스크립트가 PlayerSpeed로 walk/idle 클립을 고른다.
+# 결과 한 줄에 Hero 노드의 클립 재생 상태를 붙여(--report-animation) 로그 문구가 아니라 실제 엔진 상태를 확인한다.
+set(GGE_WALK_SCENE ${CMAKE_CURRENT_SOURCE_DIR}/../assets/samples/walk_animation.ggs)
+function(gge_player_walk_test name frames keys regex)
+    add_test(NAME ${name}
+             COMMAND gge_player ${GGE_WALK_SCENE} --headless --warp --frames ${frames} --keys ${keys} --report-animation Hero
+                     --script ${GGE_SAMPLE_SCRIPTS} --script-type PlayerWalkAnimation)
+    set_tests_properties(${name} PROPERTIES PASS_REGULAR_EXPRESSION "${regex}")
+endfunction()
+# 걷기 20프레임(0.67초): 페이드(0.15초)가 끝난 walk
+gge_player_walk_test(gge_player_walk_animation_switches_to_walk 20 D:20
+    "animation.Hero.=walk playing=1 fading=0 loop=1 finished=0 time=0.633")
+# 5프레임(0.13초)이면 아직 idle -> walk 크로스페이드 중
+gge_player_walk_test(gge_player_walk_animation_crossfades 5 D:5 "animation.Hero.=walk playing=1 fading=1")
+# 걷다가 멈추면(입력 없음) idle로 돌아온다
+gge_player_walk_test(gge_player_walk_animation_returns_to_idle_when_stopped 50 D:20,-:30 "animation.Hero.=idle playing=1 fading=0")
+# 벽을 정면으로 밀면 입력은 있어도 실제 이동이 0이라 idle(PlayerSpeed는 입력이 아니라 실제 이동)
+gge_player_walk_test(gge_player_walk_animation_is_idle_when_blocked_by_a_wall 120 D:120
+    "player=.5.600, 0.000. .*animation.Hero.=idle playing=1 fading=0")
 # 스크립트 호스트 폴더에 gge.dll 사본이 있어도 .NET이 그걸 따로 불러 엔진 상태가 갈라지면 안 된다(플레이어가 올린 것을 그대로 쓴다).
 # 갈라지면 스크립트가 보는 씬이 달라 위 텔레포트/트리거 결과가 나오지 않거나 프로세스가 죽는다.
 add_test(NAME gge_player_script_decoy_host_setup

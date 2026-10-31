@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "nodes": [
+    { "name": "Floor", "mesh": "cube.obj", "position": [0, -0.1, 0], "scale": [8, 0.1, 5], "color": [0.4, 0.4, 0.45] },
+    { "name": "Hero",  "mesh": "hero.glb", "position": [0, 0, 0],    "scale": [0.5, 0.5, 0.5], "color": [0.9, 0.6, 0.2], "clip": "idle", "playing": true }
+  ],
+  "gameplay": {
+    "rooms": [
+      {
+        "name": "Stage",
+        "polygon": [-7, -4, 7, -4, 7, 4, -7, 4],
+        "camera": { "eye": [0, 6, 9], "target": [0, 0.8, 0], "fov": 0.8 }
+      }
+    ],
+    "colliders": [
+      { "name": "WallEast", "min": [6, -5], "max": [7, 5] }
+    ],
+    "triggers": [],
+    "player": { "node": "Hero", "spawn": [0, 0], "radius": 0.4, "speed": 3 }
+  }
+}

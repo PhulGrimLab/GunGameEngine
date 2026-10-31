@@ -264,6 +264,33 @@ GGE_API int gge_scene_set_node_scale(GgeScene* s, const char* node_name_utf8, fl
 // 이름이 같은 첫 노드의 표시 여부(처음엔 보임). 숨기면 그 노드와 모든 자손이 그려지지 않고 그림자도 없다. 알파와 별개 상태라 다시 보이게 하면
 // 알파는 그대로다. 읽기는 보임 1 / 숨김 0 / 없는 노드 -1(gge_last_error에 사유). 쓰기는 없는 노드면 0. 플레이어 노드도 숨길 수 있다
 // (위치/회전/크기와 달리 플레이어 규칙과 충돌하지 않는다: 컷신/퇴장 연출용).
+// ---- 클립 재생(스킨 메시 노드, 플레이어 노드 포함) ----
+// 규칙은 C# AnimationPlayer와 같다(교차 검증 테스트가 프레임마다 본 행렬을 비교). 대상은 이름이 같은 첫 노드. 실패하면 0(gge_last_error에 사유):
+// 없는 노드, 스킨이 아닌 노드("has no skeleton animation"), fade_seconds가 유한한 0..60이 아님, speed가 유한하지 않음, 없는 클립 이름(대소문자 구분,
+// 쓸 수 있는 이름 목록이 오류에 들어가며 20개를 넘으면 앞 20개와 총 개수). 클립 이름은 씬의 클립 이름 그대로 쓴다(Blender glb는 "Armature|Walk"
+// 형태일 수 있고, 에디터의 클립 목록/GetNodeAnimation이 돌려주는 이름이 그것이다).
+// 플레이어 노드도 허용한다: 플레이어 시스템은 위치/회전/크기만 정하고 애니메이션은 독립이라 충돌하지 않는다(걷기/대기 전환이 이 용도).
+// gge_scene_play_clip: 그 클립을 0초부터 재생한다. 이미 그 클립이 현재 클립이면(loop 값이 달라도) 아무것도 하지 않는다: 끝난 한 번 재생 클립이나
+// 반복 중인 클립을 loop만 바꿔 다시 부르면 무시되므로 처음부터 다시 하려면 restart != 0을 준다(restart는 페이드 없이 즉시 0초부터, loop도 새로 적용).
+// 다른 클립이고 이미 클립을 재생 중이며 fade_seconds > 0이면 이전 클립에서 크로스페이드한다(이전 클립은 페이드 동안 계속 진행하고, 한 번 재생이었다면 끝 포즈에
+// 머문다). 레스트 포즈에서 시작할 때는 페이드 없이 즉시 바뀐다. loop != 0이면 반복(기본 용도), 0이면 한 번 재생하고 재생 방향의 끝 시간에서 멈춰 마지막
+// 포즈를 유지한다(finished). 일시정지 중에도 바뀐 포즈가 바로 반영된다.
+GGE_API int gge_scene_play_clip(GgeScene* s, const char* node_name_utf8, const char* clip_name_utf8, float fade_seconds, int restart, int loop);
+// 재생을 멈추고 레스트 포즈로 돌아간다.
+GGE_API int gge_scene_stop_clip(GgeScene* s, const char* node_name_utf8);
+// 재생 속도 배율(유한, 음수면 거꾸로). 현재 클립과 크로스페이드 중인 이전 클립에 모두 적용된다.
+GGE_API int gge_scene_set_clip_speed(GgeScene* s, const char* node_name_utf8, float speed);
+// playing == 0이면 일시정지(시간과 크로스페이드 진행이 모두 멈춘다), 아니면 재개. 한 번 재생이 끝난 뒤에도 이 값은 그대로(끝남은 finished로 따로 본다).
+GGE_API int gge_scene_set_clip_playing(GgeScene* s, const char* node_name_utf8, int playing);
+// 현재 재생 상태. clip_name은 재생 중인 클립 이름(레스트 포즈면 빈 문자열, 다음 호출 전까지 유효한 UTF-8), time은 그 클립의 현재 시간(초),
+// fading은 크로스페이드 중인가, loop는 반복인가, finished는 한 번 재생이 재생 방향의 끝(speed >= 0이면 끝 시간, 음수면 0초)에 닿아 멈춘 상태인가
+// (반복/레스트는 항상 0, 끝에서 speed 부호를 바꾸면 0이 되어 거꾸로 재생된다). 각 포인터는 NULL 가능. 성공하면 1.
+GGE_API int gge_scene_get_node_animation(GgeScene* s, const char* node_name_utf8, const char** clip_name, float* time, int* playing,
+                                         float* speed, int* fading, int* loop, int* finished);
+// 마지막 gge_scene_step에서 충돌/슬라이딩을 반영한 뒤 플레이어가 실제로 이동한 거리 / dt(월드 단위/초). 벽을 정면으로 밀면 0이고 벽을 따라 미끄러지면
+// 0보다 크다. 텔레포트 직후(다음 step 전), dt가 0인 step은 0이다(순간이동이 속도 폭주를 만들지 않는다). 켜진 충돌체가 겹친 플레이어를 밀어내는 이동도
+// 이동으로 센다. 플레이어가 없는 씬이면 0을 반환한다.
+GGE_API int gge_scene_get_player_speed(const GgeScene* s, float* speed);
 GGE_API int gge_scene_get_node_visible(const GgeScene* s, const char* node_name_utf8);
 GGE_API int gge_scene_set_node_visible(GgeScene* s, const char* node_name_utf8, int visible);
 

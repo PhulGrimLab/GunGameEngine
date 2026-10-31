@@ -3496,6 +3496,7 @@ struct Spec {
     int meshCount = 2;
     std::vector<SpecNode> nodes;
     std::string clipName = "bend";
+    std::vector<std::string> extraClips;  // 스킨 띠 메시의 추가 클립 이름(길이 2, 3, 4...초)
     int pointLights = 0;
     std::vector<SpecRoom> rooms;
     std::vector<SpecCollider> colliders;
@@ -3567,7 +3568,7 @@ std::vector<uint8_t> Serialize(const Spec& spec)
         w.U32(static_cast<uint32_t>(spec.bones));
         for (int p : chain.parents) w.I32(p);
         w.Floats(chain.inverseBind); w.Floats(chain.translation); w.Floats(chain.rotation); w.Floats(chain.scale);
-        w.U32(1);
+        w.U32(static_cast<uint32_t>(1 + spec.extraClips.size()));
         w.Str(spec.clipName);
         w.F(1.0f);
         w.U32(2);
@@ -3575,6 +3576,19 @@ std::vector<uint8_t> Serialize(const Spec& spec)
             KeyChannel c = ZRotation(bone, 0, 1);
             w.I32(c.bone); w.U32(1); w.U32(static_cast<uint32_t>(c.times.size()));
             w.Floats(c.times); w.Floats(c.values);
+        }
+        // 추가 클립: 길이가 2, 3, 4...초로 서로 달라 반복/끝 정지를 구분할 수 있고, 회전 방향/크기도 달라 포즈가 서로 다르다.
+        for (size_t i = 0; i < spec.extraClips.size(); ++i) {
+            const float duration = 2.0f + static_cast<float>(i);
+            w.Str(spec.extraClips[i]);
+            w.F(duration);
+            w.U32(2);
+            for (int bone : {1, 2}) {
+                KeyChannel c = ZRotation(bone, 0, (i % 2 == 0 ? -1.0f : 1.5f) * static_cast<float>(i / 2 + 1));
+                c.times = {0, duration};
+                w.I32(c.bone); w.U32(1); w.U32(static_cast<uint32_t>(c.times.size()));
+                w.Floats(c.times); w.Floats(c.values);
+            }
         }
     }
 
@@ -4330,6 +4344,279 @@ void Test_SceneNodePositionCanBeReadMovedAndRestored()
     gge_renderer_destroy(r);
 }
 
+// ---- 클립 재생 전환(스킨 노드) ----
+struct AnimState {
+    std::string clip;
+    float time = -1, speed = -1;
+    int playing = -1, fading = -1, loop = -1, finished = -1;
+};
+
+bool GetAnim(GgeScene* s, const char* node, AnimState& out)
+{
+    const char* clip = nullptr;
+    if (gge_scene_get_node_animation(s, node, &clip, &out.time, &out.playing, &out.speed, &out.fading, &out.loop, &out.finished) != 1)
+        return false;
+    out.clip = clip ? clip : "<null>";
+    return true;
+}
+
+AnimState Anim(GgeScene* s, const char* node)
+{
+    AnimState state;
+    CHECK(GetAnim(s, node, state));
+    return state;
+}
+
+// 바깥 두 줄: Strip(초기 클립 bend, 속도 1.5), Rig(초기 클립 없음 = 레스트), Actor(플레이어, 스킨 노드), Panel(스킨이 아님).
+// 클립은 bend(1초), sway(2초), spin(3초)이고 Strip은 화면에서 숨긴다(스스로 움직이므로 화면 비교를 흐리지 않게).
+Spec AnimatedSpec(const fs::path& bmp)
+{
+    Spec s = RoomWithPlayerSpec(bmp);
+    s.extraClips = {"sway", "spin"};
+    SpecNode rig; rig.name = "Rig"; rig.mesh = 1; rig.pos[0] = 3;
+    SpecNode actor; actor.name = "Actor"; actor.mesh = 1; actor.pos[0] = 0;
+    s.nodes.push_back(rig);
+    s.nodes.push_back(actor);
+    s.playerNode = static_cast<int>(s.nodes.size()) - 1;   // 플레이어가 스킨 노드다(걷기/대기 전환이 가능해야 한다)
+    return s;
+}
+
+void Test_SceneClipPlaybackFollowsTheAnimationPlayerRules()
+{
+    fs::path bmp = TempDir() / "scene_anim.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+    GgeRenderer* r = NewRenderer(128, 96);
+    GgeScene* scene = gge_scene_load(r, WriteScene("anim.ggs", Serialize(AnimatedSpec(bmp))).string().c_str());
+    if (!scene) std::printf("  load failed: %s\n", gge_last_error());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+    const float dt = 0.25f;
+    CHECK(gge_scene_set_node_visible(scene, "Strip", 0) == 1);
+    auto step = [&](int n = 1) { for (int i = 0; i < n; ++i) CHECK(gge_scene_step(scene, 0, 0, dt) == 1); };
+    DrainEvents(scene);
+    const Image rest = Render(r);
+
+    // 초기 상태: 씬이 정한 clip/speed/playing, 클립이 없는 스킨 노드는 레스트 포즈.
+    AnimState strip = Anim(scene, "Strip");
+    CHECK(strip.clip == "bend" && strip.speed == 1.5f && strip.playing == 1 && strip.loop == 1 && strip.finished == 0);
+    AnimState s = Anim(scene, "Rig");
+    CHECK(s.clip.empty() && s.time == 0 && s.playing == 1 && s.speed == 1.0f && s.fading == 0 && s.loop == 1 && s.finished == 0);
+
+    // 재생: 0초부터, 시간은 dt씩, 화면이 바뀐다. 같은 클립을 다시 부르면 무시, restart면 0초부터.
+    CHECK(gge_scene_play_clip(scene, "Rig", "sway", 0, 0, 1) == 1);
+    CHECK(Anim(scene, "Rig").clip == "sway" && Anim(scene, "Rig").time == 0);
+    const Image atZero = Render(r);
+    step(2);
+    CHECK(std::fabs(Anim(scene, "Rig").time - 0.5f) < 1e-5f);
+    CHECK(DifferingPixels(atZero, Render(r)) > 5);
+    CHECK(gge_scene_play_clip(scene, "Rig", "sway", 0, 0, 1) == 1);               // 같은 클립: 무시
+    CHECK(std::fabs(Anim(scene, "Rig").time - 0.5f) < 1e-5f);
+    CHECK(gge_scene_play_clip(scene, "Rig", "sway", 0, 0, 0) == 1);               // loop만 다르게: 무시
+    CHECK(Anim(scene, "Rig").loop == 1);
+    CHECK(gge_scene_play_clip(scene, "Rig", "sway", 0, 1, 1) == 1);               // restart
+    CHECK(Anim(scene, "Rig").time == 0);
+
+    // 반복(기본): 길이 2초를 넘으면 감긴다. 한 번 재생: 끝(2초)에서 멈추고 finished, 마지막 포즈를 유지한다.
+    step(9);                                                                      // 2.25초 -> 0.25로 감김
+    CHECK(std::fabs(Anim(scene, "Rig").time - 0.25f) < 1e-5f && Anim(scene, "Rig").finished == 0);
+    CHECK(gge_scene_play_clip(scene, "Rig", "sway", 0, 1, 0) == 1);               // restart + 한 번 재생
+    CHECK(Anim(scene, "Rig").loop == 0 && Anim(scene, "Rig").time == 0);
+    step(7);                                                                      // 1.75초: 아직
+    CHECK(Anim(scene, "Rig").finished == 0);
+    step(2);                                                                      // 2.25초 -> 끝(2초)에서 멈춤
+    s = Anim(scene, "Rig");
+    CHECK(s.time == 2.0f && s.finished == 1 && s.playing == 1);
+    const Image ended = Render(r);
+    step(8);
+    CHECK(Render(r).bgra == ended.bgra && Anim(scene, "Rig").time == 2.0f);       // 마지막 포즈 유지
+    CHECK(gge_scene_play_clip(scene, "Rig", "sway", 0, 0, 0) == 1);               // 끝난 클립을 restart 없이 다시 부르면 무시
+    CHECK(Anim(scene, "Rig").finished == 1 && Anim(scene, "Rig").time == 2.0f);
+    CHECK(gge_scene_set_clip_speed(scene, "Rig", -1) == 1);                       // 속도 부호를 바꾸면 거꾸로 재생: 더는 끝난 상태가 아니다
+    CHECK(Anim(scene, "Rig").finished == 0);
+    step(1);
+    CHECK(std::fabs(Anim(scene, "Rig").time - 1.75f) < 1e-5f);
+    step(20);
+    CHECK(Anim(scene, "Rig").time == 0 && Anim(scene, "Rig").finished == 1);      // 0초에서 멈춘다(역방향의 끝)
+    CHECK(gge_scene_set_clip_speed(scene, "Rig", 0) == 1);
+    CHECK(Anim(scene, "Rig").finished == 0);                                      // 속도 0은 정방향 취급: 0초는 끝이 아니다
+    CHECK(gge_scene_set_clip_speed(scene, "Rig", 1) == 1);
+
+    // 크로스페이드: 이전 클립에서 페이드 시간 동안 섞이고, 끝나면 새 클립만 남는다. 레스트 포즈에서 시작하면 페이드 없이 즉시.
+    CHECK(gge_scene_stop_clip(scene, "Rig") == 1);
+    CHECK(Anim(scene, "Rig").clip.empty() && Render(r).bgra == rest.bgra);        // 정지 = 레스트 포즈
+    CHECK(gge_scene_play_clip(scene, "Rig", "sway", 1.0f, 0, 1) == 1);
+    CHECK(Anim(scene, "Rig").fading == 0);                                        // 레스트에서 시작: 페이드 없음
+    step(2);
+    CHECK(gge_scene_play_clip(scene, "Rig", "spin", 1.0f, 0, 1) == 1);
+    CHECK(Anim(scene, "Rig").fading == 1 && Anim(scene, "Rig").clip == "spin" && Anim(scene, "Rig").time == 0);
+    step(3);                                                                      // 0.75초: 아직
+    CHECK(Anim(scene, "Rig").fading == 1);
+    step(1);                                                                      // 1.0초: 끝
+    CHECK(Anim(scene, "Rig").fading == 0);
+
+    // 일시정지: 시간과 페이드 진행이 멈추고, 멈춘 채로 클립을 바꿔도 포즈가 바로 반영된다.
+    CHECK(gge_scene_play_clip(scene, "Rig", "sway", 2.0f, 0, 1) == 1);
+    step(1);
+    CHECK(gge_scene_set_clip_playing(scene, "Rig", 0) == 1);
+    CHECK(Anim(scene, "Rig").playing == 0);
+    const Image paused = Render(r);
+    const float pausedTime = Anim(scene, "Rig").time;
+    step(8);
+    CHECK(Anim(scene, "Rig").time == pausedTime && Anim(scene, "Rig").fading == 1 && Render(r).bgra == paused.bgra);
+    CHECK(gge_scene_play_clip(scene, "Rig", "spin", 0, 0, 1) == 1);               // 멈춘 채 전환: Step 없이도 화면이 바뀐다
+    CHECK(Render(r).bgra != paused.bgra);
+    CHECK(gge_scene_set_clip_playing(scene, "Rig", 1) == 1);
+    step(1);
+    CHECK(Anim(scene, "Rig").time > 0);
+
+    // 속도: 현재 클립과 페이드 중인 이전 클립에 모두 적용된다(여기서는 시간 진행으로 확인).
+    CHECK(gge_scene_stop_clip(scene, "Rig") == 1);
+    CHECK(gge_scene_play_clip(scene, "Rig", "sway", 0, 0, 1) == 1);
+    CHECK(gge_scene_set_clip_speed(scene, "Rig", 2.0f) == 1);
+    step(1);
+    CHECK(std::fabs(Anim(scene, "Rig").time - 0.5f) < 1e-5f && Anim(scene, "Rig").speed == 2.0f);
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(r);
+}
+
+void Test_SceneClipPlaybackRejectsBadRequestsAndChangesNothing()
+{
+    fs::path bmp = TempDir() / "scene_anim_err.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+    GgeRenderer* r = NewRenderer(128, 96);
+    GgeScene* scene = gge_scene_load(r, WriteScene("anim_err.ggs", Serialize(AnimatedSpec(bmp))).string().c_str());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+    CHECK(gge_scene_set_node_visible(scene, "Strip", 0) == 1);
+    CHECK(gge_scene_play_clip(scene, "Rig", "sway", 0, 0, 1) == 1);
+    gge_scene_step(scene, 0, 0, 0.25f);
+    const Image before = Render(r);
+    const AnimState stateBefore = Anim(scene, "Rig");
+    auto error = [&] { return std::string(gge_last_error()); };
+    auto has = [&](const char* part) { return error().find(part) != std::string::npos; };
+    const float nan = std::nanf(""), inf = INFINITY;
+
+    CHECK(gge_scene_play_clip(scene, "Nope", "sway", 0, 0, 1) == 0 && has("no node named 'Nope'"));
+    CHECK(gge_scene_play_clip(scene, nullptr, "sway", 0, 0, 1) == 0 && has("no node named ''"));
+    CHECK(gge_scene_play_clip(scene, "Panel", "sway", 0, 0, 1) == 0 && has("has no skeleton animation"));   // 스킨이 아닌 노드
+    CHECK(gge_scene_stop_clip(scene, "Panel") == 0 && has("has no skeleton animation"));
+    CHECK(gge_scene_set_clip_speed(scene, "Panel", 1) == 0 && has("has no skeleton animation"));
+    CHECK(gge_scene_set_clip_playing(scene, "Panel", 1) == 0 && has("has no skeleton animation"));
+    AnimState none;
+    CHECK(!GetAnim(scene, "Panel", none) && has("has no skeleton animation"));
+    CHECK(!GetAnim(scene, "Nope", none) && has("no node named 'Nope'"));
+    CHECK(gge_scene_play_clip(scene, "Rig", "nope", 0, 0, 1) == 0 && has("no clip named 'nope' in node 'Rig' (available: bend, sway, spin)"));
+    CHECK(gge_scene_play_clip(scene, "Rig", "Sway", 0, 0, 1) == 0 && has("no clip named 'Sway'"));          // 대소문자 구분
+    CHECK(gge_scene_play_clip(scene, "Rig", nullptr, 0, 0, 1) == 0 && has("no clip named ''"));
+    for (float bad : {-0.01f, nan, inf, 60.01f, 1000.0f}) {
+        CHECK(gge_scene_play_clip(scene, "Rig", "spin", bad, 0, 1) == 0);
+        CHECK(has("fade seconds must be finite and between 0 and 60"));
+    }
+    CHECK(gge_scene_set_clip_speed(scene, "Rig", nan) == 0 && has("clip speed must be finite"));
+    CHECK(gge_scene_set_clip_speed(scene, "Rig", -inf) == 0 && has("clip speed must be finite"));
+    const AnimState stateAfter = Anim(scene, "Rig");
+    CHECK(stateAfter.clip == stateBefore.clip && stateAfter.time == stateBefore.time && stateAfter.speed == stateBefore.speed &&
+          stateAfter.fading == stateBefore.fading && stateAfter.playing == stateBefore.playing);              // 실패는 아무것도 바꾸지 않는다
+    CHECK(Render(r).bgra == before.bgra);
+
+    // 경계: 페이드 0과 60은 받는다. 음수 속도도 받는다.
+    CHECK(gge_scene_play_clip(scene, "Rig", "spin", 0.0f, 0, 1) == 1);
+    CHECK(gge_scene_play_clip(scene, "Rig", "bend", 60.0f, 0, 1) == 1 && Anim(scene, "Rig").fading == 1);
+    CHECK(gge_scene_set_clip_speed(scene, "Rig", -2.5f) == 1 && Anim(scene, "Rig").speed == -2.5f);
+
+    // 이름이 같은 노드가 여럿이면 첫 노드만(다른 노드의 상태는 그대로)은 위치 API와 같은 규칙이라 여기서는 클립 목록 문구만 본다.
+    gge_scene_destroy(scene);
+
+    // 클립이 많으면 오류에 앞 20개와 총 개수만 싣는다.
+    Spec many = AnimatedSpec(bmp);
+    many.extraClips.clear();
+    for (int i = 0; i < 25; ++i) many.extraClips.push_back("c" + std::to_string(i));
+    GgeScene* big = gge_scene_load(r, WriteScene("anim_many.ggs", Serialize(many)).string().c_str());
+    CHECK(big != nullptr);
+    if (big) {
+        CHECK(gge_scene_play_clip(big, "Rig", "missing", 0, 0, 1) == 0);
+        CHECK(has("available: bend, c0, c1,") && has("c18, ...") && has("(20 of 26 clips shown)") && !has("c19,") && !has("c24"));
+        gge_scene_destroy(big);
+    }
+    gge_renderer_destroy(r);
+}
+
+void Test_PlayerNodeCanChangeClipsWhileTheMovementSystemOwnsItsTransform()
+{
+    fs::path bmp = TempDir() / "scene_anim_player.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+    GgeRenderer* r = NewRenderer(128, 96);
+    GgeScene* scene = gge_scene_load(r, WriteScene("anim_player.ggs", Serialize(AnimatedSpec(bmp))).string().c_str());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+    CHECK(Anim(scene, "Actor").clip.empty());
+    CHECK(gge_scene_play_clip(scene, "Actor", "sway", 0.2f, 0, 1) == 1);          // 플레이어 노드: 허용
+    float x0 = 0, x1 = 0;
+    gge_scene_get_player(scene, &x0, nullptr, nullptr);
+    for (int i = 0; i < 10; ++i) gge_scene_step(scene, 1, 0, 1.0f / 30);          // 걷는다
+    gge_scene_get_player(scene, &x1, nullptr, nullptr);
+    CHECK(x1 > x0 + 0.5f);                                                         // 이동 시스템이 위치를 그대로 소유한다
+    AnimState state = Anim(scene, "Actor");
+    CHECK(state.clip == "sway" && std::fabs(state.time - 10.0f / 30) < 1e-4f);    // 애니메이션은 이동과 독립으로 진행한다
+    CHECK(gge_scene_play_clip(scene, "Actor", "spin", 0.15f, 0, 1) == 1 && Anim(scene, "Actor").fading == 1);
+    gge_scene_destroy(scene);
+    gge_renderer_destroy(r);
+}
+
+void Test_PlayerSpeedIsTheActualMovementOfTheLastStep()
+{
+    fs::path bmp = TempDir() / "scene_speed.bmp";
+    WriteBmp(bmp, 2, 2, {255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255});
+    GgeRenderer* r = NewRenderer(64, 48);
+    Spec gate = RoomWithPlayerSpec(bmp);   // 방(-10..10), 오른쪽(+X)으로 걸으면 두 겹 문 "Gate"(x 2..3)에 막힌다
+    gate.colliders = {{"Gate", 2, -10, 2.5f, 10}, {"Gate", 2.5f, -10, 3, 10}, {"Wall", 6, -10, 7, 10}};
+    GgeScene* scene = gge_scene_load(r, WriteScene("speed.ggs", Serialize(gate)).string().c_str());
+    CHECK(scene != nullptr);
+    if (!scene) { gge_renderer_destroy(r); return; }
+    const float dt = 1.0f / 30;
+    auto speed = [&] { float v = -1; CHECK(gge_scene_get_player_speed(scene, &v) == 1); return v; };
+
+    CHECK(speed() == 0);                                                            // 로드 직후
+    CHECK(gge_scene_step(scene, 0, 0, dt) == 1 && speed() == 0);                    // 입력 없음 = 멈춤
+    for (int i = 0; i < 5; ++i) gge_scene_step(scene, 1, 0, dt);
+    CHECK(std::fabs(speed() - 3.0f) < 1e-3f);                                        // 걷기: 플레이어 속도 3
+    CHECK(gge_scene_step(scene, 1, 0, 0.0f) == 1 && speed() == 0);                  // dt = 0이면 0(0으로 나누지 않는다)
+
+    // 정면으로 막힘: 문(x=2)에서 반지름만큼 떨어져 멈춘 뒤 계속 밀면 0.
+    for (int i = 0; i < 60; ++i) gge_scene_step(scene, 1, 0, dt);
+    CHECK(speed() < 1e-3f);
+
+    // 벽을 따라 미끄러짐: 벽(+X 쪽)을 향해 대각선으로 밀면 벽과 나란한 성분이 남아 0이 아니다(입력 오른쪽+위 = +X, -Z).
+    gge_scene_step(scene, 1, 1, dt);
+    CHECK(speed() > 1.0f && speed() < 3.0f);
+
+    // 텔레포트 직후는 0, 다음 걸음부터 다시 실제 이동량.
+    for (int i = 0; i < 5; ++i) gge_scene_step(scene, -1, 0, dt);
+    CHECK(speed() > 1.0f);
+    CHECK(gge_scene_teleport_player(scene, -5, 3) == 1);
+    CHECK(speed() == 0);                                                            // 순간이동이 속도 폭주를 만들지 않는다
+    gge_scene_step(scene, 1, 0, dt);
+    CHECK(std::fabs(speed() - 3.0f) < 1e-3f);
+
+    // 켜진 충돌체가 겹친 플레이어를 밀어내는 이동도 이동으로 센다(정의대로: 실제로 움직인 거리 / dt).
+    CHECK(gge_scene_set_collider_enabled(scene, "Gate", 0) == 2);
+    CHECK(gge_scene_teleport_player(scene, 2.2f, 0) == 1);
+    CHECK(gge_scene_set_collider_enabled(scene, "Gate", 1) == 2);
+    gge_scene_step(scene, 0, 0, dt);
+    CHECK(speed() > 1.0f);
+    gge_scene_destroy(scene);
+
+    // 플레이어가 없는 씬: 0을 반환한다.
+    GgeScene* noPlayer = gge_scene_load(r, WriteScene("speed_none.ggs", Serialize(VisualSpec(bmp))).string().c_str());
+    CHECK(noPlayer != nullptr);
+    if (noPlayer) {
+        float v = 7;
+        CHECK(gge_scene_get_player_speed(noPlayer, &v) == 0);
+        gge_scene_destroy(noPlayer);
+    }
+    gge_renderer_destroy(r);
+}
+
 bool NearVec(const float* v, float x, float y, float z) { return std::fabs(v[0] - x) < 1e-5f && std::fabs(v[1] - y) < 1e-5f && std::fabs(v[2] - z) < 1e-5f; }
 
 void Test_SceneNodeRotationScaleAndVisibilityFollowThePositionRules()
@@ -4915,6 +5202,10 @@ int main()
         {"GoldenCompareRules", Test_GoldenCompareRules},
         {"ZeroScaleObjectsRenderLikeVeryThinOnes_AndNeverTouchOtherObjects", Test_ZeroScaleObjectsRenderLikeVeryThinOnes_AndNeverTouchOtherObjects},
         {"ObjectVisibilityIsIndependentOfAlpha_AndHidesSubtreeShadowAndSorting", Test_ObjectVisibilityIsIndependentOfAlpha_AndHidesSubtreeShadowAndSorting},
+        {"SceneClipPlaybackFollowsTheAnimationPlayerRules", Test_SceneClipPlaybackFollowsTheAnimationPlayerRules},
+        {"SceneClipPlaybackRejectsBadRequestsAndChangesNothing", Test_SceneClipPlaybackRejectsBadRequestsAndChangesNothing},
+        {"PlayerNodeCanChangeClipsWhileTheMovementSystemOwnsItsTransform", Test_PlayerNodeCanChangeClipsWhileTheMovementSystemOwnsItsTransform},
+        {"PlayerSpeedIsTheActualMovementOfTheLastStep", Test_PlayerSpeedIsTheActualMovementOfTheLastStep},
         {"SceneNodeRotationScaleAndVisibilityFollowThePositionRules", Test_SceneNodeRotationScaleAndVisibilityFollowThePositionRules},
         {"SceneNodeWritesTouchOnlyTheFirstNodeWithTheName", Test_SceneNodeWritesTouchOnlyTheFirstNodeWithTheName},
         {"ObjectTransformRejectsNonFiniteValuesAndKeepsTheOldOne", Test_ObjectTransformRejectsNonFiniteValuesAndKeepsTheOldOne},

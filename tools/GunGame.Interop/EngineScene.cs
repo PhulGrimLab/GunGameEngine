@@ -6,6 +6,12 @@ namespace GunGame.Interop;
 public readonly record struct SceneEventData(TriggerEventKind Kind, int Tag, string TriggerName);
 
 /// <summary>
+/// 노드의 현재 클립 재생 상태. <see cref="Clip"/>은 재생 중인 클립 이름(씬의 이름 그대로, 레스트 포즈면 빈 문자열), <see cref="Time"/>은 그 클립의 시간(초),
+/// <see cref="Fading"/>은 크로스페이드 중, <see cref="Loop"/>는 반복, <see cref="Finished"/>는 한 번 재생이 재생 방향의 끝에 닿아 멈춘 상태다.
+/// </summary>
+public readonly record struct NodeAnimationState(string Clip, float Time, bool Playing, float Speed, bool Fading, bool Loop, bool Finished);
+
+/// <summary>
 /// 엔진의 구운 씬 런타임(gge_scene_*)의 얇은 래퍼. 독립 플레이어와 같은 코드를 C#에서 돌려 보거나(교차 검증, 도구) 구운 파일이
 /// 올바르게 로드되는지 확인하는 데 쓴다. 씬이 만든 오브젝트/조명/리소스는 Dispose에서 렌더러에서 제거되므로
 /// <b>렌더러보다 먼저 Dispose</b>해야 한다. 한 스레드에서만 사용한다. 규칙은 gge.h의 "구운 씬 런타임" 절을 따른다.
@@ -189,6 +195,69 @@ public sealed unsafe class EngineScene : IDisposable
             throw new EngineException(Native.LastError());
     }
 
+    // ---- 클립 재생(스킨 메시 노드, 플레이어 노드 포함; 규칙은 gge.h와 C# AnimationPlayer와 같다) ----
+    /// <summary>
+    /// 노드의 클립을 0초부터 재생한다. 이미 그 클립이 현재 클립이면(loop가 달라도) 아무것도 하지 않는다: 끝난 한 번 재생 클립이나 반복 중인 클립을 loop만 바꿔
+    /// 다시 부르면 무시되므로 처음부터 다시 하려면 <paramref name="restart"/>를 true로 준다. 다른 클립이고 이미 재생 중이면 <paramref name="fadeSeconds"/> &gt; 0일 때
+    /// 이전 클립에서 크로스페이드한다(레스트 포즈에서 시작하면 즉시). <paramref name="loop"/>가 false면 한 번 재생하고 끝 시간에서 멈춰 마지막 포즈를 유지한다.
+    /// 클립 이름은 씬의 이름 그대로(대소문자 구분, Blender glb는 "Armature|Walk" 형태일 수 있다). 없는 노드/스킨 아닌 노드/없는 클립(가능한 이름 목록 포함)/
+    /// fadeSeconds가 0..60이 아님은 <see cref="EngineException"/>.
+    /// </summary>
+    public void PlayClip(string nodeName, string clipName, float fadeSeconds = 0, bool restart = false, bool loop = true)
+    {
+        if (Native.gge_scene_play_clip(Handle, nodeName, clipName, fadeSeconds, restart ? 1 : 0, loop ? 1 : 0) == 0)
+            throw new EngineException(Native.LastError());
+    }
+
+    /// <summary>재생을 멈추고 레스트 포즈로 돌아간다.</summary>
+    public void StopClip(string nodeName)
+    {
+        if (Native.gge_scene_stop_clip(Handle, nodeName) == 0)
+            throw new EngineException(Native.LastError());
+    }
+
+    /// <summary>재생 속도 배율(유한, 음수면 거꾸로). 속도가 유한하지 않으면 <see cref="EngineException"/>.</summary>
+    public void SetClipSpeed(string nodeName, float speed)
+    {
+        if (Native.gge_scene_set_clip_speed(Handle, nodeName, speed) == 0)
+            throw new EngineException(Native.LastError());
+    }
+
+    /// <summary>false면 일시정지(시간과 크로스페이드 진행이 모두 멈춘다), true면 재개.</summary>
+    public void SetClipPlaying(string nodeName, bool playing)
+    {
+        if (Native.gge_scene_set_clip_playing(Handle, nodeName, playing ? 1 : 0) == 0)
+            throw new EngineException(Native.LastError());
+    }
+
+    /// <summary>노드의 현재 재생 상태. 없는 노드/스킨 아닌 노드는 <see cref="EngineException"/>.</summary>
+    public NodeAnimationState GetNodeAnimation(string nodeName) =>
+        TryGetNodeAnimation(nodeName) ?? throw new EngineException(Native.LastError());
+
+    /// <summary>노드의 현재 재생 상태. 없는 노드이거나 스킨 메시가 아니면 null.</summary>
+    public NodeAnimationState? TryGetNodeAnimation(string nodeName)
+    {
+        byte* clip;
+        float time, speed;
+        int playing, fading, loop, finished;
+        if (Native.gge_scene_get_node_animation(Handle, nodeName, &clip, &time, &playing, &speed, &fading, &loop, &finished) == 0)
+            return null;
+        return new NodeAnimationState(Marshal.PtrToStringUTF8((nint)clip) ?? "", time, playing == 1, speed, fading == 1, loop == 1, finished == 1);
+    }
+
+    /// <summary>
+    /// 마지막 <see cref="Step"/>에서 충돌/슬라이딩을 반영한 뒤 플레이어가 실제로 이동한 거리 / dt(월드 단위/초). 벽을 정면으로 밀면 0이고 벽을 따라 미끄러지면
+    /// 0보다 크다. 텔레포트 직후(다음 Step 전)와 dt가 0인 Step은 0이다. 플레이어가 없으면 0.
+    /// </summary>
+    public float PlayerSpeed
+    {
+        get
+        {
+            float speed;
+            return Native.gge_scene_get_player_speed(Handle, &speed) == 0 ? 0 : speed;
+        }
+    }
+
     /// <summary>네이티브 씬 핸들(<see cref="Attach"/>와 짝). 해제된 씬이면 ObjectDisposedException.</summary>
     public nint NativeHandle => Handle;
 
@@ -263,6 +332,24 @@ public sealed unsafe class EngineScene : IDisposable
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         public static extern int gge_scene_set_node_visible(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string nodeName, int visible);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_play_clip(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string nodeName, [MarshalAs(UnmanagedType.LPUTF8Str)] string clipName, float fadeSeconds, int restart, int loop);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_stop_clip(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string nodeName);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_set_clip_speed(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string nodeName, float speed);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_set_clip_playing(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string nodeName, int playing);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_get_node_animation(nint scene, [MarshalAs(UnmanagedType.LPUTF8Str)] string nodeName, byte** clipName, float* time, int* playing, float* speed, int* fading, int* loop, int* finished);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int gge_scene_get_player_speed(nint scene, float* speed);
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         private static extern nint gge_last_error();

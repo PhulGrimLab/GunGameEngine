@@ -117,6 +117,20 @@ public sealed class LockedDoor : IGameScript
     }
 }
 
+/// <summary>
+/// 플레이어의 걷기/대기 애니메이션 자동 전환(assets/samples/walk_animation.scene.json): 실제로 움직이는 중(PlayerSpeed)이면 walk, 아니면 idle.
+/// 벽을 정면으로 밀면 PlayerSpeed가 0이라 idle이 된다. 매 프레임 PlayClip을 불러도 같은 클립이면 무시되어 되감기지 않는다.
+/// 이 패턴이 여러 게임에서 반복되면 씬 데이터 필드(.ggs v3)로 올리는 것을 검토한다.
+/// </summary>
+public sealed class PlayerWalkAnimation : IGameScript
+{
+    private const float WalkSpeedThreshold = 0.1f;   // 월드 단위/초: 이보다 느리면 멈춘 것으로 본다
+    private const float FadeSeconds = 0.15f;
+
+    public void OnUpdate(IScriptContext context, float deltaSeconds) =>
+        context.PlayClip("Hero", context.PlayerSpeed > WalkSpeedThreshold ? "walk" : "idle", FadeSeconds);
+}
+
 /// <summary>업데이트가 30번 불린 프레임(1초 뒤)에 플레이어를 Annex로 옮긴다(OnUpdate 호출 확인용).</summary>
 public sealed class TeleportAfterOneSecond : IGameScript
 {

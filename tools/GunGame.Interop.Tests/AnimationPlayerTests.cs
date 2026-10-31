@@ -163,4 +163,204 @@ public class AnimationPlayerTests
         PoseRequest pose = player.Pose;
         Assert.True(float.IsFinite(pose.TimeA) && float.IsFinite(pose.TimeB) && float.IsFinite(pose.Blend));
     }
+
+    // ---- 한 번 재생(loop=false) ----
+    [Fact]
+    public void LoopIsTheDefault_AndLoopingClipsNeverFinish()
+    {
+        var player = new AnimationPlayer();
+        Assert.True(player.Loop);                      // 레스트 포즈일 때도 true
+        Assert.False(player.Finished);
+        player.Play(Walk);
+        Assert.True(player.Loop);
+        player.Update(5f);
+        Assert.False(player.Finished);
+        Assert.Equal(1.0f, player.Time, 4);            // 5 mod 2
+    }
+
+    [Fact]
+    public void OneShot_StopsAtTheEnd_KeepsTheLastPose_AndReportsFinished()
+    {
+        var player = new AnimationPlayer();
+        player.Play(Walk, loop: false);
+        Assert.False(player.Loop);
+        player.Update(1.5f);
+        Assert.Equal(1.5f, player.Time, 4);
+        Assert.False(player.Finished);
+        player.Update(1.0f);                           // 2.5는 끝(2.0)에서 멈춘다
+        Assert.Equal(2.0f, player.Time, 4);
+        Assert.True(player.Finished);
+        Assert.Equal(new PoseRequest(1, 2.0f, 0, 0, 0), player.Pose);   // 마지막 포즈를 유지한다
+        player.Update(10f);
+        Assert.Equal(2.0f, player.Time, 4);
+        Assert.True(player.Playing);                   // 끝남은 일시정지 스위치와 별개다
+    }
+
+    [Fact]
+    public void PlayingTheFinishedClipAgain_IsIgnoredUnlessRestart()
+    {
+        var player = new AnimationPlayer();
+        player.Play(Walk, loop: false);
+        player.Update(3f);
+        Assert.True(player.Finished);
+
+        player.Play(Walk, loop: false);                // 매 프레임 PlayClip을 부르는 패턴: 끝난 클립이 되감기지 않는다
+        player.Play(Walk);
+        Assert.True(player.Finished);
+        Assert.Equal(2.0f, player.Time, 4);
+
+        player.Play(Walk, restart: true, loop: false); // 다시 재생하려면 restart
+        Assert.False(player.Finished);
+        Assert.Equal(0f, player.Time);
+        player.Update(1f);
+        Assert.Equal(1f, player.Time, 4);
+
+        player.Play(Walk, restart: true);              // restart는 loop도 새로 적용한다(기본 반복)
+        Assert.True(player.Loop);
+        player.Update(2.5f);
+        Assert.Equal(0.5f, player.Time, 4);
+    }
+
+    [Fact]
+    public void SameClipWithADifferentLoopFlag_IsIgnoredUnlessRestart()
+    {
+        var player = new AnimationPlayer();
+        player.Play(Walk);                             // 반복 중
+        player.Play(Walk, loop: false);                // loop만 바꿔 부르면 조용히 무시된다
+        Assert.True(player.Loop);
+        player.Update(2.5f);
+        Assert.Equal(0.5f, player.Time, 4);
+        Assert.False(player.Finished);
+
+        player.Play(Walk, restart: true, loop: false); // 바꾸려면 restart
+        Assert.False(player.Loop);
+        player.Update(5f);
+        Assert.True(player.Finished);
+    }
+
+    [Fact]
+    public void Finished_FollowsTheDirectionOfPlayback()
+    {
+        var player = new AnimationPlayer();
+        player.Play(Walk, loop: false);
+        player.Update(5f);
+        Assert.True(player.Finished);                  // 끝 시간
+
+        player.Speed = -1;                             // 끝에서 속도 부호를 바꾸면 거꾸로 재생된다: 더는 끝난 상태가 아니다
+        Assert.False(player.Finished);
+        player.Update(0.5f);
+        Assert.Equal(1.5f, player.Time, 4);
+        Assert.False(player.Finished);
+        player.Update(5f);                             // 0초에서 멈춘다: 재생 방향(역방향)의 끝
+        Assert.Equal(0f, player.Time);
+        Assert.True(player.Finished);
+
+        player.Speed = 0;                              // 속도 0은 정방향 취급: 0초는 끝이 아니다
+        Assert.False(player.Finished);
+        player.Speed = 1;
+        player.Update(5f);
+        player.Speed = 0;
+        Assert.True(player.Finished);                  // 끝 시간에 있으면 속도 0이어도 끝난 상태
+    }
+
+    [Fact]
+    public void NegativeSpeedOneShot_StartsAtItsEnd_SoItIsFinishedAtOnce()
+    {
+        var player = new AnimationPlayer { Speed = -1 };
+        player.Play(Walk, loop: false);                // 0초에서 시작해 거꾸로: 이미 재생 방향의 끝이다(문서화된 모서리)
+        Assert.True(player.Finished);
+        player.Update(1f);
+        Assert.Equal(0f, player.Time);
+    }
+
+    [Fact]
+    public void ZeroDurationOneShot_IsFinishedImmediately()
+    {
+        var player = new AnimationPlayer();
+        player.Play(new ClipRef(9, 0f), loop: false);
+        Assert.True(player.Finished);
+        player.Update(1f);
+        Assert.Equal(0f, player.Time);
+        Assert.Equal(new PoseRequest(9, 0f, 0, 0, 0), player.Pose);
+    }
+
+    [Fact]
+    public void CrossfadeFromAFinishedOneShot_HoldsItsEndPoseDuringTheFade()
+    {
+        var player = new AnimationPlayer();
+        player.Play(Walk, loop: false);
+        player.Update(3f);                             // 끝(2.0)에서 멈춤
+        player.Play(Idle, fadeSeconds: 1f);
+        Assert.Equal(new PoseRequest(1, 2.0f, 2, 0f, 0f), player.Pose);
+        player.Update(0.5f);
+        Assert.Equal(new PoseRequest(1, 2.0f, 2, 0.5f, 0.5f), player.Pose);   // 이전 클립은 끝 포즈에 머물고 새 클립은 진행
+        player.Update(0.5f);
+        Assert.False(player.IsFading);
+        Assert.Equal(new PoseRequest(2, 1.0f, 0, 0, 0), player.Pose);
+    }
+
+    [Fact]
+    public void CrossfadeFromAnOneShotThatIsStillRunning_ContinuesItUntilItsEnd()
+    {
+        var player = new AnimationPlayer();
+        player.Play(Walk, loop: false);
+        player.Update(1.5f);
+        player.Play(Idle, fadeSeconds: 2f, loop: false);
+        player.Update(1.0f);                           // 이전 클립은 1.5 + 1.0 = 2.5 -> 끝 2.0에서 멈춘다(감기지 않는다)
+        PoseRequest pose = player.Pose;
+        Assert.Equal(2.0f, pose.TimeA, 4);
+        Assert.Equal(1.0f, pose.TimeB, 4);
+        Assert.Equal(0.5f, pose.Blend, 4);
+    }
+
+    [Fact]
+    public void RestartTheSameClip_CutsAnyFadeAndRestartsAtZero()
+    {
+        var player = new AnimationPlayer();
+        player.Play(Walk);
+        player.Update(0.5f);
+        player.Play(Idle, fadeSeconds: 1f);
+        player.Update(0.25f);
+        Assert.True(player.IsFading);
+        player.Play(Idle, restart: true, fadeSeconds: 1f);   // 같은 클립 restart는 페이드 없이 즉시
+        Assert.False(player.IsFading);
+        Assert.Equal(0f, player.Time);
+        Assert.Equal(new PoseRequest(2, 0f, 0, 0, 0), player.Pose);
+    }
+
+    [Fact]
+    public void SeekAndClear_RespectTheLoopFlag()
+    {
+        var player = new AnimationPlayer();
+        player.Play(Walk, loop: false);
+        player.Seek(5f);
+        Assert.Equal(2.0f, player.Time, 4);            // 한 번 재생은 끝으로 고정된다(감지 않는다)
+        Assert.True(player.Finished);
+        player.Seek(-1f);
+        Assert.Equal(0f, player.Time);
+        Assert.False(player.Finished);
+
+        player.Update(5f);
+        player.Clear();                                // 레스트로 돌아가면 loop도 기본값
+        Assert.True(player.Loop);
+        Assert.False(player.Finished);
+        Assert.Equal(new PoseRequest(0, 0, 0, 0, 0), player.Pose);
+    }
+
+    [Fact]
+    public void Pause_FreezesAFadeToo_AndOneShotProgress()
+    {
+        var player = new AnimationPlayer();
+        player.Play(Walk, loop: false);
+        player.Update(1f);
+        player.Play(Idle, fadeSeconds: 1f);
+        player.Update(0.25f);
+        PoseRequest before = player.Pose;
+        player.Playing = false;
+        player.Update(10f);
+        Assert.Equal(before, player.Pose);             // 시간과 페이드 진행이 모두 멈춘다
+        player.Playing = true;
+        player.Update(0.25f);
+        Assert.NotEqual(before, player.Pose);
+    }
 }

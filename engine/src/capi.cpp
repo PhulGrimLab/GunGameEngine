@@ -24,6 +24,7 @@ struct GgeWorld {
 struct GgeScene {
     gge::Scene impl;
     std::string eventName;  // gge_scene_poll_event가 돌려준 이름의 저장소
+    std::string clipName;   // gge_scene_get_node_animation이 돌려준 클립 이름의 저장소
     GgeScene(gge::Renderer& r, gge::SceneData data) : impl(r, std::move(data)) {}
 };
 
@@ -615,6 +616,62 @@ GGE_API int gge_scene_get_node_scale(const GgeScene* s, const char* node_name_ut
 GGE_API int gge_scene_set_node_scale(GgeScene* s, const char* node_name_utf8, float x, float y, float z)
 {
     return Guard([&] { s->impl.SetNodeScale(node_name_utf8 ? node_name_utf8 : "", {x, y, z}); return 1; });
+}
+
+GGE_API int gge_scene_play_clip(GgeScene* s, const char* node_name_utf8, const char* clip_name_utf8, float fade_seconds, int restart, int loop)
+{
+    return Guard([&] {
+        s->impl.PlayClip(node_name_utf8 ? node_name_utf8 : "", clip_name_utf8 ? clip_name_utf8 : "", fade_seconds, restart != 0, loop != 0);
+        return 1;
+    });
+}
+
+GGE_API int gge_scene_stop_clip(GgeScene* s, const char* node_name_utf8)
+{
+    return Guard([&] { s->impl.StopClip(node_name_utf8 ? node_name_utf8 : ""); return 1; });
+}
+
+GGE_API int gge_scene_set_clip_speed(GgeScene* s, const char* node_name_utf8, float speed)
+{
+    return Guard([&] { s->impl.SetClipSpeed(node_name_utf8 ? node_name_utf8 : "", speed); return 1; });
+}
+
+GGE_API int gge_scene_set_clip_playing(GgeScene* s, const char* node_name_utf8, int playing)
+{
+    return Guard([&] { s->impl.SetClipPlaying(node_name_utf8 ? node_name_utf8 : "", playing != 0); return 1; });
+}
+
+GGE_API int gge_scene_get_node_animation(GgeScene* s, const char* node_name_utf8, const char** clip_name, float* time, int* playing,
+                                         float* speed, int* fading, int* loop, int* finished)
+{
+    return Guard([&] {
+        const gge::Scene::NodeAnimation state = s->impl.GetNodeAnimation(node_name_utf8 ? node_name_utf8 : "");
+        s->clipName = state.clip;
+        if (clip_name)
+            *clip_name = s->clipName.c_str();
+        if (time)
+            *time = state.time;
+        if (playing)
+            *playing = state.playing ? 1 : 0;
+        if (speed)
+            *speed = state.speed;
+        if (fading)
+            *fading = state.fading ? 1 : 0;
+        if (loop)
+            *loop = state.loop ? 1 : 0;
+        if (finished)
+            *finished = state.finished ? 1 : 0;
+        return 1;
+    });
+}
+
+GGE_API int gge_scene_get_player_speed(const GgeScene* s, float* speed)
+{
+    if (!s->impl.HasPlayer())
+        return 0;
+    if (speed)
+        *speed = s->impl.PlayerSpeed();
+    return 1;
 }
 
 GGE_API int gge_scene_get_node_visible(const GgeScene* s, const char* node_name_utf8)

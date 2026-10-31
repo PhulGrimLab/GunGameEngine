@@ -73,7 +73,9 @@ void Scene::Build()
 
     // 오브젝트 그래프
     _objectIds.reserve(_data.nodes.size());
+    _animOfNode.assign(_data.nodes.size(), -1);
     for (const SceneNodeData& node : _data.nodes) {
+        const size_t nodeIndex = _objectIds.size();
         Wrapped("node '" + node.name + "'", [&] {
             const int mesh = node.mesh < 0 ? 0 : _meshIds[node.mesh];
             const int texture = node.texture < 0 ? 0 : _textureIds[node.texture];
@@ -90,18 +92,26 @@ void Scene::Build()
             if (node.mesh < 0 || !_data.meshes[node.mesh].skinned)
                 return;  // 정적 메시는 클립이 있어도 쓰지 않는다(에디터와 같다)
             _renderer.SetObjectSkeleton(object, _skeletonIds[node.mesh]);
-            if (node.clip.empty())
-                return;
-            const std::vector<SceneClip>& clips = _data.meshes[node.mesh].clips;
-            for (size_t c = 0; c < clips.size(); ++c) {
-                if (clips[c].name != node.clip)
-                    continue;
-                const int clipId = _clipIds[node.mesh][c];
-                _renderer.SetObjectPose(object, clipId, 0, 0, 0, 0);
-                _animated.push_back({object, clipId, clips[c].clip.duration, 0, node.speed, node.playing});
-                return;
+
+            // 스킨 노드마다 재생 상태를 둔다: 씬이 정한 초기 클립(있다면)으로 시작하고, 스크립트가 나중에 다른 클립으로 바꿀 수 있다.
+            NodeAnim anim;
+            anim.node = nodeIndex;
+            anim.object = object;
+            anim.mesh = node.mesh;
+            if (!node.clip.empty()) {
+                const std::vector<SceneClip>& clips = _data.meshes[node.mesh].clips;
+                size_t c = 0;
+                while (c < clips.size() && clips[c].name != node.clip)
+                    ++c;
+                if (c == clips.size())
+                    throw std::runtime_error("clip '" + node.clip + "' was not found in its mesh");
+                anim.player.Play({_clipIds[node.mesh][c], clips[c].clip.duration}, 0, false, true);
+                anim.player.speed = node.speed;
+                anim.player.playing = node.playing;
             }
-            throw std::runtime_error("clip '" + node.clip + "' was not found in its mesh");
+            _animOfNode[nodeIndex] = static_cast<int>(_anims.size());
+            _anims.push_back(std::move(anim));
+            ApplyPose(_anims.back());
         });
     }
 
@@ -170,7 +180,8 @@ void Scene::Destroy()
     _meshIds.clear();
     _textureIds.clear();
     _objectIds.clear();
-    _animated.clear();
+    _anims.clear();
+    _animOfNode.clear();
 }
 
 void Scene::Step(float inputX, float inputY, float dt)
@@ -180,7 +191,9 @@ void Scene::Step(float inputX, float inputY, float dt)
 
     if (_player.present) {
         const Vec2 intended = _world.MoveInput(inputX, inputY, _player.speed, dt);
+        const Vec2 before = _position;
         _position = _world.MoveCircle(_position.x, _position.z, intended.x, intended.z, _player.radius);
+        _playerSpeed = dt > 0 ? std::hypot(_position.x - before.x, _position.z - before.z) / dt : 0.0f;   // 충돌/슬라이딩 반영 후 실제 이동
         if (intended.x != 0 || intended.z != 0)
             _yaw = std::atan2(intended.x, intended.z);  // 의도한 방향(벽에 막혀도 그쪽을 본다). 모델 앞쪽 = +Z 가정
         _world.UpdateActiveRoom(_position.x, _position.z);  // 방을 넘었으면 카메라가 바뀐다
@@ -188,15 +201,18 @@ void Scene::Step(float inputX, float inputY, float dt)
         ApplyPlayer();
     }
 
-    for (Animated& a : _animated) {
-        if (!a.playing)
+    for (NodeAnim& a : _anims) {
+        if (!a.player.playing || !a.player.HasClip())
             continue;
-        const float delta = dt * a.speed;
-        if (!std::isfinite(delta))
-            continue;  // 속도가 비정상이면 이 프레임의 진행은 무시한다(시간이 NaN으로 굳으면 복구되지 않는다)
-        a.time = Wrap(a.time + delta, a.duration);
-        _renderer.SetObjectPose(a.object, a.clip, a.time, 0, 0, 0);
+        a.player.Update(dt);
+        ApplyPose(a);
     }
+}
+
+void Scene::ApplyPose(const NodeAnim& anim)
+{
+    const ClipPlayer::Pose p = anim.player.CurrentPose();
+    _renderer.SetObjectPose(anim.object, p.clipA, p.timeA, p.clipB, p.timeB, p.blend);
 }
 
 void Scene::UpdateTriggers()
@@ -374,6 +390,154 @@ void Scene::SetNodeVisible(const std::string& nodeName, bool visible)
     _renderer.SetObjectVisible(_objectIds[static_cast<size_t>(index)], visible);   // 플레이어 노드도 숨길 수 있다(컷신/퇴장)
 }
 
+// ---- 클립 재생 ----
+namespace {
+
+constexpr float kMaxFadeSeconds = 60.0f;       // 크로스페이드 길이 상한(오타로 인한 영원한 블렌드 방지)
+constexpr size_t kMaxListedClipNames = 20;     // "없는 클립" 오류 문구에 싣는 이름 수 상한
+
+// 시간을 delta만큼 진행한다: 반복이면 [0, duration)으로 감고, 한 번 재생이면 [0, duration]에서 멈춘다(길이 0이면 0). C# AnimationPlayer.Advance와 같다.
+float Advance(float time, float delta, float duration, bool loop)
+{
+    if (loop)
+        return Wrap(time + delta, duration);
+    if (duration <= 0)
+        return 0;
+    return std::min(std::max(time + delta, 0.0f), duration);
+}
+
+}  // namespace
+
+void ClipPlayer::Play(const Ref& clip, float fadeSeconds, bool restart, bool loop)
+{
+    if (_hasCurrent && _current == clip && !restart)
+        return;
+    if (_hasCurrent && _current != clip && fadeSeconds > 0) {
+        _hasFrom = true;
+        _from = _current;
+        _fromLoop = _currentLoop;
+        _fromTime = _currentTime;
+        _fadeElapsed = 0;
+        _fadeDuration = fadeSeconds;
+    } else {
+        _hasFrom = false;
+    }
+    _current = clip;
+    _hasCurrent = true;
+    _currentLoop = loop;
+    _currentTime = 0;
+}
+
+void ClipPlayer::Clear()
+{
+    _hasCurrent = false;
+    _currentLoop = true;
+    _hasFrom = false;
+    _currentTime = 0;
+}
+
+void ClipPlayer::Update(float dt)
+{
+    if (!playing || !_hasCurrent)
+        return;
+    const float delta = dt * speed;
+    if (!std::isfinite(delta))
+        return;  // 속도가 비정상이면 이 프레임의 진행은 무시한다(시간이 NaN으로 굳으면 복구되지 않는다)
+    _currentTime = Advance(_currentTime, delta, _current.duration, _currentLoop);
+    if (_hasFrom) {
+        _fromTime = Advance(_fromTime, delta, _from.duration, _fromLoop);
+        _fadeElapsed += dt;
+        if (_fadeElapsed >= _fadeDuration)
+            _hasFrom = false;
+    }
+}
+
+ClipPlayer::Pose ClipPlayer::CurrentPose() const
+{
+    if (!_hasCurrent)
+        return {};
+    if (_hasFrom)
+        return {_from.id, _fromTime, _current.id, _currentTime, std::min(std::max(_fadeElapsed / _fadeDuration, 0.0f), 1.0f)};
+    return {_current.id, _currentTime, 0, 0, 0};
+}
+
+bool ClipPlayer::Finished() const
+{
+    return !_currentLoop && _hasCurrent && (speed >= 0 ? _currentTime >= _current.duration : _currentTime <= 0);
+}
+
+size_t Scene::AnimIndex(const std::string& nodeName) const
+{
+    const int index = FindNodeIndex(_data, _objectIds.size(), nodeName);
+    if (index < 0)
+        throw std::runtime_error("no node named '" + nodeName + "'");
+    const int anim = static_cast<size_t>(index) < _animOfNode.size() ? _animOfNode[static_cast<size_t>(index)] : -1;
+    if (anim < 0)
+        throw std::runtime_error("node '" + nodeName + "' has no skeleton animation (it is not a skinned model)");
+    return static_cast<size_t>(anim);
+}
+
+void Scene::PlayClip(const std::string& nodeName, const std::string& clipName, float fadeSeconds, bool restart, bool loop)
+{
+    NodeAnim& anim = _anims[AnimIndex(nodeName)];
+    if (!std::isfinite(fadeSeconds) || fadeSeconds < 0 || fadeSeconds > kMaxFadeSeconds)
+        throw std::runtime_error("fade seconds must be finite and between 0 and " + std::to_string(static_cast<int>(kMaxFadeSeconds)));
+    const std::vector<SceneClip>& clips = _data.meshes[static_cast<size_t>(anim.mesh)].clips;
+    size_t c = 0;
+    while (c < clips.size() && clips[c].name != clipName)
+        ++c;
+    if (c == clips.size()) {
+        std::string available;
+        for (size_t i = 0; i < clips.size() && i < kMaxListedClipNames; ++i)
+            available += (i ? ", " : "") + clips[i].name;
+        if (clips.size() > kMaxListedClipNames)
+            available += ", ... (" + std::to_string(kMaxListedClipNames) + " of " + std::to_string(clips.size()) + " clips shown)";
+        throw std::runtime_error("no clip named '" + clipName + "' in node '" + nodeName + "' (" +
+                                 (clips.empty() ? std::string("the model has no clips") : "available: " + available) + ")");
+    }
+    anim.player.Play({_clipIds[static_cast<size_t>(anim.mesh)][c], clips[c].clip.duration}, fadeSeconds, restart, loop);
+    ApplyPose(anim);   // 일시정지 중이어도 바뀐 포즈가 바로 보인다
+}
+
+void Scene::StopClip(const std::string& nodeName)
+{
+    NodeAnim& anim = _anims[AnimIndex(nodeName)];
+    anim.player.Clear();
+    ApplyPose(anim);
+}
+
+void Scene::SetClipSpeed(const std::string& nodeName, float speed)
+{
+    NodeAnim& anim = _anims[AnimIndex(nodeName)];
+    if (!std::isfinite(speed))
+        throw std::runtime_error("clip speed must be finite");
+    anim.player.speed = speed;
+}
+
+void Scene::SetClipPlaying(const std::string& nodeName, bool playing) { _anims[AnimIndex(nodeName)].player.playing = playing; }
+
+Scene::NodeAnimation Scene::GetNodeAnimation(const std::string& nodeName) const
+{
+    const NodeAnim& anim = _anims[AnimIndex(nodeName)];
+    const ClipPlayer& p = anim.player;
+    NodeAnimation state;
+    if (p.HasClip()) {
+        const std::vector<SceneClip>& clips = _data.meshes[static_cast<size_t>(anim.mesh)].clips;
+        for (size_t c = 0; c < clips.size(); ++c)
+            if (_clipIds[static_cast<size_t>(anim.mesh)][c] == p.Current().id) {
+                state.clip = clips[c].name;
+                break;
+            }
+    }
+    state.time = p.Time();
+    state.playing = p.playing;
+    state.speed = p.speed;
+    state.fading = p.Fading();
+    state.loop = p.Loop();
+    state.finished = p.Finished();
+    return state;
+}
+
 void Scene::TeleportPlayer(float x, float z)
 {
     if (!_player.present)
@@ -383,6 +547,7 @@ void Scene::TeleportPlayer(float x, float z)
     if (_world.FindRoom(x, z) == 0)
         throw std::runtime_error("teleport position (" + std::to_string(x) + ", " + std::to_string(z) + ") is outside every room");
     _position = {x, z};
+    _playerSpeed = 0;   // 순간이동은 이동 속도가 아니다
     _world.ResetInputFrame();
     _world.UpdateActiveRoom(x, z);
     UpdateTriggers();
